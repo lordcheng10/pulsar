@@ -297,8 +297,31 @@ public class PulsarBrokerStarter {
         }
     }
 
-
+    /**
+     * 这里是服务端代码一切的开始
+     * */
     public static void main(String[] args) throws Exception {
+        /**
+         * 日期用的DateFormat，但记得阿里java开发手册上这样说了：
+         * 5.【强制】SimpleDateFormat 是线程不安全的类，一般不要定义为 static 变量，如果定义为
+         * static， 必须加锁，或者使用 DateUtils 工具类。
+         * 正例:注意线程安全，使用 DateUtils。亦推荐如下处理:
+         * private static final ThreadLocal<DateFormat> df = new ThreadLocal<DateFormat>() {
+         *      @Override
+         *      protected DateFormat initialValue() {
+         *          return new SimpleDateFormat("yyyy-MM-dd");
+         *      }
+         * };
+         * 说明:如果是 JDK8的应用，可以使用 Instant 代替 Date，LocalDateTime 代替 Calendar， DateTimeFormatter 代替
+         * SimpleDateFormat，官方给出的解释:simple beautiful strong immutable thread-safe。
+         *
+         *
+         * 上面这段话怎么理解呢？ 首先ThreadLocal是什么意思  有什么作用？ 关于ThradLocal可以看：http://note.youdao.com/s/WBhvQ2SU
+         * 另外注意这句话 如果是 JDK8的应用， DateTimeFormatter 代替SimpleDateFormat。
+         * 从这个上看似乎应该使用DateTimeFormatter更好。而且似乎是jdk官方给定的建议. 那么为什么要这么建议呢？只是出于线程安全考虑吗？这里使用需要考虑线程安全吗？
+         *
+         *
+         */
         DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss,SSS");
         Thread.setDefaultUncaughtExceptionHandler((thread, exception) -> {
             System.out.println(String.format("%s [%s] error Uncaught exception in thread %s: %s",
