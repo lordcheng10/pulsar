@@ -320,15 +320,43 @@ public class PulsarBrokerStarter {
          * 另外注意这句话 如果是 JDK8的应用， DateTimeFormatter 代替SimpleDateFormat。
          * 从这个上看似乎应该使用DateTimeFormatter更好。而且似乎是jdk官方给定的建议. 那么为什么要这么建议呢？只是出于线程安全考虑吗？这里使用需要考虑线程安全吗？
          *
-         *
+         * Thread.setDefaultUncaughtExceptionHandler是一个什么方法？代表什么意思？看了下Thread源码注释，有这样一句话：
+         * Set the default handler invoked when a thread abruptly terminates due to an uncaught exception, and no other handler has been defined for that thread.
+         * 意思是当一个线程由于一个未捕获的异常突然挂掉时，会调用默认的handler处理方法，这里这个方法就是用来设置所有线程在这种情况下的默认处理方法的。
          */
         DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss,SSS");
+        /**
+         * Thread.setDefaultUncaughtExceptionHandler是一个什么方法？代表什么意思？看了下Thread源码注释，有这样一句话：
+         *     Set the default handler invoked when a thread abruptly terminates due to an uncaught exception, and no other handler has been defined for that thread.
+         *     意思是当一个线程由于一个未捕获的异常突然挂掉时，会调用默认的handler处理方法，这里这个方法就是用来设置所有线程在这种情况下的默认处理方法的。
+         *
+         * Thread.setDefaultUncaughtExceptionHandler方法是传入一个函数接口，我们知道函数接口的入参，可以直接传入一个函数，也就是java的函数式编程。
+         *
+         * 这里的方法主要是打个日志，把出问题的线程名和异常message、日期打印出来。
+         *
+         * 那这里有个问题啊 ，如果多个线程同时走到这个handler，同时打印日志，但是这里的日期dateFormat用的是SimpleDateFormat，是非线程安全的，会不会有问题？
+         * 这里只是读，没有修改操作，所以应该没有什么问题。那么SimpleDateFormat 类指的线程安全问题到底是什么场景下发生的？是多个线程修改这个类吗
+         *
+         * 这里SimpleDateFormat感觉真有问题，参考：https://blog.csdn.net/csdn_ds/article/details/72984646
+         *
+         * 确实是有线程安全问题，但是似乎这个问题不大，而且要出现抛异常的概率不大。 TODO-chenlin patch SimpleDateFormat线程不安全问题
+         *
+         * 我从https://github.com/apache/pulsar/commit/32e7f337a6c0a889ace58890996d53179123d813中发现了这三个类：PulsarBrokerStarter.java 、DiscoveryServiceStarter.java、ProxyServiceStarter.java
+         * 这三个类有什么关系呢？ 另外，ambition119建议这里用log4j 重定向到控制台输出，但是为啥没有采纳这个建议呢？而且这个patch是为了fix一个bug，然后有人建议他把日期打出来，才顺道岛上日期的，只不过我觉得这个日志不安全。
+         * pulsar社区罗列了目前的bug list：https://github.com/apache/pulsar/labels/type%2Fbug  这个patch只是解决了其中的一个。
+         *
+         */
         Thread.setDefaultUncaughtExceptionHandler((thread, exception) -> {
             System.out.println(String.format("%s [%s] error Uncaught exception in thread %s: %s",
                     dateFormat.format(new Date()), thread.getContextClassLoader(),
                     thread.getName(), exception.getMessage()));
         });
 
+
+        /**
+         * 构建broker启动实例。
+         * 并构建一个退出时的钩子：程序退出时，会调用BrokerStarter的shutdown方法。
+         * */
         BrokerStarter starter = new BrokerStarter(args);
         Runtime.getRuntime().addShutdownHook(
             new Thread(() -> {
@@ -336,6 +364,10 @@ public class PulsarBrokerStarter {
             })
         );
 
+        /**
+         * 这里有事干啥呢？处理OM？OM监听器？好像很高级的样子。
+         *
+         * */
         PulsarByteBufAllocator.registerOOMListener(oomException -> {
             if (starter.brokerConfig.isSkipBrokerShutdownOnOOM()) {
                 log.error("-- Received OOM exception: {}", oomException.getMessage(), oomException);
@@ -345,6 +377,11 @@ public class PulsarBrokerStarter {
             }
         });
 
+
+        /**
+         * 启动BrokerStart，遇到异常后调用 Runtime.getRuntime().halt(1);是为了干啥
+         * 这个方法是干嘛的？然后在finally里面等待shutdown完成，喔  难道 Runtime.getRuntime().halt(1);是为了触发钩子用的？不然为啥在finally中会join等待呢？
+         * */
         try {
             starter.start();
         } catch (Throwable t) {
