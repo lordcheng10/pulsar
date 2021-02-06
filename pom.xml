@@ -1086,6 +1086,13 @@ flexible messaging model and an intuitive client API.</description>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
+          <!--  argLine的含义参考：http://maven.apache.org/surefire/maven-surefire-plugin/test-mojo.html ，
+          意思就是通过maven pom文件设置jvm参数，按照官方的原话是：Arbitrary JVM options to set on the command line.
+          argLine是插件maven-surefire-plugin的一个配置项。不对，我查到这个插件maven-surefire-plugin是用来测试的，
+          、那么之前代码里又是哪里设置的呢？我明白了，应该是在启动的时候，设置的，比如在启动脚本里可以设置，和jvm堆大小一样设置。
+          也就是说System.getProperty()方法可以获取jvm参数，比如堆大小以及这里设置的pulsar.allocator.pooled大小。明白了，
+          如果要把一个变量设置到jvm系统参数里面，那么就在启动的时候加-D后面接key和value
+          -->
           <argLine> -Xmx1G -XX:+UseG1GC
             -Dpulsar.allocator.pooled=false
             -Dpulsar.allocator.leak_detection=Advanced

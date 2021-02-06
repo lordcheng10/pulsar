@@ -345,6 +345,8 @@ public class PulsarBrokerStarter {
          * 这三个类有什么关系呢？ 另外，ambition119建议这里用log4j 重定向到控制台输出，但是为啥没有采纳这个建议呢？而且这个patch是为了fix一个bug，然后有人建议他把日期打出来，才顺道岛上日期的，只不过我觉得这个日志不安全。
          * pulsar社区罗列了目前的bug list：https://github.com/apache/pulsar/labels/type%2Fbug  这个patch只是解决了其中的一个。
          *
+         * 这里format()方法线程不安全主要体现在该方法里面这行代码：
+         *  calendar.setTime(date);
          */
         Thread.setDefaultUncaughtExceptionHandler((thread, exception) -> {
             System.out.println(String.format("%s [%s] error Uncaught exception in thread %s: %s",
@@ -366,6 +368,7 @@ public class PulsarBrokerStarter {
 
         /**
          * 这里有事干啥呢？处理OM？OM监听器？好像很高级的样子。
+         * PulsarByteBufAllocator 这个是干啥的？
          *
          * */
         PulsarByteBufAllocator.registerOOMListener(oomException -> {
