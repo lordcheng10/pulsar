@@ -119,11 +119,15 @@ public class PulsarByteBufAllocator {
          * 那么问题来了，ByteBufAllocatorBuilder是用来干啥的？具体有啥作用？
          *
          * 这里创建builder构造器对象的目的，只是为了构建一个默认的byte buffer分配器，因为builder只是一个临时变量，并未弄成类变量。
+         *
+         * 这里添加OM 监听器，这样的接口是bookeeper提供的，一旦OM会调用监听器的accept方法
+         *
+         * ByteBufAllocatorBuilder是bookkeeper中的一个类。
          * */
         ByteBufAllocatorBuilder builder = ByteBufAllocatorBuilder.create()
-                .leakDetectionPolicy(leakDetectionPolicy)
-                .pooledAllocator(PooledByteBufAllocator.DEFAULT)
-                .outOfMemoryListener(oomException -> {
+                .leakDetectionPolicy(leakDetectionPolicy)//设置内存泄漏探测策略
+                .pooledAllocator(PooledByteBufAllocator.DEFAULT)//设置内存池分配器
+                .outOfMemoryListener(oomException -> { //添加OM 监听器
                     // First notify all listeners
                     LISTENERS.forEach(c -> {
                         try {

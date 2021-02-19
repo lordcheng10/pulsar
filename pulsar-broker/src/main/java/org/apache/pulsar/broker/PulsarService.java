@@ -147,6 +147,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * 这里用了lombok框架：Getter和Setter就是该框架标签
+ *
  * Main class for Pulsar broker service.
  */
 
@@ -438,6 +440,8 @@ public class PulsarService implements AutoCloseable {
     }
 
     /**
+     * 启动pulsar 服务
+     *
      * Start the pulsar service instance.
      */
     public void start() throws PulsarServerException {
@@ -464,15 +468,29 @@ public class PulsarService implements AutoCloseable {
                 throw new IllegalArgumentException("brokerServicePort/brokerServicePortTls must be present");
             }
 
+            /**
+             * 本地meta 存储。
+             * */
             localMetadataStore = createLocalMetadataStore();
 
+            /**
+             * coordinate服务.
+             * 这里也有coordinate角色？
+             * */
             coordinationService = new CoordinationServiceImpl(localMetadataStore);
 
+            /***
+             * 构建线程池
+             * OrderedExecutor是bookeeper自己写的一个线程池，看起来似乎叫有序线程池
+             * */
             orderedExecutor = OrderedExecutor.newBuilder()
                     .numThreads(config.getNumOrderedExecutorThreads())
                     .name("pulsar-ordered")
                     .build();
 
+            /**
+             * ProtocolHandlers 到底是干啥的
+             * */
             // Initialize the message protocol handlers
             protocolHandlers = ProtocolHandlers.load(config);
             protocolHandlers.initialize(config);

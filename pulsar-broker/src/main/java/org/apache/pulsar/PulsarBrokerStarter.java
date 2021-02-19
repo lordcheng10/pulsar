@@ -132,6 +132,11 @@ public class PulsarBrokerStarter {
 
         BrokerStarter(String[] args) throws Exception{
             StarterArguments starterArguments = new StarterArguments();
+            /**
+             * JCommander是干嘛的呢?
+             * 查了下网上的说法，是这样解释的：非常小的java框架，用于解析命令行参数
+             * 参考：https://www.cnblogs.com/zhangshihai1232/articles/6027573.html
+             * */
             JCommander jcommander = new JCommander(starterArguments);
             jcommander.setProgramName("PulsarBrokerStarter");
 
@@ -239,19 +244,35 @@ public class PulsarBrokerStarter {
         }
 
         public void start() throws Exception {
+            /***
+             * bookieStatsProvider这个是啥
+             * */
             if (bookieStatsProvider != null) {
                 bookieStatsProvider.start(bookieConfig);
                 log.info("started bookieStatsProvider.");
             }
+
+            /**
+             * bookieServer启动bookieServer
+             * */
             if (bookieServer != null) {
                 bookieServer.start();
                 log.info("started bookieServer.");
             }
+
+            /**
+             * autoRecoveryMain 启动autoRecoveryMain，这个也是bookeepier的。
+             * */
             if (autoRecoveryMain != null) {
                 autoRecoveryMain.start();
                 log.info("started bookie autoRecoveryMain.");
             }
 
+
+            /**
+             * 上面全部是启动bookeeper相关组件，这里才是启动pulsar 的.
+             * PulsarService是干啥的
+             * */
             pulsarService.start();
             log.info("PulsarService started.");
         }
