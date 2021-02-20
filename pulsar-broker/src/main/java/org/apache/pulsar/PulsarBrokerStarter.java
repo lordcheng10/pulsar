@@ -136,6 +136,8 @@ public class PulsarBrokerStarter {
              * JCommander是干嘛的呢?
              * 查了下网上的说法，是这样解释的：非常小的java框架，用于解析命令行参数
              * 参考：https://www.cnblogs.com/zhangshihai1232/articles/6027573.html
+             *
+             * 看了下上面的博客，有个模糊理解：JCommander是专门解析main函数传参的。
              * */
             JCommander jcommander = new JCommander(starterArguments);
             jcommander.setProgramName("PulsarBrokerStarter");
