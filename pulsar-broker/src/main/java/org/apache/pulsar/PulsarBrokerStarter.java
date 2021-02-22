@@ -138,8 +138,15 @@ public class PulsarBrokerStarter {
              * 参考：https://www.cnblogs.com/zhangshihai1232/articles/6027573.html
              *
              * 看了下上面的博客，有个模糊理解：JCommander是专门解析main函数传参的。
+             *
+             * 可以再看看这个博文：http://kangkona.github.io/jcommander-using-example/
+             *
+             * 一句话：JCommander是一个命令行参数解析工具
              * */
             JCommander jcommander = new JCommander(starterArguments);
+            /**
+             * jcommander.setProgramName这个方法到底是干啥的？看名字似乎是设置程序启动后的进程名的， 但似乎又不是。做了个测试程序，验证了下，并未改变进程名。
+             * */
             jcommander.setProgramName("PulsarBrokerStarter");
 
             // parse args by JCommander
