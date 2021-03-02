@@ -58,6 +58,9 @@ import org.slf4j.bridge.SLF4JBridgeHandler;
 
 public class PulsarBrokerStarter {
 
+    /**
+     * 这里load配置的方法逻辑  没太明白
+     * */
     private static ServiceConfiguration loadConfig(String configFile) throws Exception {
         SLF4JBridgeHandler.removeHandlersForRootLogger();
         SLF4JBridgeHandler.install();
@@ -91,6 +94,11 @@ public class PulsarBrokerStarter {
         private String fnWorkerConfigFile =
                 Paths.get("").toAbsolutePath().normalize().toString() + "/conf/functions_worker.yml";
 
+
+        /**
+         * 这里就使用到了JCommander的注解获取参数，并赋值的功能。
+         * 如果程序启动时，传入了--h 为true那么，这里就直接把help设置为true。这样在启动的时候就会走到输出使用方法说明
+         * */
         @Parameter(names = {"-h", "--help"}, description = "Show this help message")
         private boolean help = false;
     }
@@ -142,6 +150,13 @@ public class PulsarBrokerStarter {
              * 可以再看看这个博文：http://kangkona.github.io/jcommander-using-example/
              *
              * 一句话：JCommander是一个命令行参数解析工具
+             *
+             *
+             * 这个博客也注意到了pulsar源码使用到了JCommander,参考：https://cloud.tencent.com/developer/article/1366912
+             *
+             * JCommander框架源码见：https://github.com/cbeust/jcommander
+             *
+             * 通过标签就可以自动把java程序启动传入的-D参数赋值给对应变量,而不用自己写代码去解析并赋值了。
              * */
             JCommander jcommander = new JCommander(starterArguments);
             /**
@@ -151,16 +166,38 @@ public class PulsarBrokerStarter {
 
             // parse args by JCommander
             jcommander.parse(args);
+
+          /**
+           * 这里starterArguments.help变量默认为false，我理解是如果jcommander.parse解析有问题得话，会把jcommander.help设置为true，从而使得走到if里面，打印该程序的使用方法，并退出。
+           * 上面jcommander.parse做参数校验，starterArguments.help是一个boolean类型变量，作为参数校验结果。使用了JCommander的注解传参解析，并赋值的功能。
+           *
+           * <p>不是这样的，上面有行代码 @Parameter(names = {"-h", "--help"}, description = "Show this help
+           * message") private boolean help = false;
+           */
             if (starterArguments.help) {
                 jcommander.usage();
                 System.exit(-1);
             }
 
-            // init broker config
+          /**
+           * 参数校验，检查传入的参数--broker-conf 是否合理, 如果是下面的几种情况，都会认为不合理，然后退出。
+           *
+           * <pre>
+           *      * StringUtils.isBlank(null)      = true
+           *      * StringUtils.isBlank("")        = true
+           *      * StringUtils.isBlank(" ")       = true
+           *      * StringUtils.isBlank("bob")     = false
+           *      * StringUtils.isBlank("  bob  ") = false
+           *      * </pre>
+           */
+          // init broker config
             if (isBlank(starterArguments.brokerConfigFile)) {
                 jcommander.usage();
                 throw new IllegalArgumentException("Need to specify a configuration file for broker");
             } else {
+                /**
+                 * 如果是合理的配置，那么这里就加载配置。
+                 * */
                 brokerConfig = loadConfig(starterArguments.brokerConfigFile);
             }
 
