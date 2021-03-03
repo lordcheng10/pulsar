@@ -59,9 +59,21 @@ import org.slf4j.bridge.SLF4JBridgeHandler;
 public class PulsarBrokerStarter {
 
     /**
-     * 这里load配置的方法逻辑  没太明白
+     * 这里load配置的方法逻辑  没太明白.
+     *
+     * 这里就简单加载一个配置 怎么感觉写得好麻烦
      * */
     private static ServiceConfiguration loadConfig(String configFile) throws Exception {
+        /**
+         * 这里为啥要先remove handler ，然后在install里又加上呢？
+         *
+         * 可以看到removeHandlersForRootLogger方法上的注释：
+         * Invoking this method removes/unregisters/detaches all handlers currently attached to the root logger（调用此方法将删除/取消注册/分离当前附加到根记录器的所有处理程序）
+         *
+         * SLF4JBridgeHandler到底是干啥的？https://www.javaer101.com/article/572277.html
+         * SLF4JBridgeHandler是java.util.logging（JUL）日志记录网桥，它将“拦截” JUL日志记录语句并将其路由到SLF4J。
+         *
+         * */
         SLF4JBridgeHandler.removeHandlersForRootLogger();
         SLF4JBridgeHandler.install();
         ServiceConfiguration config = create((new FileInputStream(configFile)), ServiceConfiguration.class);
