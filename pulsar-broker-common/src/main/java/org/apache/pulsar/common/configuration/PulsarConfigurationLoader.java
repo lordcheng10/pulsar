@@ -80,6 +80,8 @@ public class PulsarConfigurationLoader {
     }
 
     /**
+     *
+     * 这里为啥要用clazz.newInstance这种方式来构造PulsarConfiguration呢
      * Creates PulsarConfiguration and loads it with populated attribute values from provided Properties object.
      *
      * @param properties The properties to populate the attributed from

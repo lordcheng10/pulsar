@@ -73,9 +73,17 @@ public class PulsarBrokerStarter {
          * SLF4JBridgeHandler到底是干啥的？https://www.javaer101.com/article/572277.html
          * SLF4JBridgeHandler是java.util.logging（JUL）日志记录网桥，它将“拦截” JUL日志记录语句并将其路由到SLF4J。
          *
+         * 看起来SLF4JBridgeHandler的作用是：将原本Java Logging API的日志输出重定向到SLF4J日志框架。参考：https://blog.csdn.net/ITzhangdaopin/article/details/88018589
+         * 这里为啥要重定向呢？我理解是一个项目中有多重日志框架，为了统一才需要使用SLF4J来重定向,为啥这里也需要呢？
+         *
+         * 其实还是没理解为啥下面要加这两行代码？作用是啥？
          * */
         SLF4JBridgeHandler.removeHandlersForRootLogger();
         SLF4JBridgeHandler.install();
+
+        /**
+         * 直接通过文件输入流读取文件到Properties，然后通过Properties来构建ServiceConfiguration对象。
+         * */
         ServiceConfiguration config = create((new FileInputStream(configFile)), ServiceConfiguration.class);
         // it validates provided configuration is completed
         isComplete(config);
