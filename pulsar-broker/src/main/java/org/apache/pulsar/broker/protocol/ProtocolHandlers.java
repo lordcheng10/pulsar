@@ -33,18 +33,24 @@ import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.service.BrokerService;
 
 /**
+ * 看这个注释的意思是：加载的handler集合。
+ *
  * A collection of loaded handlers.
  */
 @Slf4j
 public class ProtocolHandlers implements AutoCloseable {
 
     /**
+     * 从给定的protocol列表加载handlers.
+     * 这个protocol handlers到底是啥
+     *
      * Load the protocol handlers for the given <tt>protocol</tt> list.
      *
      * @param conf the pulsar broker service configuration
      * @return the collection of protocol handlers
      */
     public static ProtocolHandlers load(ServiceConfiguration conf) throws IOException {
+
         ProtocolHandlerDefinitions definitions =
                 ProtocolHandlerUtils.searchForHandlers(
                         conf.getProtocolHandlerDirectory(), conf.getNarExtractionDirectory());
