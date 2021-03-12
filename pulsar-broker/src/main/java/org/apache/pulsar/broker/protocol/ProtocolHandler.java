@@ -28,6 +28,8 @@ import org.apache.pulsar.common.classification.InterfaceAudience;
 import org.apache.pulsar.common.classification.InterfaceStability;
 
 /**
+ * 下面注释翻译：协议处理程序接口，用于支持脉冲星代理上的附加协议。
+ * 看起来似乎是为了兼容其他协议.
  * The protocol handler interface for support additional protocols on Pulsar brokers.
  */
 @InterfaceAudience.LimitedPrivate

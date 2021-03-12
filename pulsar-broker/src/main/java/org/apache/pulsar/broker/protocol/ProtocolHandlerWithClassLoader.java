@@ -31,6 +31,10 @@ import org.apache.pulsar.broker.service.BrokerService;
 import org.apache.pulsar.common.nar.NarClassLoader;
 
 /**
+ *
+ * 这个到底是干啥的？
+ * 看下面注释，意思是：带有类加载器的协议处理程序。
+ *
  * A protocol handler with its classloader.
  */
 @Slf4j
