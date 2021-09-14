@@ -43,17 +43,11 @@ DECLARE_LOG_OBJECT();
 
 using namespace pulsar;
 
-static int globalCount = 0;
 static std::string lookupUrl = "pulsar://localhost:6650";
 static std::string adminUrl = "http://localhost:8080/";
 
 // ecpoch time in seconds
-long epochTime = time(NULL);
-
-static void messageListenerFunction(Consumer consumer, const Message& msg) {
-    globalCount++;
-    consumer.acknowledge(msg);
-}
+const long epochTime = time(NULL);
 
 class MessageCountSendCallback {
    public:
@@ -928,10 +922,6 @@ TEST(BatchMessageTest, testPartitionedTopics) {
 
     // Number of messages consumed
     ASSERT_EQ(i, numOfMessages - globalPublishCountQueueFull);
-
-    for (const auto& q : PulsarFriend::getProducerMessageQueue(producer, Partitioned)) {
-        ASSERT_EQ(0, q->reservedSpots());
-    }
 }
 
 TEST(BatchMessageTest, producerFailureResult) {
@@ -946,7 +936,6 @@ TEST(BatchMessageTest, producerFailureResult) {
     Producer producer;
 
     int batchSize = 100;
-    int numOfMessages = 10000;
     ProducerConfiguration conf;
 
     conf.setCompressionType(CompressionZLib);
@@ -1040,10 +1029,6 @@ TEST(BatchMessageTest, testSendCallback) {
 
     latch.wait();
     ASSERT_EQ(sentIdSet, receivedIdSet);
-
-    for (const auto& q : PulsarFriend::getProducerMessageQueue(producer, NonPartitioned)) {
-        ASSERT_EQ(0, q->reservedSpots());
-    }
 
     consumer.close();
     producer.close();

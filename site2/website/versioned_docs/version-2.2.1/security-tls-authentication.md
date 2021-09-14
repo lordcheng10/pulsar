@@ -61,13 +61,13 @@ superUserRoles=admin
 # Authentication settings of the broker itself. Used when the broker connects to other brokers, either in same or other clusters
 brokerClientTlsEnabled=true
 brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationTls
-brokerClientAuthenticationParameters={"tlsCertFile":"/path/my-ca/admin.cert.pem","tlsKeyFile":"/path/my-ca/admin.key-pk8.pem"}
+brokerClientAuthenticationParameters=tlsCertFile:/path/my-ca/admin.cert.pem,tlsKeyFile:/path/my-ca/admin.key-pk8.pem
 brokerClientTrustCertsFilePath=/path/my-ca/certs/ca.cert.pem
 ```
 
 ### ... on Proxies
 
-To configure proxies to authenticate clients, put the folling in `proxy.conf`, alongside [the configuration to enable tls transport](security-tls-transport.md#proxy-configuration):
+To configure proxies to authenticate clients, put the following in `proxy.conf`, alongside [the configuration to enable tls transport](security-tls-transport.md#proxy-configuration):
 
 The proxy should have its own client key pair for connecting to brokers. The role token for this key pair should be configured in the ``proxyRoles`` of the brokers. See the [authorization guide](security-authorization.md) for more details.
 
@@ -78,7 +78,7 @@ authenticationProviders=org.apache.pulsar.broker.authentication.AuthenticationPr
 
 # For the proxy to connect to brokers
 brokerClientAuthenticationPlugin=org.apache.pulsar.client.impl.auth.AuthenticationTls
-brokerClientAuthenticationParameters={"tlsCertFile":"/path/to/proxy.cert.pem","tlsKeyFile":"/path/to/proxy.key-pk8.pem"}
+brokerClientAuthenticationParameters=tlsCertFile:/path/to/proxy.cert.pem,tlsKeyFile:/path/to/proxy.key-pk8.pem
 ```
 
 ## Client configuration

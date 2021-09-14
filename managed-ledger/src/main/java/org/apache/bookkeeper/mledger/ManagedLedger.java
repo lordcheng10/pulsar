@@ -19,10 +19,8 @@
 package org.apache.bookkeeper.mledger;
 
 import io.netty.buffer.ByteBuf;
-
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-
 import org.apache.bookkeeper.common.annotation.InterfaceAudience;
 import org.apache.bookkeeper.common.annotation.InterfaceStability;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.AddEntryCallback;
@@ -33,7 +31,9 @@ import org.apache.bookkeeper.mledger.AsyncCallbacks.OffloadCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.OpenCursorCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.TerminateCallback;
 import org.apache.bookkeeper.mledger.intercept.ManagedLedgerInterceptor;
+import org.apache.bookkeeper.mledger.proto.MLDataFormats.ManagedLedgerInfo.LedgerInfo;
 import org.apache.pulsar.common.api.proto.CommandSubscribe.InitialPosition;
+import org.apache.pulsar.common.policies.data.ManagedLedgerInternalStats;
 
 /**
  * A ManagedLedger it's a superset of a BookKeeper ledger concept.
@@ -393,6 +393,27 @@ public interface ManagedLedger {
      */
     long getOffloadedSize();
 
+    /**
+     * Get last offloaded ledgerId. If no offloaded yet, it returns 0.
+     *
+     * @return last offloaded ledgerId
+     */
+    long getLastOffloadedLedgerId();
+
+    /**
+    * Get last suceessful offloaded timestamp. If no successful offload, it returns 0.
+     *
+     * @return last successful offloaded timestamp
+     */
+    long getLastOffloadedSuccessTimestamp();
+
+    /**
+     * Get last failed offloaded timestamp. If no failed offload, it returns 0.
+     *
+     * @return last failed offloaded timestamp
+     */
+    long getLastOffloadedFailureTimestamp();
+
     void asyncTerminate(TerminateCallback callback, Object ctx);
 
     /**
@@ -595,4 +616,24 @@ public interface ManagedLedger {
      * Get the ManagedLedgerInterceptor for ManagedLedger.
      * */
     ManagedLedgerInterceptor getManagedLedgerInterceptor();
+
+    /**
+     * Get basic ledger summary.
+     * will got null if corresponding ledger not exists.
+     */
+    CompletableFuture<LedgerInfo> getLedgerInfo(long ledgerId);
+
+    /**
+     * Truncate ledgers
+     * The truncate operation will move all cursors to the end of the topic and delete all inactive ledgers.
+     */
+    CompletableFuture<Void> asyncTruncate();
+
+    /**
+     * Get managed ledger internal stats
+     *
+     * @param includeLedgerMetadata the flag to control managed ledger internal stats include ledger metadata
+     * @return the future of managed ledger internal stats
+     */
+    CompletableFuture<ManagedLedgerInternalStats> getManagedLedgerInternalStats(boolean includeLedgerMetadata);
 }

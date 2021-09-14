@@ -18,31 +18,28 @@
  */
 package org.apache.pulsar.broker.transaction.coordinator;
 
-import org.apache.pulsar.broker.PulsarService;
-import org.testng.Assert;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
-
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import org.apache.pulsar.broker.PulsarService;
+import org.awaitility.Awaitility;
+import org.testng.Assert;
+import org.testng.annotations.Test;
 
+@Test(groups = "broker")
 public class TransactionMetaStoreAssignmentTest extends TransactionMetaStoreTestBase {
 
-    @BeforeClass
-    public void init() throws Exception {
-        super.setup();
-    }
+    @Test(groups = "broker")
+    public void testTransactionMetaStoreAssignAndFailover() throws IOException {
 
-    @Test
-    public void testTransactionMetaStoreAssignAndFailover() throws IOException, InterruptedException {
-
-        int transactionMetaStoreCount = 0;
-        for (PulsarService pulsarService : pulsarServices) {
-            transactionMetaStoreCount += pulsarService.getTransactionMetadataStoreService().getStores().size();
-        }
-
-        Assert.assertEquals(transactionMetaStoreCount, 16);
+        Awaitility.await()
+                .untilAsserted(() -> {
+                    int transactionMetaStoreCount = Arrays.stream(pulsarServices)
+                            .mapToInt(pulsarService -> pulsarService.getTransactionMetadataStoreService().getStores().size())
+                            .sum();
+                    Assert.assertEquals(transactionMetaStoreCount, 16);
+                });
 
         PulsarService crashedMetaStore = null;
         for (int i = pulsarServices.length - 1; i >= 0; i--) {
@@ -64,16 +61,14 @@ public class TransactionMetaStoreAssignmentTest extends TransactionMetaStoreTest
             pulsarServices[i] = services.get(i);
         }
         crashedMetaStore.close();
-        
-        Thread.sleep(3000);
 
-        transactionMetaStoreCount = 0;
-        for (PulsarService pulsarService : pulsarServices) {
-            transactionMetaStoreCount += pulsarService.getTransactionMetadataStoreService().getStores().size();
-        }
-
-        Assert.assertEquals(transactionMetaStoreCount, 16);
-
+        Awaitility.await()
+                .untilAsserted(() -> {
+                    int transactionMetaStoreCount2 = Arrays.stream(pulsarServices)
+                            .mapToInt(pulsarService -> pulsarService.getTransactionMetadataStoreService().getStores().size())
+                            .sum();
+                    Assert.assertEquals(transactionMetaStoreCount2, 16);
+                });
         transactionCoordinatorClient.close();
     }
 }

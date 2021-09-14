@@ -82,6 +82,16 @@ public interface ManagedCursor {
     Map<String, Long> getProperties();
 
     /**
+     * Add a property associated with the last stored position.
+     */
+    boolean putProperty(String key, Long value);
+
+    /**
+     * Remove a property associated with the last stored position.
+     */
+    boolean removeProperty(String key);
+
+    /**
      * Read entries from the ManagedLedger, up to the specified number. The returned list can be smaller.
      *
      * @param numberOfEntriesToRead
@@ -106,6 +116,19 @@ public interface ManagedCursor {
      */
     void asyncReadEntries(int numberOfEntriesToRead, ReadEntriesCallback callback, Object ctx,
                           PositionImpl maxPosition);
+
+
+    /**
+     * Asynchronously read entries from the ManagedLedger.
+     *
+     * @param numberOfEntriesToRead maximum number of entries to return
+     * @param maxSizeBytes          max size in bytes of the entries to return
+     * @param callback              callback object
+     * @param ctx                   opaque context
+     * @param maxPosition           max position can read
+     */
+    void asyncReadEntries(int numberOfEntriesToRead, long maxSizeBytes, ReadEntriesCallback callback,
+                          Object ctx, PositionImpl maxPosition);
 
     /**
      * Get 'N'th entry from the mark delete position in the cursor without updating any cursor positions.
@@ -378,6 +401,13 @@ public interface ManagedCursor {
      * @return the mark deleted position
      */
     Position getMarkDeletedPosition();
+
+    /**
+     * Get the persistent newest mark deleted position on this cursor.
+     *
+     * @return the persistent mark deleted position
+     */
+    Position getPersistentMarkDeletedPosition();
 
     /**
      * Rewind the cursor to the mark deleted position to replay all the already read but not yet mark deleted messages.
@@ -664,4 +694,16 @@ public interface ManagedCursor {
      * Get deleted batch indexes list for a batch message.
      */
     long[] getDeletedBatchIndexesAsLongArray(PositionImpl position);
+
+    /**
+     * @return the managed cursor stats MBean
+     */
+    ManagedCursorMXBean getStats();
+
+    /**
+     * Checks if read position changed since this method was called last time.
+     *
+     * @return if read position changed
+     */
+    boolean checkAndUpdateReadPositionChanged();
 }

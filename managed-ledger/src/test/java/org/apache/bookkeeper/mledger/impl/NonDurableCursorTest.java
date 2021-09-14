@@ -37,6 +37,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+
+import io.netty.buffer.ByteBuf;
+import lombok.Cleanup;
 import org.apache.bookkeeper.mledger.AsyncCallbacks;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.AddEntryCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.MarkDeleteCallback;
@@ -147,7 +150,9 @@ public class NonDurableCursorTest extends MockedBookKeeperTestCase {
     void readWithCacheDisabled() throws Exception {
         ManagedLedgerFactoryConfig config = new ManagedLedgerFactoryConfig();
         config.setMaxCacheSize(0);
-        factory = new ManagedLedgerFactoryImpl(bkc, bkc.getZkHandle(), config);
+
+        @Cleanup("shutdown")
+        ManagedLedgerFactoryImpl factory = new ManagedLedgerFactoryImpl(metadataStore, bkc, config);
         ManagedLedger ledger = factory.open("my_test_ledger", new ManagedLedgerConfig().setMaxEntriesPerLedger(1)
                 .setRetentionTime(1, TimeUnit.HOURS).setRetentionSizeInMB(1));
 
@@ -323,6 +328,13 @@ public class NonDurableCursorTest extends MockedBookKeeperTestCase {
     }
 
     @Test(timeOut = 20000)
+    void markDeleteGreaterThanLastConfirmedEntry() throws Exception {
+        ManagedLedger ml1 = factory.open("my_test_ledger");
+        ManagedCursor mc1 = ml1.newNonDurableCursor(PositionImpl.get(Long.MAX_VALUE - 1, Long.MAX_VALUE - 1));
+        assertEquals(mc1.getMarkDeletedPosition(), ml1.getLastConfirmedEntry());
+    }
+
+    @Test(timeOut = 20000)
     void testResetCursor() throws Exception {
         ManagedLedger ledger = factory.open("my_test_move_cursor_ledger",
                 new ManagedLedgerConfig().setMaxEntriesPerLedger(10));
@@ -478,7 +490,7 @@ public class NonDurableCursorTest extends MockedBookKeeperTestCase {
                 }
 
                 @Override
-                public void addComplete(Position position, Object ctx) {
+                public void addComplete(Position position, ByteBuf entryData, Object ctx) {
                     lastPosition.set(position);
                     c1.asyncMarkDelete(position, new MarkDeleteCallback() {
                         @Override
@@ -499,12 +511,12 @@ public class NonDurableCursorTest extends MockedBookKeeperTestCase {
         assertEquals(c1.getNumberOfEntries(), 0);
 
         // Reopen
-        ManagedLedgerFactory factory2 = new ManagedLedgerFactoryImpl(bkc, bkc.getZkHandle());
+        @Cleanup("shutdown")
+        ManagedLedgerFactory factory2 = new ManagedLedgerFactoryImpl(metadataStore, bkc);
         ledger = factory2.open("my_test_ledger");
         ManagedCursor c2 = ledger.openCursor("c1");
 
         assertEquals(c2.getMarkDeletedPosition(), lastPosition.get());
-        factory2.shutdown();
     }
 
     @Test(timeOut = 20000)

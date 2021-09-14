@@ -18,9 +18,10 @@
  */
 package org.apache.pulsar.broker.service;
 
-
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertNotNull;
+
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import lombok.Cleanup;
@@ -31,12 +32,14 @@ import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.Producer;
+import org.awaitility.Awaitility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.Test;
 
+@Test(groups = "broker")
 public class ConsumedLedgersTrimTest extends BrokerTestBase {
 
     private static final Logger LOG = LoggerFactory.getLogger(ConsumedLedgersTrimTest.class);
@@ -46,7 +49,7 @@ public class ConsumedLedgersTrimTest extends BrokerTestBase {
         //No-op
     }
 
-    @AfterMethod
+    @AfterMethod(alwaysRun = true)
     @Override
     protected void cleanup() throws Exception {
         super.internalCleanup();
@@ -91,7 +94,7 @@ public class ConsumedLedgersTrimTest extends BrokerTestBase {
 
         for (int i = 0; i < msgNum; i++) {
             Message<byte[]> msg = consumer.receive(2, TimeUnit.SECONDS);
-            Assert.assertTrue(msg != null);
+            assertNotNull(msg);
             consumer.acknowledge(msg);
         }
         Assert.assertEquals(managedLedger.getLedgersInfoAsList().size(), msgNum / 2);

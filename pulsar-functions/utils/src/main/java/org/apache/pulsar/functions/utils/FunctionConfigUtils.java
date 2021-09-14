@@ -26,7 +26,11 @@ import com.google.gson.reflect.TypeToken;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang.StringUtils;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
-import org.apache.pulsar.common.functions.*;
+import org.apache.pulsar.common.functions.ConsumerConfig;
+import org.apache.pulsar.common.functions.FunctionConfig;
+import org.apache.pulsar.common.functions.ProducerConfig;
+import org.apache.pulsar.common.functions.Resources;
+import org.apache.pulsar.common.functions.WindowConfig;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.functions.proto.Function;
@@ -136,6 +140,7 @@ public class FunctionConfigUtils {
                     bldr.setCryptoSpec(CryptoUtils.convert(consumerConf.getCryptoConfig()));
                 }
                 bldr.putAllConsumerProperties(consumerConf.getConsumerProperties());
+                bldr.setPoolMessages(consumerConf.isPoolMessages());
                 sourceSpecBuilder.putInputSpecs(topicName, bldr.build());
             });
         }
@@ -212,7 +217,24 @@ public class FunctionConfigUtils {
             sinkSpecBuilder.setTypeClassName(typeArgs[1].getName());
         }
         if (functionConfig.getProducerConfig() != null) {
-            sinkSpecBuilder.setProducerSpec(ProducerConfigUtils.convert(functionConfig.getProducerConfig()));
+            ProducerConfig producerConf = functionConfig.getProducerConfig();
+            Function.ProducerSpec.Builder pbldr = Function.ProducerSpec.newBuilder();
+            if (producerConf.getMaxPendingMessages() != null) {
+                pbldr.setMaxPendingMessages(producerConf.getMaxPendingMessages());
+            }
+            if (producerConf.getMaxPendingMessagesAcrossPartitions() != null) {
+                pbldr.setMaxPendingMessagesAcrossPartitions(producerConf.getMaxPendingMessagesAcrossPartitions());
+            }
+            if (producerConf.getUseThreadLocalProducers() != null) {
+                pbldr.setUseThreadLocalProducers(producerConf.getUseThreadLocalProducers());
+            }
+            if (producerConf.getCryptoConfig() != null) {
+                pbldr.setCryptoSpec(CryptoUtils.convert(producerConf.getCryptoConfig()));
+            }
+            if (producerConf.getBatchBuilder() != null) {
+                pbldr.setBatchBuilder(producerConf.getBatchBuilder());
+            }
+            sinkSpecBuilder.setProducerSpec(pbldr.build());
         }
         functionDetailsBuilder.setSink(sinkSpecBuilder);
 
@@ -277,10 +299,6 @@ public class FunctionConfigUtils {
             functionDetailsBuilder.setSecretsMap(new Gson().toJson(functionConfig.getSecrets()));
         }
 
-        if (functionConfig.getExternalPulsars() != null && !functionConfig.getExternalPulsars().isEmpty()) {
-            functionDetailsBuilder.setExternalPulsarsMap(new Gson().toJson(functionConfig.getExternalPulsars()));
-        }
-
         if (functionConfig.getAutoAck() != null) {
             functionDetailsBuilder.setAutoAck(functionConfig.getAutoAck());
         } else {
@@ -343,6 +361,7 @@ public class FunctionConfigUtils {
             }
             consumerConfig.setRegexPattern(input.getValue().getIsRegexPattern());
             consumerConfig.setSchemaProperties(input.getValue().getSchemaPropertiesMap());
+            consumerConfig.setPoolMessages(input.getValue().getPoolMessages());
             consumerConfigMap.put(input.getKey(), consumerConfig);
         }
         functionConfig.setInputSpecs(consumerConfigMap);
@@ -367,7 +386,22 @@ public class FunctionConfigUtils {
             functionConfig.setOutputSchemaType(functionDetails.getSink().getSchemaType());
         }
         if (functionDetails.getSink().getProducerSpec() != null) {
-            functionConfig.setProducerConfig(ProducerConfigUtils.convertFromSpec(functionDetails.getSink().getProducerSpec()));
+            Function.ProducerSpec spec = functionDetails.getSink().getProducerSpec();
+            ProducerConfig producerConfig = new ProducerConfig();
+            if (spec.getMaxPendingMessages() != 0) {
+                producerConfig.setMaxPendingMessages(spec.getMaxPendingMessages());
+            }
+            if (spec.getMaxPendingMessagesAcrossPartitions() != 0) {
+                producerConfig.setMaxPendingMessagesAcrossPartitions(spec.getMaxPendingMessagesAcrossPartitions());
+            }
+            if (spec.hasCryptoSpec()) {
+                producerConfig.setCryptoConfig(CryptoUtils.convertFromSpec(spec.getCryptoSpec()));
+            }
+            if (spec.getBatchBuilder() != null) {
+                producerConfig.setBatchBuilder(spec.getBatchBuilder());
+            }
+            producerConfig.setUseThreadLocalProducers(spec.getUseThreadLocalProducers());
+            functionConfig.setProducerConfig(producerConfig);
         }
         if (!isEmpty(functionDetails.getLogTopic())) {
             functionConfig.setLogTopic(functionDetails.getLogTopic());
@@ -407,13 +441,6 @@ public class FunctionConfigUtils {
             }.getType();
             Map<String, Object> secretsMap = new Gson().fromJson(functionDetails.getSecretsMap(), type);
             functionConfig.setSecrets(secretsMap);
-        }
-
-        if (isNotEmpty(functionDetails.getExternalPulsarsMap())) {
-            Type type = new TypeToken<Map<String, ExternalPulsarConfig>>() {
-            }.getType();
-            Map<String, ExternalPulsarConfig> externalPulsarsMap = new Gson().fromJson(functionDetails.getExternalPulsarsMap(), type);
-            functionConfig.setExternalPulsars(externalPulsarsMap);
         }
 
         if (functionDetails.hasResources()) {
@@ -806,6 +833,11 @@ public class FunctionConfigUtils {
         } else {
             throw new IllegalArgumentException("Function language runtime is either not set or cannot be determined");
         }
+    }
+
+    public static void validateJavaFunction(FunctionConfig functionConfig, ClassLoader classLoader) {
+        doCommonChecks(functionConfig);
+        doJavaChecks(functionConfig, classLoader);
     }
 
     public static FunctionConfig validateUpdate(FunctionConfig existingConfig, FunctionConfig newConfig) {

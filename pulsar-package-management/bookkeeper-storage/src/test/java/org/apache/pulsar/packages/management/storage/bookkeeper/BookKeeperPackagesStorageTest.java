@@ -18,34 +18,31 @@
  */
 package org.apache.pulsar.packages.management.storage.bookkeeper;
 
-import org.apache.distributedlog.exceptions.LogNotFoundException;
-import org.apache.distributedlog.exceptions.ZKException;
-import org.apache.pulsar.packages.management.core.PackagesStorage;
-import org.apache.pulsar.packages.management.core.PackagesStorageProvider;
-import org.apache.pulsar.packages.management.core.impl.DefaultPackagesStorageConfiguration;
-import org.apache.pulsar.packages.management.storage.bookkeeper.bookkeeper.test.BookKeeperClusterTestCase;
-import org.junit.Assert;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
-
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.fail;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
-
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import org.apache.commons.lang3.RandomUtils;
+import org.apache.distributedlog.exceptions.LogNotFoundException;
+import org.apache.distributedlog.exceptions.ZKException;
+import org.apache.pulsar.packages.management.core.PackagesStorage;
+import org.apache.pulsar.packages.management.core.PackagesStorageProvider;
+import org.apache.pulsar.packages.management.core.impl.DefaultPackagesStorageConfiguration;
+import org.apache.pulsar.packages.management.storage.bookkeeper.bookkeeper.test.BookKeeperClusterTestCase;
+import org.testng.annotations.AfterMethod;
+import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.Test;
 
 public class BookKeeperPackagesStorageTest extends BookKeeperClusterTestCase {
     private PackagesStorage storage;
 
     public BookKeeperPackagesStorageTest() {
-        super(1);
+        super(2);
     }
 
     @BeforeMethod()
@@ -60,7 +57,7 @@ public class BookKeeperPackagesStorageTest extends BookKeeperClusterTestCase {
         storage.initialize();
     }
 
-    @AfterMethod
+    @AfterMethod(alwaysRun = true)
     public void teardown() throws Exception {
         if (storage != null) {
             storage.closeAsync().get();
@@ -90,7 +87,24 @@ public class BookKeeperPackagesStorageTest extends BookKeeperClusterTestCase {
         storage.readAsync(testPath, readData).get();
         String readResult = new String(readData.toByteArray(), StandardCharsets.UTF_8);
 
-        assertTrue(readResult.equals(testData));
+        assertEquals(testData, readResult);
+    }
+
+    @Test(timeOut = 60000)
+    public void testReadWriteLargeDataOperations() throws ExecutionException, InterruptedException {
+        byte[] data = RandomUtils.nextBytes(8192 * 3 + 4096);
+        ByteArrayInputStream testDataStream = new ByteArrayInputStream(data);
+        String testPath = "test-large-read-write";
+
+        // write some data to the dlog
+        storage.writeAsync(testPath, testDataStream).get();
+
+        // read the data from the dlog
+        ByteArrayOutputStream readData = new ByteArrayOutputStream();
+        storage.readAsync(testPath, readData).get();
+        byte[] readResult = readData.toByteArray();
+
+        assertEquals(data, readResult);
     }
 
     @Test(timeOut = 60000)
@@ -123,9 +137,9 @@ public class BookKeeperPackagesStorageTest extends BookKeeperClusterTestCase {
         List<String> paths = storage.listAsync(rootPath).get();
 
         // verify the paths number
-        Assert.assertEquals(writePaths.size(), paths.size());
+        assertEquals(paths.size(), writePaths.size());
         paths.forEach(p -> writePaths.remove(p));
-        Assert.assertEquals(0, writePaths.size());
+        assertEquals(writePaths.size(), 0);
 
         // list non-existent path
         try {
@@ -147,15 +161,15 @@ public class BookKeeperPackagesStorageTest extends BookKeeperClusterTestCase {
 
         // list path should have one file
         List<String> paths = storage.listAsync("").get();
-        Assert.assertEquals(1, paths.size());
-        Assert.assertEquals(testPath, paths.get(0));
+        assertEquals(paths.size(), 1);
+        assertEquals(paths.get(0), testPath);
 
         // delete the path
         storage.deleteAsync(testPath).get();
 
         // list again and not file under the path
         paths= storage.listAsync("").get();
-        Assert.assertEquals(0, paths.size());
+        assertEquals(paths.size(), 0);
 
 
         // delete non-existent path
@@ -163,19 +177,19 @@ public class BookKeeperPackagesStorageTest extends BookKeeperClusterTestCase {
             storage.deleteAsync("non-existent").get();
             fail("should throw exception");
         } catch (Exception e) {
-            Assert.assertTrue(e.getCause() instanceof ZKException);
+            assertTrue(e.getCause() instanceof ZKException);
         }
     }
 
     @Test(timeOut = 60000)
     public void testExistOperation() throws ExecutionException, InterruptedException {
         Boolean exist = storage.existAsync("test-path").get();
-        assertFalse(exist);
+        org.testng.Assert.assertFalse(exist);
 
         storage.writeAsync("test-path", new ByteArrayInputStream("test".getBytes())).get();
 
         exist = storage.existAsync("test-path").get();
-        Assert.assertTrue(exist);
+        assertTrue(exist);
     }
 
 }

@@ -42,21 +42,6 @@ class PulsarFriend {
         return std::static_pointer_cast<ProducerStatsImpl>(producerImpl->producerStatsBasePtr_);
     }
 
-    static std::vector<ProducerImpl::MessageQueue*> getProducerMessageQueue(Producer producer,
-                                                                            ConsumerTopicType type) {
-        ProducerImplBasePtr producerBaseImpl = producer.impl_;
-        if (type == Partitioned) {
-            std::vector<ProducerImpl::MessageQueue*> queues;
-            for (const auto& producer :
-                 std::static_pointer_cast<PartitionedProducerImpl>(producerBaseImpl)->producers_) {
-                queues.emplace_back(&producer->pendingMessagesQueue_);
-            }
-            return queues;
-        } else {
-            return {&std::static_pointer_cast<ProducerImpl>(producerBaseImpl)->pendingMessagesQueue_};
-        }
-    }
-
     template <typename T>
     static unsigned long sum(std::map<T, unsigned long> m) {
         unsigned long sum = 0;
@@ -74,6 +59,11 @@ class PulsarFriend {
     static ProducerImpl& getProducerImpl(Producer producer) {
         ProducerImpl* producerImpl = static_cast<ProducerImpl*>(producer.impl_.get());
         return *producerImpl;
+    }
+
+    static ProducerImpl& getInternalProducerImpl(Producer producer, int index) {
+        PartitionedProducerImpl* producerImpl = static_cast<PartitionedProducerImpl*>(producer.impl_.get());
+        return *(producerImpl->producers_[index]);
     }
 
     static void producerFailMessages(Producer producer, Result result) {

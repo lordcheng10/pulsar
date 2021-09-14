@@ -20,13 +20,17 @@
 
 #include <functional>
 
-void Producer_send(Producer& producer, const Message& message) {
+extern boost::python::object MessageId_serialize(const MessageId& msgId);
+
+boost::python::object Producer_send(Producer& producer, const Message& message) {
     Result res;
+    MessageId messageId;
     Py_BEGIN_ALLOW_THREADS
-    res = producer.send(message);
+    res = producer.send(message, messageId);
     Py_END_ALLOW_THREADS
 
     CHECK_RESULT(res);
+    return MessageId_serialize(messageId);
 }
 
 void Producer_sendAsyncCallback(PyObject* callback, Result res, const MessageId& msgId) {
@@ -38,7 +42,7 @@ void Producer_sendAsyncCallback(PyObject* callback, Result res, const MessageId&
 
     try {
         py::call<void>(callback, res, py::object(&msgId));
-    } catch (py::error_already_set e) {
+    } catch (const py::error_already_set& e) {
         PyErr_Print();
     }
 

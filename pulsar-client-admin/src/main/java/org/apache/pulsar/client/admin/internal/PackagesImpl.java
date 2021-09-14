@@ -160,7 +160,12 @@ public class PackagesImpl extends ComponentResource implements Packages {
             Thread.currentThread().interrupt();
             throw new PulsarAdminException(e);
         } catch (ExecutionException e) {
-            throw (PulsarAdminException) e.getCause();
+            Throwable cause = e.getCause();
+            if (cause instanceof PulsarAdminException) {
+                throw (PulsarAdminException) cause;
+            } else {
+                throw new PulsarAdminException(cause);
+            }
         }
     }
 
@@ -171,10 +176,12 @@ public class PackagesImpl extends ComponentResource implements Packages {
         asyncGetRequest(webTarget, new InvocationCallback<Response>(){
             @Override
             public void completed(Response response) {
-                if (response.getStatusInfo().equals(Response.Status.OK)) {
-                    InputStream inputStream = response.readEntity(InputStream.class);
-                    Path destinyPath = Paths.get(path);
-                    try {
+                if (response.getStatus() == Response.Status.OK.getStatusCode()) {
+                    try (InputStream inputStream = response.readEntity(InputStream.class)) {
+                        Path destinyPath = Paths.get(path);
+                        if (destinyPath.getParent() != null) {
+                            Files.createDirectories(destinyPath.getParent());
+                        }
                         Files.copy(inputStream, destinyPath);
                         future.complete(null);
                     } catch (IOException e) {

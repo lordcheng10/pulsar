@@ -18,7 +18,7 @@
  */
 #ifndef LIB_UNACKEDMESSAGETRACKERENABLED_H_
 #define LIB_UNACKEDMESSAGETRACKERENABLED_H_
-#include "gtest/gtest_prod.h"
+#include "lib/TestUtil.h"
 #include "lib/UnAckedMessageTrackerInterface.h"
 
 #include <mutex>
@@ -44,9 +44,9 @@ class UnAckedMessageTrackerEnabled : public UnAckedMessageTrackerInterface {
     std::map<MessageId, std::set<MessageId>&> messageIdPartitionMap;
     std::deque<std::set<MessageId>> timePartitions;
     std::mutex lock_;
-    DeadlineTimerPtr timer_;
     ConsumerImplBase& consumerReference_;
     ClientImplPtr client_;
+    DeadlineTimerPtr timer_;  // DO NOT place this before client_!
     long timeoutMs_;
     long tickDurationInMs_;
 

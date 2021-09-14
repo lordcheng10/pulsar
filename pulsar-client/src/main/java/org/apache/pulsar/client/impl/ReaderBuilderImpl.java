@@ -18,14 +18,18 @@
  */
 package org.apache.pulsar.client.impl;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static org.apache.pulsar.client.api.KeySharedPolicy.DEFAULT_HASH_RANGE_SIZE;
 import com.google.common.base.Preconditions;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import lombok.AccessLevel;
 import lombok.Getter;
+import lombok.NonNull;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.client.api.ConsumerCryptoFailureAction;
 import org.apache.pulsar.client.api.CryptoKeyReader;
@@ -76,7 +80,7 @@ public class ReaderBuilderImpl<T> implements ReaderBuilder<T> {
 
     @Override
     public CompletableFuture<Reader<T>> createAsync() {
-        if (conf.getTopicName() == null) {
+        if (conf.getTopicNames().isEmpty()) {
             return FutureUtil
                     .failedFuture(new IllegalArgumentException("Topic name must be set on the reader builder"));
         }
@@ -110,6 +114,17 @@ public class ReaderBuilderImpl<T> implements ReaderBuilder<T> {
     }
 
     @Override
+    public ReaderBuilder<T> topics(List<String> topicNames) {
+        checkArgument(topicNames != null && topicNames.size() > 0,
+                "Passed in topicNames should not be null or empty.");
+        topicNames.forEach(topicName ->
+                checkArgument(StringUtils.isNotBlank(topicName), "topicNames cannot have blank topic"));
+        conf.getTopicNames().addAll(topicNames.stream().map(StringUtils::trim)
+                .collect(Collectors.toList()));
+        return this;
+    }
+
+    @Override
     public ReaderBuilder<T> startMessageId(MessageId startMessageId) {
         conf.setStartMessageId(startMessageId);
         return this;
@@ -137,6 +152,18 @@ public class ReaderBuilderImpl<T> implements ReaderBuilder<T> {
     public ReaderBuilder<T> cryptoKeyReader(CryptoKeyReader cryptoKeyReader) {
         conf.setCryptoKeyReader(cryptoKeyReader);
         return this;
+    }
+
+    @Override
+    public ReaderBuilder<T> defaultCryptoKeyReader(String privateKey) {
+        checkArgument(StringUtils.isNotBlank(privateKey), "privateKey cannot be blank");
+        return cryptoKeyReader(DefaultCryptoKeyReader.builder().defaultPrivateKey(privateKey).build());
+    }
+
+    @Override
+    public ReaderBuilder<T> defaultCryptoKeyReader(@NonNull Map<String, String> privateKeys) {
+        checkArgument(!privateKeys.isEmpty(), "privateKeys cannot be empty");
+        return cryptoKeyReader(DefaultCryptoKeyReader.builder().privateKeys(privateKeys).build());
     }
 
     @Override
@@ -193,6 +220,12 @@ public class ReaderBuilderImpl<T> implements ReaderBuilder<T> {
             }
         }
         conf.setKeyHashRanges(Arrays.asList(ranges));
+        return this;
+    }
+
+    @Override
+    public ReaderBuilder<T> poolMessages(boolean poolMessages) {
+        conf.setPoolMessages(poolMessages);
         return this;
     }
 }

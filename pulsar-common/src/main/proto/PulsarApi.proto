@@ -254,8 +254,9 @@ enum ProtocolVersion {
     v14 = 14; // Add CommandAuthChallenge and CommandAuthResponse for mutual auth
               // Added Key_Shared subscription
     v15 = 15; // Add CommandGetOrCreateSchema and CommandGetOrCreateSchemaResponse
-    v16 = 16; // Add support for raw message metadata
+    v16 = 16; // Add support for broker entry metadata
     v17 = 17; // Added support ack receipt
+    v18 = 18; // Add client support for broker entry metadata
 }
 
 message CommandConnect {
@@ -702,6 +703,7 @@ message CommandGetLastMessageId {
 message CommandGetLastMessageIdResponse {
     required MessageIdData last_message_id = 1;
     required uint64 request_id  = 2;
+    optional MessageIdData consumer_mark_delete_position = 3;
 }
 
 message CommandGetTopicsOfNamespace {
@@ -843,6 +845,7 @@ message CommandEndTxnOnSubscription {
     optional uint64 txnid_most_bits = 3 [default = 0];
     optional Subscription subscription= 4;
     optional TxnAction txn_action = 5;
+    optional uint64 txnid_least_bits_of_low_watermark = 6;
 }
 
 message CommandEndTxnOnSubscriptionResponse {

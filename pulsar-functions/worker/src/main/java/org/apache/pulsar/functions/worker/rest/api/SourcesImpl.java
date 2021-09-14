@@ -18,13 +18,32 @@
  */
 package org.apache.pulsar.functions.worker.rest.api;
 
+import static org.apache.commons.lang3.StringUtils.isBlank;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.apache.pulsar.functions.auth.FunctionAuthUtils.getFunctionAuthData;
+import static org.apache.pulsar.functions.utils.FunctionCommon.isFunctionCodeBuiltin;
+import static org.apache.pulsar.functions.worker.rest.RestUtils.throwUnavailableException;
+
 import com.google.protobuf.ByteString;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Supplier;
+import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.Response;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.broker.authentication.AuthenticationDataHttps;
 import org.apache.pulsar.broker.authentication.AuthenticationDataSource;
 import org.apache.pulsar.client.admin.PulsarAdminException;
-import org.apache.pulsar.common.functions.UpdateOptions;
+import org.apache.pulsar.common.functions.UpdateOptionsImpl;
 import org.apache.pulsar.common.functions.Utils;
 import org.apache.pulsar.common.io.ConfigFieldDefinition;
 import org.apache.pulsar.common.io.ConnectorDefinition;
@@ -39,29 +58,13 @@ import org.apache.pulsar.functions.proto.InstanceCommunication;
 import org.apache.pulsar.functions.utils.ComponentTypeUtils;
 import org.apache.pulsar.functions.utils.FunctionCommon;
 import org.apache.pulsar.functions.utils.SourceConfigUtils;
+import org.apache.pulsar.functions.utils.io.Connector;
 import org.apache.pulsar.functions.worker.FunctionMetaDataManager;
 import org.apache.pulsar.functions.worker.PulsarWorkerService;
 import org.apache.pulsar.functions.worker.WorkerUtils;
 import org.apache.pulsar.functions.worker.service.api.Sources;
 import org.apache.pulsar.packages.management.core.common.PackageType;
 import org.glassfish.jersey.media.multipart.FormDataContentDisposition;
-
-import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.core.Response;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.*;
-import java.util.function.Supplier;
-
-import static org.apache.commons.lang3.StringUtils.isBlank;
-import static org.apache.commons.lang3.StringUtils.isNotBlank;
-import static org.apache.pulsar.functions.auth.FunctionAuthUtils.getFunctionAuthData;
-import static org.apache.pulsar.functions.worker.WorkerUtils.isFunctionCodeBuiltin;
-import static org.apache.pulsar.functions.worker.rest.RestUtils.throwUnavailableException;
 
 @Slf4j
 public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerService> {
@@ -102,7 +105,7 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
             if (!isAuthorizedRole(tenant, namespace, clientRole, clientAuthenticationDataHttps)) {
                 log.warn("{}/{}/{} Client [{}] is not authorized to register {}", tenant, namespace,
                         sourceName, clientRole, ComponentTypeUtils.toString(componentType));
-                throw new RestException(Response.Status.UNAUTHORIZED, "client is not authorize to perform operation");
+                throw new RestException(Response.Status.UNAUTHORIZED, "Client is not authorized to perform operation");
             }
         } catch (PulsarAdminException e) {
             log.error("{}/{}/{} Failed to authorize [{}]", tenant, namespace, sourceName, e);
@@ -126,7 +129,7 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
         } catch (PulsarAdminException.NotAuthorizedException e) {
             log.error("{}/{}/{} Client [{}] is not authorized to operate {} on tenant", tenant, namespace,
                     sourceName, clientRole, ComponentTypeUtils.toString(componentType));
-            throw new RestException(Response.Status.UNAUTHORIZED, "client is not authorize to perform operation");
+            throw new RestException(Response.Status.UNAUTHORIZED, "Client is not authorized to perform operation");
         } catch (PulsarAdminException.NotFoundException e) {
             log.error("{}/{}/{} Tenant {} does not exist", tenant, namespace, sourceName, tenant);
             throw new RestException(Response.Status.BAD_REQUEST, "Tenant does not exist");
@@ -150,7 +153,7 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
             // validate parameters
             try {
                 if (isPkgUrlProvided) {
-                    if (hasPackageTypePrefix(sourcePkgUrl)) {
+                    if (Utils.hasPackageTypePrefix(sourcePkgUrl)) {
                         componentPackageFile = downloadPackageFile(sourcePkgUrl);
                     } else {
                         if (!Utils.isFunctionPackageUrlSupported(sourcePkgUrl)) {
@@ -250,7 +253,7 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
                                final SourceConfig sourceConfig,
                                final String clientRole,
                                AuthenticationDataHttps clientAuthenticationDataHttps,
-                               UpdateOptions updateOptions) {
+                               UpdateOptionsImpl updateOptions) {
 
         if (!isWorkerServiceAvailable()) {
             throwUnavailableException();
@@ -273,7 +276,7 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
             if (!isAuthorizedRole(tenant, namespace, clientRole, clientAuthenticationDataHttps)) {
                 log.warn("{}/{}/{} Client [{}] is not authorized to update {}", tenant, namespace,
                         sourceName, clientRole, ComponentTypeUtils.toString(componentType));
-                throw new RestException(Response.Status.UNAUTHORIZED, "client is not authorize to perform operation");
+                throw new RestException(Response.Status.UNAUTHORIZED, "Client is not authorized to perform operation");
 
             }
         } catch (PulsarAdminException e) {
@@ -318,7 +321,7 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
             // validate parameters
             try {
                 if (isNotBlank(sourcePkgUrl)) {
-                    if (hasPackageTypePrefix(sourcePkgUrl)) {
+                    if (Utils.hasPackageTypePrefix(sourcePkgUrl)) {
                         componentPackageFile = downloadPackageFile(sourcePkgUrl);
                     } else {
                         try {
@@ -704,38 +707,46 @@ public class SourcesImpl extends ComponentImpl implements Sources<PulsarWorkerSe
                                                                  final String namespace,
                                                                  final String sourceName,
                                                                  final SourceConfig sourceConfig,
-                                                                 final File sourcePackageFile) throws IOException {
-
-        Path archivePath = null;
+                                                                 final File sourcePackageFile) {
         // The rest end points take precedence over whatever is there in sourceconfig
         sourceConfig.setTenant(tenant);
         sourceConfig.setNamespace(namespace);
         sourceConfig.setName(sourceName);
         org.apache.pulsar.common.functions.Utils.inferMissingArguments(sourceConfig);
+
+        ClassLoader classLoader = null;
+        // check if source is builtin and extract classloader
         if (!StringUtils.isEmpty(sourceConfig.getArchive())) {
-            String builtinArchive = sourceConfig.getArchive();
-            if (builtinArchive.startsWith(org.apache.pulsar.common.functions.Utils.BUILTIN)) {
-                builtinArchive = builtinArchive.replaceFirst("^builtin://", "");
-            }
-            try {
-                archivePath = this.worker().getConnectorsManager().getSourceArchive(builtinArchive);
-            } catch (Exception e) {
-                throw new IllegalArgumentException(String.format("No Source archive %s found", archivePath));
+            String archive = sourceConfig.getArchive();
+            if (archive.startsWith(org.apache.pulsar.common.functions.Utils.BUILTIN)) {
+                archive = archive.replaceFirst("^builtin://", "");
+
+                Connector connector = worker().getConnectorsManager().getConnector(archive);
+                // check if builtin connector exists
+                if (connector == null) {
+                    throw new IllegalArgumentException("Built-in source is not available");
+                }
+                classLoader = connector.getClassLoader();
             }
         }
-        SourceConfigUtils.ExtractedSourceDetails sourceDetails = SourceConfigUtils.validate(sourceConfig, archivePath,
-                sourcePackageFile, worker().getWorkerConfig().getNarExtractionDirectory(),
-                worker().getWorkerConfig().getValidateConnectorConfig());
+
+        // if source is not builtin, attempt to extract classloader from package file if it exists
+        if (classLoader == null && sourcePackageFile != null) {
+            classLoader = getClassLoaderFromPackage(sourceConfig.getClassName(),
+                    sourcePackageFile, worker().getWorkerConfig().getNarExtractionDirectory());
+        }
+
+        if (classLoader == null) {
+            throw new IllegalArgumentException("Source package is not provided");
+        }
+
+        SourceConfigUtils.ExtractedSourceDetails sourceDetails
+                = SourceConfigUtils.validateAndExtractDetails(
+                        sourceConfig, classLoader, worker().getWorkerConfig().getValidateConnectorConfig());
         return SourceConfigUtils.convert(sourceConfig, sourceDetails);
     }
 
-    private static boolean hasPackageTypePrefix(String destPkgUrl) {
-        return Arrays.stream(PackageType.values()).anyMatch(type -> destPkgUrl.startsWith(type.toString()));
-    }
-
     private File downloadPackageFile(String packageName) throws IOException, PulsarAdminException {
-        File file = Files.createTempFile("function", ".tmp").toFile();
-        worker().getBrokerAdmin().packages().download(packageName, file.toString());
-        return file;
+        return FunctionsImpl.downloadPackageFile(worker(), packageName);
     }
 }

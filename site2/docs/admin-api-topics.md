@@ -4,6 +4,16 @@ title: Manage topics
 sidebar_label: Topics
 ---
 
+> **Important**
+>
+> This page only shows **some frequently used operations**.
+>
+> - For the latest and complete information about `Pulsar admin`, including commands, flags, descriptions, and more, see [Pulsar admin doc](https://pulsar.apache.org/tools/pulsar-admin/)
+> 
+> - For the latest and complete information about `REST API`, including parameters, responses, samples, and more, see {@inject: rest:REST:/} API doc.
+> 
+> - For the latest and complete information about `Java admin API`, including classes, methods, descriptions, and more, see [Java admin API doc](https://pulsar.apache.org/api/admin/).
+
 Pulsar has persistent and non-persistent topics. Persistent topic is a logical endpoint for publishing and consuming messages. The topic name structure for persistent topics is:
 
 ```shell
@@ -187,13 +197,41 @@ You can check the following statistics of a given non-partitioned topic.
 
   -   **storageSize**: The sum of the ledgers' storage size for this topic. The space used to store the messages for the topic.
 
+  -   **bytesInCounter**: Total bytes published to the topic.
+
+  -   **msgInCounter**: Total messages published to the topic.
+
+  -   **bytesOutCounter**: Total bytes delivered to consumers.
+
+  -   **msgOutCounter**: Total messages delivered to consumers.
+
+  -   **msgChunkPublished**: Topic has chunked message published on it.
+
+  -   **backlogSize**: Estimated total unconsumed or backlog size (in bytes).
+
+  -   **offloadedStorageSize**: Space used to store the offloaded messages for the topic (in bytes).
+  
+  -   **waitingPublishers**: The number of publishers waiting in a queue in exclusive access mode.
+  
+  -   **deduplicationStatus**: The status of message deduplication for the topic.
+  
+  -   **topicEpoch**: The topic epoch or empty if not set.
+
+  -   **nonContiguousDeletedMessagesRanges**: The number of non-contiguous deleted messages ranges.
+
+  -   **nonContiguousDeletedMessagesRangesSerializedSize**: The serialized size of non-contiguous deleted messages ranges.  
+
   -   **publishers**: The list of all local publishers into the topic. The list ranges from zero to thousands.
+
+      -   **accessMode**: The type of access to the topic that the producer requires.
 
       -   **msgRateIn**: The total rate of messages (msg/s) published by this publisher.
 
       -   **msgThroughputIn**: The total throughput (bytes/s) of the messages published by this publisher.
 
       -   **averageMsgSize**: The average message size in bytes from this publisher within the last interval.
+
+      -   **chunkedMessageRate**: Total chunked message count received for this producer on this topic.
 
       -   **producerId**: The internal identifier for this producer on this topic.
 
@@ -202,6 +240,10 @@ You can check the following statistics of a given non-partitioned topic.
       -   **address**: The IP address and source port for the connection of this producer.
 
       -   **connectedSince**: The timestamp when this producer is created or reconnected last time.
+
+      -   **clientVersion**: The client library version of this producer.
+
+      -   **metadata**: Metadata (key/value strings) associated with this publisher.
 
   -   **subscriptions**: The list of all local subscriptions to the topic.
 
@@ -219,11 +261,45 @@ You can check the following statistics of a given non-partitioned topic.
           
           -   **lastExpireTimestamp**: The timestamp of the last message expire execution.
           
-          -   **lastConsumedFlowTimestamp**: The timestamp of the last flow command received. 
-          
+          -   **lastConsumedFlowTimestamp**: The timestamp of the last flow command received.
+
           -   **lastConsumedTimestamp**: The latest timestamp of all the consumed timestamp of the consumers.
           
           -   **lastAckedTimestamp**: The latest timestamp of all the acked timestamp of the consumers.
+
+          -   **bytesOutCounter**: Total bytes delivered to consumer.
+
+          -   **msgOutCounter**: Total messages delivered to consumer.
+
+          -   **msgRateRedeliver**: Total rate of messages redelivered on this subscription (msg/s).
+
+          -   **chunkedMessageRate**: Chunked message dispatch rate.
+
+          -   **backlogSize**: Size of backlog for this subscription (in bytes).
+
+          -   **msgBacklogNoDelayed**: Number of messages in the subscription backlog that do not contain the delay messages.
+
+          -   **blockedSubscriptionOnUnackedMsgs**: Flag to verify if a subscription is blocked due to reaching threshold of unacked messages.
+
+          -   **msgDelayed**: Number of delayed messages currently being tracked.
+
+          -   **unackedMessages**: Number of unacknowledged messages for the subscription.
+
+          -   **activeConsumerName**: The name of the consumer that is active for single active consumer subscriptions. For example, failover or exclusive. 
+
+          -   **totalMsgExpired**: Total messages expired on this subscription. 
+
+          -   **lastMarkDeleteAdvancedTimestamp**: Last MarkDelete position advanced timestamp.
+
+          -   **durable**: Whether the subscription is durable or ephemeral (for example, from a reader).
+
+          -   **replicated**: Mark that the subscription state is kept in sync across different regions.
+
+          -   **consumersAfterMarkDeletePosition**: This is for Key_Shared subscription to get the recentJoinedConsumers in the Key_Shared subscription.
+
+          -   **nonContiguousDeletedMessagesRanges**: The number of non-contiguous deleted messages ranges.
+
+          -   **nonContiguousDeletedMessagesRangesSerializedSize**: The serialized size of non-contiguous deleted messages ranges. 
 
           -   **consumers**: The list of connected consumers for this subscription.
 
@@ -239,9 +315,31 @@ You can check the following statistics of a given non-partitioned topic.
 
                 -   **blockedConsumerOnUnackedMsgs**: The flag used to verify if the consumer is blocked due to reaching threshold of the unacknowledged messages.
                 
-                -   **lastConsumedTimestamp**: The timestamp when the consumer reads a message the last time. 
-          
+                -   **lastConsumedTimestamp**: The timestamp when the consumer reads a message the last time.
+
                 -   **lastAckedTimestamp**: The timestamp when the consumer acknowledges a message the last time.
+
+                -   **address**: The IP address and source port for the connection of this consumer.
+
+                -   **connectedSince**: The timestamp when this consumer is created or reconnected last time.
+
+                -   **clientVersion**: The client library version of this consumer.
+
+                -   **bytesOutCounter**: Total bytes delivered to consumer.
+
+                -   **msgOutCounter**: Total messages delivered to consumer.
+
+                -   **msgRateRedeliver**: Total rate of messages redelivered by this consumer (msg/s).
+
+                -   **chunkedMessageRate**: Total chunked messages dispatched.
+
+                -   **avgMessagesPerEntry**: Number of average messages per entry for the consumer consumed.
+
+                -   **readPositionWhenJoining**: The read position of the cursor when the consumer joining.
+
+                -   **keyHashRanges**: Hash ranges assigned to this consumer if is Key_Shared sub mode.
+
+                -   **metadata**: Metadata (key/value strings) associated with this consumer.
 
   -   **replication**: This section gives the stats for cross-colo replication of this topic
 
@@ -273,34 +371,86 @@ The following is an example of a topic status.
 
 ```json
 {
-  "msgRateIn": 4641.528542257553,
-  "msgThroughputIn": 44663039.74947473,
-  "msgRateOut": 0,
-  "msgThroughputOut": 0,
-  "averageMsgSize": 1232439.816728665,
-  "storageSize": 135532389160,
-  "publishers": [
-    {
-      "msgRateIn": 57.855383881403576,
-      "msgThroughputIn": 558994.7078932219,
-      "averageMsgSize": 613135,
-      "producerId": 0,
-      "producerName": null,
-      "address": null,
-      "connectedSince": null
-    }
-  ],
-  "subscriptions": {
-    "my-topic_subscription": {
-      "msgRateOut": 0,
-      "msgThroughputOut": 0,
-      "msgBacklog": 116632,
-      "type": null,
-      "msgRateExpired": 36.98245516804671,
-      "consumers": []
+  "msgRateIn" : 0.0,
+  "msgThroughputIn" : 0.0,
+  "msgRateOut" : 0.0,
+  "msgThroughputOut" : 0.0,
+  "bytesInCounter" : 504,
+  "msgInCounter" : 9,
+  "bytesOutCounter" : 2296,
+  "msgOutCounter" : 41,
+  "averageMsgSize" : 0.0,
+  "msgChunkPublished" : false,
+  "storageSize" : 504,
+  "backlogSize" : 0,
+  "offloadedStorageSize" : 0,
+  "publishers" : [ {
+    "accessMode" : "Shared",
+    "msgRateIn" : 0.0,
+    "msgThroughputIn" : 0.0,
+    "averageMsgSize" : 0.0,
+    "chunkedMessageRate" : 0.0,
+    "producerId" : 0,
+    "metadata" : { },
+    "address" : "/127.0.0.1:65402",
+    "connectedSince" : "2021-06-09T17:22:55.913+08:00",
+    "clientVersion" : "2.9.0-SNAPSHOT",
+    "producerName" : "standalone-1-0"
+  } ],
+  "waitingPublishers" : 0,
+  "subscriptions" : {
+    "sub-demo" : {
+      "msgRateOut" : 0.0,
+      "msgThroughputOut" : 0.0,
+      "bytesOutCounter" : 2296,
+      "msgOutCounter" : 41,
+      "msgRateRedeliver" : 0.0,
+      "chunkedMessageRate" : 0,
+      "msgBacklog" : 0,
+      "backlogSize" : 0,
+      "msgBacklogNoDelayed" : 0,
+      "blockedSubscriptionOnUnackedMsgs" : false,
+      "msgDelayed" : 0,
+      "unackedMessages" : 0,
+      "type" : "Exclusive",
+      "activeConsumerName" : "20b81",
+      "msgRateExpired" : 0.0,
+      "totalMsgExpired" : 0,
+      "lastExpireTimestamp" : 0,
+      "lastConsumedFlowTimestamp" : 1623230565356,
+      "lastConsumedTimestamp" : 1623230583946,
+      "lastAckedTimestamp" : 1623230584033,
+      "lastMarkDeleteAdvancedTimestamp" : 1623230584033,
+      "consumers" : [ {
+        "msgRateOut" : 0.0,
+        "msgThroughputOut" : 0.0,
+        "bytesOutCounter" : 2296,
+        "msgOutCounter" : 41,
+        "msgRateRedeliver" : 0.0,
+        "chunkedMessageRate" : 0.0,
+        "consumerName" : "20b81",
+        "availablePermits" : 959,
+        "unackedMessages" : 0,
+        "avgMessagesPerEntry" : 314,
+        "blockedConsumerOnUnackedMsgs" : false,
+        "lastAckedTimestamp" : 1623230584033,
+        "lastConsumedTimestamp" : 1623230583946,
+        "metadata" : { },
+        "address" : "/127.0.0.1:65172",
+        "connectedSince" : "2021-06-09T17:22:45.353+08:00",
+        "clientVersion" : "2.9.0-SNAPSHOT"
+      } ],
+      "consumersAfterMarkDeletePosition" : { },
+      "nonContiguousDeletedMessagesRanges" : 0,
+      "nonContiguousDeletedMessagesRangesSerializedSize" : 0,
+      "durable" : true,
+      "replicated" : false
     }
   },
-  "replication": {}
+  "replication" : { },
+  "deduplicationStatus" : "Disabled",
+  "nonContiguousDeletedMessagesRanges" : 0,
+  "nonContiguousDeletedMessagesRangesSerializedSize" : 0
 }
 ```
 To get the status of a topic, you can use the following ways.
@@ -358,6 +508,20 @@ You can get the detailed statistics of a topic.
       -   **size**: The size of messages written to this ledger (in bytes).
 
       -   **offloaded**: Whether this ledger is offloaded.
+      
+      -   **metadata**: The ledger metadata.
+
+  -   **schemaLedgers**: The ordered list of all ledgers for this topic schema.
+  
+      -   **ledgerId**: The ID of this ledger.
+  
+      -   **entries**: The total number of entries belong to this ledger.
+  
+      -   **size**: The size of messages written to this ledger (in bytes).
+  
+      -   **offloaded**: Whether this ledger is offloaded.
+      
+      -   **metadata**: The ledger metadata.
 
   -   **compactedLedger**: The ledgers holding un-acked messages after topic compaction.
  
@@ -395,44 +559,60 @@ The following is an example of the detailed statistics of a topic.
 
 ```json
 {
-    "entriesAddedCounter": 20449518,
-    "numberOfEntries": 3233,
-    "totalSize": 331482,
-    "currentLedgerEntries": 3233,
-    "currentLedgerSize": 331482,
-    "lastLedgerCreatedTimestamp": "2016-06-29 03:00:23.825",
-    "lastLedgerCreationFailureTimestamp": null,
-    "waitingCursorsCount": 1,
-    "pendingAddEntriesCount": 0,
-    "lastConfirmedEntry": "324711539:3232",
-    "state": "LedgerOpened",
-    "ledgers": [
+    "entriesAddedCounter":0,
+    "numberOfEntries":0,
+    "totalSize":0,
+    "currentLedgerEntries":0,
+    "currentLedgerSize":0,
+    "lastLedgerCreatedTimestamp":"2021-01-22T21:12:14.868+08:00",
+    "lastLedgerCreationFailureTimestamp":null,
+    "waitingCursorsCount":0,
+    "pendingAddEntriesCount":0,
+    "lastConfirmedEntry":"3:-1",
+    "state":"LedgerOpened",
+    "ledgers":[
         {
-            "ledgerId": 324711539,
-            "entries": 0,
-            "size": 0,
-            "offloaded": true
+            "ledgerId":3,
+            "entries":0,
+            "size":0,
+            "offloaded":false,
+            "metadata":null
         }
     ],
-    "compactedLedger": {
-        "ledgerId": 324711540,
-        "entries": 10,
-        "size": 100,
-        "offloaded": false
-    },
-    "cursors": {
-        "my-subscription": {
-            "markDeletePosition": "324711539:3133",
-            "readPosition": "324711539:3233",
-            "waitingReadOp": true,
-            "pendingReadOps": 0,
-            "messagesConsumedCounter": 20449501,
-            "cursorLedger": 324702104,
-            "cursorLedgerLastEntry": 21,
-            "individuallyDeletedMessages": "[(324711539:3134‥324711539:3136], (324711539:3137‥324711539:3140], ]",
-            "lastLedgerSwitchTimestamp": "2016-06-29 01:30:19.313",
-            "state": "Open"
+    "cursors":{
+        "test":{
+            "markDeletePosition":"3:-1",
+            "readPosition":"3:-1",
+            "waitingReadOp":false,
+            "pendingReadOps":0,
+            "messagesConsumedCounter":0,
+            "cursorLedger":4,
+            "cursorLedgerLastEntry":1,
+            "individuallyDeletedMessages":"[]",
+            "lastLedgerSwitchTimestamp":"2021-01-22T21:12:14.966+08:00",
+            "state":"Open",
+            "numberOfEntriesSinceFirstNotAckedMessage":0,
+            "totalNonContiguousDeletedMessagesRange":0,
+            "properties":{
+
+            }
         }
+    },
+    "schemaLedgers":[
+        {
+            "ledgerId":1,
+            "entries":11,
+            "size":10,
+            "offloaded":false,
+            "metadata":null
+        }
+    ],
+    "compactedLedger":{
+        "ledgerId":-1,
+        "entries":-1,
+        "size":-1,
+        "offloaded":false,
+        "metadata":null
     }
 }
 ```
@@ -507,6 +687,55 @@ admin.topics().getMessageById(topic, ledgerId, entryId);
 ```
 
 <!--END_DOCUSAURUS_CODE_TABS-->
+
+### Examine messages
+
+You can examine a specific message on a topic by position relative to the earliest or the latest message.
+
+<!--DOCUSAURUS_CODE_TABS-->
+<!--pulsar-admin-->
+```shell
+./bin/pulsar-admin topics examine-messages \
+  persistent://public/default/my-topic \
+  -i latest -m 1
+```
+
+<!--REST API-->
+{@inject: endpoint|GET|/admin/v2/:schema/:tenant/:namespace/:topic/examinemessage?initialPosition=:initialPosition&messagePosition=:messagePosition|operation/examineMessage?version=[[pulsar:version_number]]}
+
+<!--Java-->
+```java
+String topic = "persistent://my-tenant/my-namespace/my-topic";
+admin.topics().examineMessage(topic, "latest", 1);
+```
+
+
+<!--END_DOCUSAURUS_CODE_TABS-->
+
+### Get message ID 
+
+You can get message ID published at or just after the given datetime.
+
+<!--DOCUSAURUS_CODE_TABS-->
+<!--pulsar-admin-->
+```shell
+./bin/pulsar-admin topics get-message-id \
+  persistent://public/default/my-topic \
+  -d 2021-06-28T19:01:17Z
+```
+
+<!--REST API-->
+{@inject: endpoint|GET|/admin/v2/:schema/:tenant/:namespace/:topic/messageid/:timestamp|operation/getMessageIdByTimestamp?version=[[pulsar:version_number]]}
+
+<!--Java-->
+```java
+String topic = "persistent://my-tenant/my-namespace/my-topic";
+long timestamp = System.currentTimeMillis()
+admin.topics().getMessageIdByTimestamp(topic, timestamp);
+```
+
+<!--END_DOCUSAURUS_CODE_TABS-->
+
 
 ### Skip messages
 
@@ -989,6 +1218,8 @@ admin.topics().getList(namespace);
 
 You can check the current statistics of a given partitioned topic. The following is an example. For description of each stats, refer to [get stats](#get-stats).
 
+Note that in the subscription JSON object, `chuckedMessageRate` is deprecated. Please use `chunkedMessageRate`. Both will be sent in the JSON for now.
+
 ```json
 {
   "msgRateIn" : 999.992947159793,
@@ -1018,6 +1249,7 @@ You can check the current statistics of a given partitioned topic. The following
       "msgOutCounter" : 0,
       "msgRateRedeliver" : 0.0,
       "chuckedMessageRate" : 0,
+      "chunkedMessageRate" : 0,
       "msgBacklog" : 144318,
       "msgBacklogNoDelayed" : 144318,
       "blockedSubscriptionOnUnackedMsgs" : false,

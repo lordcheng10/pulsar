@@ -18,8 +18,6 @@
  */
 package org.apache.pulsar.broker.service;
 
-import static org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest.createMockBookKeeper;
-import static org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest.createMockZooKeeper;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.matches;
 import static org.mockito.ArgumentMatchers.same;
@@ -47,10 +45,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 
+import org.apache.bookkeeper.common.util.OrderedExecutor;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.AddEntryCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.DeleteCursorCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.DeleteLedgerCallback;
@@ -61,6 +61,7 @@ import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.ManagedLedgerConfig;
 import org.apache.bookkeeper.mledger.ManagedLedgerException;
 import org.apache.bookkeeper.mledger.ManagedLedgerFactory;
+import org.apache.bookkeeper.mledger.impl.ManagedCursorImpl;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.ServiceConfiguration;
@@ -71,6 +72,8 @@ import org.apache.pulsar.broker.service.persistent.PersistentDispatcherMultipleC
 import org.apache.pulsar.broker.service.persistent.PersistentDispatcherSingleActiveConsumer;
 import org.apache.pulsar.broker.service.persistent.PersistentSubscription;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
+import org.apache.pulsar.broker.transaction.TransactionTestBase;
+import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.common.api.proto.BaseCommand;
 import org.apache.pulsar.common.api.proto.CommandActiveConsumerChange;
 import org.apache.pulsar.common.api.proto.CommandSubscribe.InitialPosition;
@@ -79,6 +82,10 @@ import org.apache.pulsar.common.api.proto.ProtocolVersion;
 import org.apache.pulsar.common.naming.NamespaceBundle;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.policies.data.Policies;
+import org.apache.pulsar.metadata.api.MetadataStore;
+import org.apache.pulsar.metadata.api.MetadataStoreConfig;
+import org.apache.pulsar.metadata.api.MetadataStoreFactory;
+import org.apache.pulsar.metadata.impl.ZKMetadataStore;
 import org.apache.pulsar.zookeeper.ZooKeeperCache;
 import org.apache.pulsar.zookeeper.ZooKeeperDataCache;
 import org.apache.zookeeper.ZooKeeper;
@@ -91,6 +98,7 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
+@Test(groups = "broker")
 public class PersistentDispatcherFailoverConsumerTest {
 
     private BrokerService brokerService;
@@ -99,27 +107,32 @@ public class PersistentDispatcherFailoverConsumerTest {
     private ServerCnx serverCnxWithOldVersion;
     private ManagedLedger ledgerMock;
     private ManagedCursor cursorMock;
+    private MetadataStore store;
     private ConfigurationCacheService configCacheService;
     private ChannelHandlerContext channelCtx;
     private LinkedBlockingQueue<CommandActiveConsumerChange> consumerChanges;
     private ZooKeeper mockZk;
-    private PulsarService pulsar;
+    protected PulsarService pulsar;
     final String successTopicName = "persistent://part-perf/global/perf.t1/ptopic";
     final String failTopicName = "persistent://part-perf/global/perf.t1/pfailTopic";
 
+    private OrderedExecutor executor;
+    private EventLoopGroup eventLoopGroup;
+
     @BeforeMethod
     public void setup() throws Exception {
+        executor = OrderedExecutor.newBuilder().numThreads(1).name("persistent-dispatcher-failover-test").build();
         ServiceConfiguration svcConfig = spy(new ServiceConfiguration());
+        svcConfig.setBrokerShutdownTimeoutMs(0L);
         pulsar = spy(new PulsarService(svcConfig));
         doReturn(svcConfig).when(pulsar).getConfiguration();
 
         mlFactoryMock = mock(ManagedLedgerFactory.class);
         doReturn(mlFactoryMock).when(pulsar).getManagedLedgerFactory();
 
-        mockZk = createMockZooKeeper();
-        doReturn(mockZk).when(pulsar).getZkClient();
-        doReturn(createMockBookKeeper(mockZk, ForkJoinPool.commonPool()))
-            .when(pulsar).getBookKeeperClient();
+        doReturn(TransactionTestBase.createMockBookKeeper(executor))
+                .when(pulsar).getBookKeeperClient();
+        eventLoopGroup = new NioEventLoopGroup();
 
         ZooKeeperCache cache = mock(ZooKeeperCache.class);
         doReturn(30).when(cache).getZkOperationTimeoutSeconds();
@@ -135,7 +148,11 @@ public class PersistentDispatcherFailoverConsumerTest {
         doReturn(configCacheService).when(pulsar).getConfigurationCache();
         doReturn(zkCache).when(pulsar).getLocalZkCacheService();
 
-        brokerService = spy(new BrokerService(pulsar));
+        store = MetadataStoreFactory.create("memory://local", MetadataStoreConfig.builder().build());
+        doReturn(store).when(pulsar).getLocalMetadataStore();
+        doReturn(store).when(pulsar).getConfigurationMetadataStore();
+
+        brokerService = spy(new BrokerService(pulsar, eventLoopGroup));
         doReturn(brokerService).when(pulsar).getBrokerService();
 
         consumerChanges = new LinkedBlockingQueue<>();
@@ -201,14 +218,15 @@ public class PersistentDispatcherFailoverConsumerTest {
             pulsar.close();
             pulsar = null;
         }
-        if (mockZk != null) {
-            mockZk.close();
-        }
+
+        executor.shutdown();
+        eventLoopGroup.shutdownGracefully().get();
+        store.close();
     }
 
     void setupMLAsyncCallbackMocks() {
         ledgerMock = mock(ManagedLedger.class);
-        cursorMock = mock(ManagedCursor.class);
+        cursorMock = mock(ManagedCursorImpl.class);
 
         doReturn(new ArrayList<Object>()).when(ledgerMock).getCursors();
         doReturn("mockCursor").when(cursorMock).getName();
@@ -238,7 +256,8 @@ public class PersistentDispatcherFailoverConsumerTest {
         doAnswer(new Answer<Object>() {
             @Override
             public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
-                ((AddEntryCallback) invocationOnMock.getArguments()[1]).addComplete(new PositionImpl(1, 1), null);
+                ((AddEntryCallback) invocationOnMock.getArguments()[1]).addComplete(
+                        new PositionImpl(1, 1), null, null);
                 return null;
             }
         }).when(ledgerMock).asyncAddEntry(any(byte[].class), any(AddEntryCallback.class), any());
@@ -291,7 +310,7 @@ public class PersistentDispatcherFailoverConsumerTest {
 
         // 2. Add old consumer
         Consumer consumer1 = new Consumer(sub, SubType.Exclusive, topic.getName(), 1 /* consumer id */, 0,
-                "Cons1"/* consumer name */, 50000, serverCnxWithOldVersion, "myrole-1", Collections.emptyMap(), false, InitialPosition.Latest, null);
+                "Cons1"/* consumer name */, 50000, serverCnxWithOldVersion, "myrole-1", Collections.emptyMap(), false, InitialPosition.Latest, null, MessageId.latest);
         pdfc.addConsumer(consumer1);
         List<Consumer> consumers = pdfc.getConsumers();
         assertSame(consumers.get(0).consumerName(), consumer1.consumerName());
@@ -302,7 +321,7 @@ public class PersistentDispatcherFailoverConsumerTest {
 
         // 3. Add new consumer
         Consumer consumer2 = new Consumer(sub, SubType.Exclusive, topic.getName(), 2 /* consumer id */, 0,
-                "Cons2"/* consumer name */, 50000, serverCnx, "myrole-1", Collections.emptyMap(), false, InitialPosition.Latest, null);
+                "Cons2"/* consumer name */, 50000, serverCnx, "myrole-1", Collections.emptyMap(), false, InitialPosition.Latest, null, MessageId.latest);
         pdfc.addConsumer(consumer2);
         consumers = pdfc.getConsumers();
         assertSame(consumers.get(0).consumerName(), consumer1.consumerName());
@@ -331,7 +350,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         // 2. Add consumer
         Consumer consumer1 = spy(new Consumer(sub, SubType.Exclusive, topic.getName(), 1 /* consumer id */, 0,
                 "Cons1"/* consumer name */, 50000, serverCnx, "myrole-1", Collections.emptyMap(),
-                false /* read compacted */, InitialPosition.Latest, null));
+                false /* read compacted */, InitialPosition.Latest, null, MessageId.latest));
         pdfc.addConsumer(consumer1);
         List<Consumer> consumers = pdfc.getConsumers();
         assertSame(consumers.get(0).consumerName(), consumer1.consumerName());
@@ -355,7 +374,7 @@ public class PersistentDispatcherFailoverConsumerTest {
 
         // 5. Add another consumer which does not change active consumer
         Consumer consumer2 = spy(new Consumer(sub, SubType.Exclusive, topic.getName(), 2 /* consumer id */, 0, "Cons2"/* consumer name */,
-                50000, serverCnx, "myrole-1", Collections.emptyMap(), false /* read compacted */, InitialPosition.Latest, null));
+                50000, serverCnx, "myrole-1", Collections.emptyMap(), false /* read compacted */, InitialPosition.Latest, null, MessageId.latest));
         pdfc.addConsumer(consumer2);
         consumers = pdfc.getConsumers();
         assertSame(pdfc.getActiveConsumer().consumerName(), consumer1.consumerName());
@@ -369,7 +388,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         // 6. Add a consumer which changes active consumer
         Consumer consumer0 = spy(new Consumer(sub, SubType.Exclusive, topic.getName(), 0 /* consumer id */, 0,
                 "Cons0"/* consumer name */, 50000, serverCnx, "myrole-1", Collections.emptyMap(),
-                false /* read compacted */, InitialPosition.Latest, null));
+                false /* read compacted */, InitialPosition.Latest, null, MessageId.latest));
         pdfc.addConsumer(consumer0);
         consumers = pdfc.getConsumers();
         assertSame(pdfc.getActiveConsumer().consumerName(), consumer0.consumerName());
@@ -452,7 +471,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         // 2. Add a consumer
         Consumer consumer1 = spy(new Consumer(sub, SubType.Failover, topic.getName(), 1 /* consumer id */, 1,
                 "Cons1"/* consumer name */, 50000, serverCnx, "myrole-1", Collections.emptyMap(),
-                false /* read compacted */, InitialPosition.Latest, null));
+                false /* read compacted */, InitialPosition.Latest, null, MessageId.latest));
         pdfc.addConsumer(consumer1);
         List<Consumer> consumers = pdfc.getConsumers();
         assertEquals(1, consumers.size());
@@ -461,7 +480,7 @@ public class PersistentDispatcherFailoverConsumerTest {
         // 3. Add a consumer with same priority level and consumer name is smaller in lexicographic order.
         Consumer consumer2 = spy(new Consumer(sub, SubType.Failover, topic.getName(), 2 /* consumer id */, 1,
                 "Cons2"/* consumer name */, 50000, serverCnx, "myrole-1", Collections.emptyMap(),
-                false /* read compacted */, InitialPosition.Latest, null));
+                false /* read compacted */, InitialPosition.Latest, null, MessageId.latest));
         pdfc.addConsumer(consumer2);
 
         // 4. Verify active consumer doesn't change
@@ -474,7 +493,7 @@ public class PersistentDispatcherFailoverConsumerTest {
 
         // 5. Add another consumer which has higher priority level
         Consumer consumer3 = spy(new Consumer(sub, SubType.Failover, topic.getName(), 3 /* consumer id */, 0, "Cons3"/* consumer name */,
-                50000, serverCnx, "myrole-1", Collections.emptyMap(), false /* read compacted */, InitialPosition.Latest, null));
+                50000, serverCnx, "myrole-1", Collections.emptyMap(), false /* read compacted */, InitialPosition.Latest, null, MessageId.latest));
         pdfc.addConsumer(consumer3);
         consumers = pdfc.getConsumers();
         assertEquals(3, consumers.size());
@@ -664,7 +683,7 @@ public class PersistentDispatcherFailoverConsumerTest {
     private Consumer createConsumer(int priority, int permit, boolean blocked, int id) throws Exception {
         Consumer consumer =
                 new Consumer(null, SubType.Shared, "test-topic", id, priority, ""+id, 5000,
-                        serverCnx, "appId", Collections.emptyMap(), false /* read compacted */, InitialPosition.Latest, null);
+                        serverCnx, "appId", Collections.emptyMap(), false /* read compacted */, InitialPosition.Latest, null, MessageId.latest);
         try {
             consumer.flowPermits(permit);
         } catch (Exception e) {

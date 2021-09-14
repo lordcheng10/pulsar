@@ -57,7 +57,7 @@ public class DLOutputStreamTest {
         when(writer.writeBulk(any(List.class)))
             .thenReturn(CompletableFuture.completedFuture(Collections.singletonList(DLSN.InitialDLSN))); }
 
-    @AfterMethod
+    @AfterMethod(alwaysRun = true)
     public void teardown() throws IOException {
         if (dlm != null) {
             dlm.close();
@@ -89,6 +89,19 @@ public class DLOutputStreamTest {
         DLOutputStream.openWriterAsync(dlm)
             .thenCompose(w -> w.writeAsync(new ByteArrayInputStream(data))
                 .thenCompose(DLOutputStream::closeAsync)).get();
+
+        verify(writer, times(1)).writeBulk(any(List.class));
+        verify(writer, times(1)).markEndOfStream();
+        verify(writer, times(1)).asyncClose();
+        verify(dlm, times(1)).asyncClose();
+    }
+
+    @Test
+    public void writeLongBytesArrayData() throws ExecutionException, InterruptedException {
+        byte[] data = new byte[8192 * 3 + 4096];
+        DLOutputStream.openWriterAsync(dlm)
+                .thenCompose(w -> w.writeAsync(new ByteArrayInputStream(data))
+                        .thenCompose(DLOutputStream::closeAsync)).get();
 
         verify(writer, times(1)).writeBulk(any(List.class));
         verify(writer, times(1)).markEndOfStream();

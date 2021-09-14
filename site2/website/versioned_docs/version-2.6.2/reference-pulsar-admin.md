@@ -5,6 +5,10 @@ sidebar_label: Pulsar Admin CLI
 original_id: pulsar-admin
 ---
 
+> **Important**
+>
+> This page is deprecated and not updated anymore. For the latest and complete information about `pulsar-admin`, including commands, flags, descriptions, and more, see [pulsar-admin doc](https://pulsar.apache.org/tools/pulsar-admin/).
+
 The `pulsar-admin` tool enables you to manage Pulsar installations, including clusters, brokers, namespaces, tenants, and more.
 
 Usage
@@ -863,6 +867,8 @@ Subcommands
 * `get-subscribe-rate`
 * `set-subscription-dispatch-rate`
 * `get-subscription-dispatch-rate`
+* `set-subscription-expiration-time`
+* `get-subscription-expiration-time`
 * `clear-backlog`
 * `unsubscribe`
 * `set-encryption-required`
@@ -1165,7 +1171,7 @@ $ pulsar-admin namespaces set-message-ttl tenant/namespace options
 Options
 |Flag|Description|Default|
 |----|---|---|
-|`-ttl`, `--messageTTL`|Message TTL in seconds|3600s|
+|`-ttl`, `--messageTTL`|Message TTL in seconds. When the value is set to `0`, TTL is disabled. TTL is disabled by default. |0|
 
 ### `remove-message-ttl`
 Remove the message TTL for a namespace.
@@ -1358,6 +1364,27 @@ Get subscription configured message-dispatch-rate for all topics of the namespac
 Usage
 ```bash
 $ pulsar-admin namespaces get-subscription-dispatch-rate tenant/namespace
+```
+
+### `set-subscription-expiration-time`
+Set the subscription expiration time for a namespace (in minutes).
+
+Usage
+```bash
+$ pulsar-admin namespaces set-subscription-expiration-time tenant/namespace options
+```
+
+Options
+|Flag|Description|Default|
+|----|---|---|
+|`-t`, `--time`|Subscription expiration time in minutes|0|
+
+### `get-subscription-expiration-time`
+Get the subscription expiration time for a namespace (in minutes).
+
+Usage
+```bash
+$ pulsar-admin namespaces get-subscription-expiration-time tenant/namespace
 ```
 
 ### `clear-backlog`
@@ -1944,15 +1971,15 @@ $ pulsar-admin topics list tenant/cluster/namespace
 ```
 
 ### `terminate`
-Terminate a topic (disallow further messages from being published on the topic)
+Terminate a persistent topic (disallow further messages from being published on the topic)
 
 Usage
 ```bash
-$ pulsar-admin topics terminate {persistent|non-persistent}://tenant/namespace/topic
+$ pulsar-admin topics terminate persistent://tenant/namespace/topic
 ```
 
 ### `permissions`
-Get the permissions on a topic. Retrieve the effective permissions for a desination. These permissions are defined by the permissions set at the namespace level combined (union) with any eventual specific permissions set on the topic.
+Get the permissions on a topic. Retrieve the effective permissions for a destination. These permissions are defined by the permissions set at the namespace level combined (union) with any eventual specific permissions set on the topic.
 
 Usage
 ```bash
@@ -2333,7 +2360,7 @@ Options
 
 
 ### `reset-namespace-bundle-quota`
-Reset the specifed namespace bundle's resource quota to a default value.
+Reset the specified namespace bundle's resource quota to a default value.
 
 Usage
 ```bash
@@ -2387,7 +2414,7 @@ $ pulsar-admin schemas delete persistent://tenant/namespace/topic
 
 
 ### `get`
-Retrieve the schema definition assoicated with a topic (at a given version if version is supplied).
+Retrieve the schema definition associated with a topic (at a given version if version is supplied).
 
 Usage
 ```bash
@@ -2397,7 +2424,7 @@ $ pulsar-admin schemas get persistent://tenant/namespace/topic options
 Options
 |Flag|Description|Default|
 |----|---|---|
-|`--version`|The version of the schema definition to retrive for a topic.||
+|`--version`|The version of the schema definition to retrieve for a topic.||
 
 ### `extract`
 Provide the schema definition for a topic via Java class name contained in a JAR file

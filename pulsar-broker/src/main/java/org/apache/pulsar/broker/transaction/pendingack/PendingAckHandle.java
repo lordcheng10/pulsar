@@ -28,6 +28,8 @@ import org.apache.pulsar.broker.service.BrokerServiceException.NotAllowedExcepti
 import org.apache.pulsar.broker.service.Consumer;
 import org.apache.pulsar.client.api.transaction.TxnID;
 import org.apache.pulsar.common.api.proto.CommandAck.AckType;
+import org.apache.pulsar.common.policies.data.TransactionInPendingAckStats;
+import org.apache.pulsar.common.policies.data.TransactionPendingAckStats;
 import org.apache.pulsar.transaction.common.exception.TransactionConflictException;
 
 /**
@@ -53,8 +55,8 @@ public interface PendingAckHandle {
      * @throws NotAllowedException if Use this method incorrectly eg. not use
      * PositionImpl or cumulative ack with a list of positions.
      */
-    CompletableFuture<Void> individualAcknowledgeMessage(TxnID txnID,
-                                                         List<MutablePair<PositionImpl, Integer>> positions);
+    CompletableFuture<Void> individualAcknowledgeMessage(TxnID txnID, List<MutablePair<PositionImpl,
+            Integer>> positions);
 
     /**
      * Acknowledge message(s) for an ongoing transaction.
@@ -86,18 +88,20 @@ public interface PendingAckHandle {
      * @param txnID      {@link TxnID} to identify the transaction.
      * @param properties Additional user-defined properties that can be
      *                   associated with a particular cursor position.
+     * @param lowWaterMark the low water mark of this transaction
      * @return the future of this operation.
      */
-    CompletableFuture<Void> commitTxn(TxnID txnID, Map<String, Long> properties);
+    CompletableFuture<Void> commitTxn(TxnID txnID, Map<String, Long> properties, long lowWaterMark);
 
     /**
      * Abort a transaction.
      *
      * @param txnId  {@link TxnID} to identify the transaction.
      * @param consumer {@link Consumer} which aborting transaction.
+     * @param lowWaterMark the low water mark of this transaction
      * @return the future of this operation.
      */
-    CompletableFuture<Void> abortTxn(TxnID txnId, Consumer consumer);
+    CompletableFuture<Void> abortTxn(TxnID txnId, Consumer consumer, long lowWaterMark);
 
     /**
      * Sync the position ack set, in order to clean up the cache of this position for pending ack handle.
@@ -119,4 +123,34 @@ public interface PendingAckHandle {
      * @param position {@link Position} which position need to clear
      */
     void clearIndividualPosition(Position position);
+
+    /**
+     * Pending ack recover whether ready future.
+     *
+     * @return the future of result.
+     */
+    CompletableFuture<PendingAckHandle> pendingAckHandleFuture();
+
+    /**
+     * Get transaction in pending ack stats.
+     *
+     * @param txnID the txnID
+     * @return the stats of this transaction in pending ack.
+     */
+    TransactionInPendingAckStats getTransactionInPendingAckStats(TxnID txnID);
+
+    /**
+     * Get pending ack handle stats.
+     *
+     * @return the stats of this pending ack handle.
+     */
+    TransactionPendingAckStats getStats();
+
+    /**
+     * Close the pending ack handle.
+     *
+     * @return the future of this operation.
+     */
+    CompletableFuture<Void> close();
+
 }

@@ -58,11 +58,23 @@ http://$BOOKIE_ADDRESS:8000/metrics
 
 The default port for bookie is `8000`. You can change the port by configuring `prometheusStatsHttpPort` in the `conf/bookkeeper.conf` file.
 
+### Managed cursor acknowledgment state
+The acknowledgment state is persistent to the ledger first. When the acknowledgment state fails to be persistent to the ledger, they are persistent to ZooKeeper. To track the stats of acknowledgement, you can configure the metrics for the managed cursor. 
+
+```
+brk_ml_cursor_persistLedgerSucceed(namespace="", ledger_name="", cursor_name:"")
+brk_ml_cursor_persistLedgerErrors(namespace="", ledger_name="", cursor_name:"")
+brk_ml_cursor_persistZookeeperSucceed(namespace="", ledger_name="", cursor_name:"")
+brk_ml_cursor_persistZookeeperErrors(namespace="", ledger_name="", cursor_name:"")
+```
+
+Those metrics are added in the Prometheus interface, you can monitor and check the metrics stats in the Grafana.
+
 ## Configure Prometheus
 
 You can use Prometheus to collect all the metrics exposed for Pulsar components and set up [Grafana](https://grafana.com/) dashboards to display the metrics and monitor your Pulsar cluster. For details, refer to [Prometheus guide](https://prometheus.io/docs/introduction/getting_started/).
 
-When you run Pulsar on bare metal, you can provide the list of nodes to be probed. When you deploy Pulsar in a Kubernetes cluster, the monitoring is setup automatically. For details, refer to [Kubernetes instructions](kubernetes-helm.md). 
+When you run Pulsar on bare metal, you can provide the list of nodes to be probed. When you deploy Pulsar in a Kubernetes cluster, the monitoring is setup automatically. For details, refer to [Kubernetes instructions](helm-deploy.md). 
 
 ## Dashboards
 
@@ -92,4 +104,4 @@ The following are some Grafana dashboards examples:
 - [apache-pulsar-grafana-dashboard](https://github.com/streamnative/apache-pulsar-grafana-dashboard): a collection of Grafana dashboard templates for different Pulsar components running on both Kubernetes and on-premise machines.
 
  ## Alerting rules
- You can set alerting rules according to your Pulsar environment. To configure alerting rules for Apache Pulsar, you can refer to [StreamNative platform](https://streamnative.io/docs/latest/configure/control-center/alertmanager) examples or [Alert Manager](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/) alerting rules.
+ You can set alerting rules according to your Pulsar environment. To configure alerting rules for Apache Pulsar, refer to [alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/).

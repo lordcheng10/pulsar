@@ -35,7 +35,7 @@ import org.apache.pulsar.common.api.proto.KeySharedMeta;
 import org.apache.pulsar.common.policies.data.BacklogQuota;
 import org.apache.pulsar.common.policies.data.PersistentTopicInternalStats;
 import org.apache.pulsar.common.policies.data.Policies;
-import org.apache.pulsar.common.policies.data.TopicStats;
+import org.apache.pulsar.common.policies.data.stats.TopicStatsImpl;
 import org.apache.pulsar.common.protocol.schema.SchemaData;
 import org.apache.pulsar.common.protocol.schema.SchemaVersion;
 import org.apache.pulsar.common.util.collections.ConcurrentOpenHashMap;
@@ -76,6 +76,9 @@ public interface Topic {
 
         void completed(Exception e, long ledgerId, long entryId);
 
+        default void setMetadataFromEntryData(ByteBuf entryData) {
+        }
+
         default long getHighestSequenceId() {
             return  -1L;
         }
@@ -92,6 +95,8 @@ public interface Topic {
             return  1L;
         }
     }
+
+    CompletableFuture<Void> initialize();
 
     void publishMessage(ByteBuf headersAndPayload, PublishContext callback);
 
@@ -165,6 +170,10 @@ public interface Topic {
 
     boolean isTopicPublishRateExceeded(int msgSize, int numMessages);
 
+    boolean isResourceGroupRateLimitingEnabled();
+
+    boolean isResourceGroupPublishRateExceeded(int msgSize, int numMessages);
+
     boolean isBrokerPublishRateExceeded();
 
     void disableCnxAutoRead();
@@ -173,7 +182,7 @@ public interface Topic {
 
     CompletableFuture<Void> onPoliciesUpdate(Policies data);
 
-    boolean isBacklogQuotaExceeded(String producerName);
+    boolean isBacklogQuotaExceeded(String producerName, BacklogQuota.BacklogQuotaType backlogQuotaType);
 
     boolean isEncryptionRequired();
 
@@ -181,7 +190,7 @@ public interface Topic {
 
     boolean isReplicated();
 
-    BacklogQuota getBacklogQuota();
+    BacklogQuota getBacklogQuota(BacklogQuota.BacklogQuotaType backlogQuotaType);
 
     void updateRates(NamespaceStats nsStats, NamespaceBundleStats currentBundleStats,
             StatsOutputStream topicStatsStream, ClusterReplicationMetrics clusterReplicationMetrics,
@@ -191,7 +200,7 @@ public interface Topic {
 
     ConcurrentOpenHashMap<String, ? extends Replicator> getReplicators();
 
-    TopicStats getStats(boolean getPreciseBacklog);
+    TopicStatsImpl getStats(boolean getPreciseBacklog, boolean subscriptionBacklogSize);
 
     CompletableFuture<PersistentTopicInternalStats> getInternalStats(boolean includeLedgerMetadata);
 
@@ -257,5 +266,12 @@ public interface Topic {
      * @return
      */
     CompletableFuture<Void> endTxn(TxnID txnID, int txnAction, long lowWaterMark);
+
+    /**
+     * Truncate a topic.
+     * The truncate operation will move all cursors to the end of the topic and delete all inactive ledgers.
+     * @return
+     */
+    CompletableFuture<Void> truncate();
 
 }

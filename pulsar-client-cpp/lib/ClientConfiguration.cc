@@ -31,6 +31,13 @@ ClientConfiguration& ClientConfiguration::operator=(const ClientConfiguration& x
     return *this;
 }
 
+ClientConfiguration& ClientConfiguration::setMemoryLimit(uint64_t memoryLimitBytes) {
+    impl_->memoryLimit = memoryLimitBytes;
+    return *this;
+}
+
+uint64_t ClientConfiguration::getMemoryLimit() const { return impl_->memoryLimit; }
+
 ClientConfiguration& ClientConfiguration::setAuth(const AuthenticationPtr& authentication) {
     impl_->authenticationPtr = authentication;
     return *this;
@@ -80,7 +87,9 @@ ClientConfiguration& ClientConfiguration::setTlsTrustCertsFilePath(const std::st
     return *this;
 }
 
-std::string ClientConfiguration::getTlsTrustCertsFilePath() const { return impl_->tlsTrustCertsFilePath; }
+const std::string& ClientConfiguration::getTlsTrustCertsFilePath() const {
+    return impl_->tlsTrustCertsFilePath;
+}
 
 ClientConfiguration& ClientConfiguration::setTlsAllowInsecureConnection(bool allowInsecure) {
     impl_->tlsAllowInsecureConnection = allowInsecure;
@@ -133,4 +142,12 @@ ClientConfiguration& ClientConfiguration::setListenerName(const std::string& lis
 }
 
 const std::string& ClientConfiguration::getListenerName() const { return impl_->listenerName; }
+
+ClientConfiguration& ClientConfiguration::setConnectionTimeout(int timeoutMs) {
+    impl_->connectionTimeoutMs = timeoutMs;
+    return *this;
+}
+
+int ClientConfiguration::getConnectionTimeout() const { return impl_->connectionTimeoutMs; }
+
 }  // namespace pulsar

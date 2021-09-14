@@ -23,11 +23,13 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import org.apache.bookkeeper.mledger.Position;
+import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.admin.AdminResource;
 import org.apache.pulsar.broker.service.BrokerServiceException.NamingException;
 import org.apache.pulsar.broker.service.BrokerServiceException.TopicBusyException;
 import org.apache.pulsar.client.api.MessageRoutingMode;
 import org.apache.pulsar.client.api.ProducerBuilder;
+import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.impl.Backoff;
 import org.apache.pulsar.client.impl.ProducerImpl;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
@@ -41,6 +43,7 @@ public abstract class AbstractReplicator {
     protected final String topicName;
     protected final String localCluster;
     protected final String remoteCluster;
+    protected final PulsarClientImpl replicationClient;
     protected final PulsarClientImpl client;
 
     protected volatile ProducerImpl producer;
@@ -63,18 +66,19 @@ public abstract class AbstractReplicator {
     }
 
     public AbstractReplicator(String topicName, String replicatorPrefix, String localCluster, String remoteCluster,
-                              BrokerService brokerService) throws NamingException {
+                              BrokerService brokerService) throws NamingException, PulsarServerException {
         validatePartitionedTopic(topicName, brokerService);
         this.brokerService = brokerService;
         this.topicName = topicName;
         this.replicatorPrefix = replicatorPrefix;
         this.localCluster = localCluster.intern();
         this.remoteCluster = remoteCluster.intern();
-        this.client = (PulsarClientImpl) brokerService.getReplicationClient(remoteCluster);
+        this.replicationClient = (PulsarClientImpl) brokerService.getReplicationClient(remoteCluster);
+        this.client = (PulsarClientImpl) brokerService.pulsar().getClient();
         this.producer = null;
         this.producerQueueSize = brokerService.pulsar().getConfiguration().getReplicationProducerQueueSize();
 
-        this.producerBuilder = client.newProducer() //
+        this.producerBuilder = replicationClient.newProducer(Schema.AUTO_PRODUCE_BYTES()) //
                 .topic(topicName)
                 .messageRoutingMode(MessageRoutingMode.SinglePartition)
                 .enableBatching(false)
@@ -121,37 +125,29 @@ public abstract class AbstractReplicator {
                 log.info("[{}][{} -> {}] Replicator already being started. Replicator state: {}", topicName,
                         localCluster, remoteCluster, state);
             }
+
             return;
         }
 
         log.info("[{}][{} -> {}] Starting replicator", topicName, localCluster, remoteCluster);
-        openCursorAsync().thenAccept(v ->
-            producerBuilder.createAsync()
-                .thenAccept(this::readEntries)
-                .exceptionally(ex -> {
-                    retryCreateProducer(ex);
-                    return null;
-        })).exceptionally(ex -> {
-            retryCreateProducer(ex);
+        producerBuilder.createAsync().thenAccept(producer -> {
+            readEntries(producer);
+        }).exceptionally(ex -> {
+            if (STATE_UPDATER.compareAndSet(this, State.Starting, State.Stopped)) {
+                long waitTimeMs = backOff.next();
+                log.warn("[{}][{} -> {}] Failed to create remote producer ({}), retrying in {} s", topicName,
+                        localCluster, remoteCluster, ex.getMessage(), waitTimeMs / 1000.0);
+
+                // BackOff before retrying
+                brokerService.executor().schedule(this::startProducer, waitTimeMs, TimeUnit.MILLISECONDS);
+            } else {
+                log.warn("[{}][{} -> {}] Failed to create remote producer. Replicator state: {}", topicName,
+                        localCluster, remoteCluster, STATE_UPDATER.get(this), ex);
+            }
             return null;
         });
+
     }
-
-    private void retryCreateProducer(Throwable ex) {
-        if (STATE_UPDATER.compareAndSet(this, State.Starting, State.Stopped)) {
-            long waitTimeMs = backOff.next();
-            log.warn("[{}][{} -> {}] Failed to create remote producer ({}), retrying in {} s", topicName,
-                localCluster, remoteCluster, ex.getMessage(), waitTimeMs / 1000.0);
-
-            // BackOff before retrying
-            brokerService.executor().schedule(this::startProducer, waitTimeMs, TimeUnit.MILLISECONDS);
-        } else {
-            log.warn("[{}][{} -> {}] Failed to create remote producer. Replicator state: {}", topicName,
-                localCluster, remoteCluster, STATE_UPDATER.get(this), ex);
-        }
-    }
-
-    protected abstract CompletableFuture<Void> openCursorAsync();
 
     protected synchronized CompletableFuture<Void> closeProducerAsync() {
         if (producer == null) {

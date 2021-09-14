@@ -138,6 +138,12 @@ void ReaderImpl::seekAsync(uint64_t timestamp, ResultCallback callback) {
     consumer_->seekAsync(timestamp, callback);
 }
 
+void ReaderImpl::getLastMessageIdAsync(GetLastMessageIdCallback callback) {
+    consumer_->getLastMessageIdAsync(callback);
+}
+
 ReaderImplWeakPtr ReaderImpl::getReaderImplWeakPtr() { return readerImplWeakPtr_; }
+
+bool ReaderImpl::isConnected() const { return consumer_->isConnected(); }
 
 }  // namespace pulsar

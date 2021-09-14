@@ -28,13 +28,14 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
+import org.apache.pulsar.client.util.ExecutorProvider;
 import org.apache.pulsar.common.api.proto.CommandGetTopicsOfNamespace.Mode;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.TopicName;
@@ -52,10 +53,10 @@ public class PatternMultiTopicsConsumerImpl<T> extends MultiTopicsConsumerImpl<T
     public PatternMultiTopicsConsumerImpl(Pattern topicsPattern,
                                           PulsarClientImpl client,
                                           ConsumerConfigurationData<T> conf,
-                                          ExecutorService listenerExecutor,
+                                          ExecutorProvider executorProvider,
                                           CompletableFuture<Consumer<T>> subscribeFuture,
                                           Schema<T> schema, Mode subscriptionMode, ConsumerInterceptors<T> interceptors) {
-        super(client, conf, listenerExecutor, subscribeFuture, schema, interceptors,
+        super(client, conf, executorProvider, subscribeFuture, schema, interceptors,
                 false /* createTopicIfDoesNotExist */);
         this.topicsPattern = topicsPattern;
         this.subscriptionMode = subscriptionMode;
@@ -91,7 +92,14 @@ public class PatternMultiTopicsConsumerImpl<T> extends MultiTopicsConsumerImpl<T
             }
 
             List<String> newTopics = PulsarClientImpl.topicsPatternFilter(topics, topicsPattern);
-            List<String> oldTopics = PatternMultiTopicsConsumerImpl.this.getTopics();
+            List<String> oldTopics = Lists.newArrayList();
+            oldTopics.addAll(getPartitionedTopics());
+            getPartitions().forEach(p -> {
+                TopicName t = TopicName.get(p);
+                if (!t.isPartitioned() || !oldTopics.contains(t.getPartitionedTopicName())) {
+                    oldTopics.add(p);
+                }
+            });
 
             futures.add(topicsChangeListener.onTopicsAdded(topicsListsMinus(newTopics, oldTopics)));
             futures.add(topicsChangeListener.onTopicsRemoved(topicsListsMinus(oldTopics, newTopics)));
@@ -130,7 +138,7 @@ public class PatternMultiTopicsConsumerImpl<T> extends MultiTopicsConsumerImpl<T
                 return removeFuture;
             }
 
-            List<CompletableFuture<Void>> futures = Lists.newArrayListWithExpectedSize(topics.size());
+            List<CompletableFuture<Void>> futures = Lists.newArrayListWithExpectedSize(partitionedTopics.size());
             removedTopics.stream().forEach(topic -> futures.add(removeConsumerAsync(topic)));
             FutureUtil.waitForAll(futures)
                 .thenAccept(finalFuture -> removeFuture.complete(null))
@@ -151,7 +159,7 @@ public class PatternMultiTopicsConsumerImpl<T> extends MultiTopicsConsumerImpl<T
                 return addFuture;
             }
 
-            List<CompletableFuture<Void>> futures = Lists.newArrayListWithExpectedSize(topics.size());
+            List<CompletableFuture<Void>> futures = Lists.newArrayListWithExpectedSize(partitionedTopics.size());
             addedTopics.stream().forEach(topic -> futures.add(subscribeAsync(topic, false /* createTopicIfDoesNotExist */)));
             FutureUtil.waitForAll(futures)
                 .thenAccept(finalFuture -> addFuture.complete(null))

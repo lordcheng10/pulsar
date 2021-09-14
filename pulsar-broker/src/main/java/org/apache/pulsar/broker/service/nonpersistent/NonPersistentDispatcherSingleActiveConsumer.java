@@ -18,13 +18,9 @@
  */
 package org.apache.pulsar.broker.service.nonpersistent;
 
-import static org.apache.pulsar.broker.cache.ConfigurationCacheService.POLICIES;
 import java.util.List;
-import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.mledger.Entry;
-import org.apache.pulsar.broker.ServiceConfiguration;
-import org.apache.pulsar.broker.admin.AdminResource;
 import org.apache.pulsar.broker.service.AbstractDispatcherSingleActiveConsumer;
 import org.apache.pulsar.broker.service.Consumer;
 import org.apache.pulsar.broker.service.EntryBatchSizes;
@@ -33,9 +29,6 @@ import org.apache.pulsar.broker.service.RedeliveryTrackerDisabled;
 import org.apache.pulsar.broker.service.SendMessageInfo;
 import org.apache.pulsar.broker.service.Subscription;
 import org.apache.pulsar.common.api.proto.CommandSubscribe.SubType;
-import org.apache.pulsar.common.naming.TopicName;
-import org.apache.pulsar.common.policies.data.Policies;
-import org.apache.pulsar.common.policies.data.TopicPolicies;
 import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.common.stats.Rate;
 
@@ -46,16 +39,15 @@ public final class NonPersistentDispatcherSingleActiveConsumer extends AbstractD
     private final NonPersistentTopic topic;
     private final Rate msgDrop;
     private final Subscription subscription;
-    private final ServiceConfiguration serviceConfig;
     private final RedeliveryTracker redeliveryTracker;
 
     public NonPersistentDispatcherSingleActiveConsumer(SubType subscriptionType, int partitionIndex,
                                                        NonPersistentTopic topic, Subscription subscription) {
-        super(subscriptionType, partitionIndex, topic.getName(), subscription);
+        super(subscriptionType, partitionIndex, topic.getName(), subscription,
+                topic.getBrokerService().pulsar().getConfiguration());
         this.topic = topic;
         this.subscription = subscription;
         this.msgDrop = new Rate();
-        this.serviceConfig = topic.getBrokerService().pulsar().getConfiguration();
         this.redeliveryTracker = RedeliveryTrackerDisabled.REDELIVERY_TRACKER_DISABLED;
     }
 
@@ -79,37 +71,9 @@ public final class NonPersistentDispatcherSingleActiveConsumer extends AbstractD
         }
     }
 
+    @Override
     protected boolean isConsumersExceededOnSubscription() {
-        Policies policies = null;
-        Integer maxConsumersPerSubscription = null;
-        try {
-            maxConsumersPerSubscription = Optional.ofNullable(topic.getBrokerService()
-                    .getTopicPolicies(TopicName.get(topicName)))
-                    .map(TopicPolicies::getMaxConsumersPerSubscription)
-                    .orElse(null);
-            if (maxConsumersPerSubscription == null) {
-                // Use getDataIfPresent from zk cache to make the call non-blocking and prevent deadlocks in addConsumer
-                policies = topic.getBrokerService().pulsar().getConfigurationCache().policiesCache()
-                        .getDataIfPresent(AdminResource.path(POLICIES, TopicName.get(topic.getName()).getNamespace()));
-
-                if (policies == null) {
-                    policies = new Policies();
-                }
-            }
-        } catch (Exception e) {
-            policies = new Policies();
-        }
-
-        if (maxConsumersPerSubscription == null) {
-            maxConsumersPerSubscription = policies.max_consumers_per_subscription > 0
-                    ? policies.max_consumers_per_subscription :
-                    serviceConfig.getMaxConsumersPerSubscription();
-        }
-
-        if (maxConsumersPerSubscription > 0 && maxConsumersPerSubscription <= consumers.size()) {
-            return true;
-        }
-        return false;
+        return isConsumersExceededOnSubscription(topic.getBrokerService(), topic.getName(), consumers.size());
     }
 
     @Override

@@ -25,6 +25,9 @@ import com.google.common.collect.Multimaps;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import io.netty.util.concurrent.DefaultThreadFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -34,9 +37,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiPredicate;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.zookeeper.AsyncCallback.Children2Callback;
 import org.apache.zookeeper.AsyncCallback.ChildrenCallback;
@@ -46,11 +53,13 @@ import org.apache.zookeeper.AsyncCallback.StringCallback;
 import org.apache.zookeeper.AsyncCallback.VoidCallback;
 import org.apache.zookeeper.Watcher.Event.EventType;
 import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.client.HostProvider;
 import org.apache.zookeeper.data.ACL;
 import org.apache.zookeeper.data.Stat;
 import org.objenesis.Objenesis;
 import org.objenesis.ObjenesisStd;
 import org.objenesis.instantiator.ObjectInstantiator;
+import org.powermock.reflect.Whitebox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,7 +76,9 @@ public class MockZooKeeper extends ZooKeeper {
     private int readOpDelayMs;
 
     private ReentrantLock mutex;
-    
+
+    private AtomicLong sequentialIdGenerator;
+
     //see details of Objenesis caching - http://objenesis.org/details.html
     //see supported jvms - https://github.com/easymock/objenesis/blob/master/SupportedJVMs.md
     private static final Objenesis objenesis = new ObjenesisStd();
@@ -85,6 +96,16 @@ public class MockZooKeeper extends ZooKeeper {
             this.predicate = predicate;
         }
     }
+
+    @Data
+    @AllArgsConstructor
+    private static class PersistentWatcher {
+        final String path;
+        final Watcher watcher;
+        final AddWatchMode mode;
+    }
+
+    private List<PersistentWatcher> persistentWatchers;
 
     public static MockZooKeeper newInstance() {
         return newInstance(null);
@@ -106,6 +127,7 @@ public class MockZooKeeper extends ZooKeeper {
             zk.init(executor);
             zk.readOpDelayMs = readOpDelayMs;
             zk.mutex = new ReentrantLock();
+            zk.sequentialIdGenerator =  new AtomicLong();
             return zk;
         } catch (RuntimeException e) {
             throw e;
@@ -121,6 +143,9 @@ public class MockZooKeeper extends ZooKeeper {
             zk.init(executor);
             zk.readOpDelayMs = readOpDelayMs;
             zk.mutex = new ReentrantLock();
+            ObjectInstantiator<ClientCnxn> clientCnxnObjectInstantiator = objenesis.getInstantiatorOf(ClientCnxn.class);
+            Whitebox.setInternalState(zk, "cnxn", clientCnxnObjectInstantiator.newInstance());
+            zk.sequentialIdGenerator =  new AtomicLong();
             return zk;
         } catch (RuntimeException e) {
             throw e;
@@ -141,6 +166,12 @@ public class MockZooKeeper extends ZooKeeper {
         stopped = false;
         alwaysFail = new AtomicReference<>(KeeperException.Code.OK);
         failures = new CopyOnWriteArrayList<>();
+        persistentWatchers = new ArrayList<>();
+    }
+
+    @Override
+    public int getSessionTimeout() {
+        return 30_000;
     }
 
     private MockZooKeeper(String quorum) throws Exception {
@@ -208,6 +239,7 @@ public class MockZooKeeper extends ZooKeeper {
 
         final String finalPath = path;
         executor.execute(() -> {
+            triggerPersistentWatches(finalPath, parent, EventType.NodeCreated);
 
             toNotifyCreate.forEach(
                     watcher -> watcher.process(
@@ -246,6 +278,13 @@ public class MockZooKeeper extends ZooKeeper {
                 toNotifyParent.addAll(watchers.get(parent));
             }
 
+            final String name;
+            if (createMode != null && createMode.isSequential()) {
+                name = path + Long.toString(sequentialIdGenerator.getAndIncrement());
+            } else {
+                name = path;
+            }
+
             Optional<KeeperException.Code> failure = programmedFailure(Op.CREATE, path);
             if (failure.isPresent()) {
                 mutex.unlock();
@@ -258,18 +297,22 @@ public class MockZooKeeper extends ZooKeeper {
                 cb.processResult(KeeperException.Code.NODEEXISTS.intValue(), path, ctx, null);
             } else if (!parent.isEmpty() && !tree.containsKey(parent)) {
                 mutex.unlock();
+                toNotifyParent.forEach(watcher -> watcher
+                        .process(new WatchedEvent(EventType.NodeChildrenChanged, KeeperState.SyncConnected, parent)));
                 cb.processResult(KeeperException.Code.NONODE.intValue(), path, ctx, null);
             } else {
-                tree.put(path, Pair.of(data, 0));
-                watchers.removeAll(path);
+                tree.put(name, Pair.of(data, 0));
+                watchers.removeAll(name);
                 mutex.unlock();
-                cb.processResult(0, path, ctx, null);
+                cb.processResult(0, path, ctx, name);
+
+                triggerPersistentWatches(path, parent, EventType.NodeCreated);
 
                 toNotifyCreate.forEach(
                         watcher -> watcher.process(
                                 new WatchedEvent(EventType.NodeCreated,
                                                  KeeperState.SyncConnected,
-                                                 path)));
+                                                 name)));
                 toNotifyParent.forEach(
                         watcher -> watcher.process(
                                 new WatchedEvent(EventType.NodeChildrenChanged,
@@ -684,6 +727,8 @@ public class MockZooKeeper extends ZooKeeper {
         }
 
         executor.execute(() -> {
+            triggerPersistentWatches(path, null, EventType.NodeDataChanged);
+
             toNotify.forEach(watcher -> watcher
                     .process(new WatchedEvent(EventType.NodeDataChanged, KeeperState.SyncConnected, path)));
         });
@@ -747,6 +792,8 @@ public class MockZooKeeper extends ZooKeeper {
             for (Watcher watcher : toNotify) {
                 watcher.process(new WatchedEvent(EventType.NodeDataChanged, KeeperState.SyncConnected, path));
             }
+
+            triggerPersistentWatches(path, null, EventType.NodeDataChanged);
         });
     }
 
@@ -802,6 +849,8 @@ public class MockZooKeeper extends ZooKeeper {
             for (Watcher watcher2 : toNotifyParent) {
                 watcher2.process(new WatchedEvent(EventType.NodeChildrenChanged, KeeperState.SyncConnected, parent));
             }
+
+            triggerPersistentWatches(path, parent, EventType.NodeDeleted);
         });
     }
 
@@ -851,6 +900,7 @@ public class MockZooKeeper extends ZooKeeper {
                         .process(new WatchedEvent(EventType.NodeDeleted, KeeperState.SyncConnected, path)));
                 toNotifyParent.forEach(watcher -> watcher
                         .process(new WatchedEvent(EventType.NodeChildrenChanged, KeeperState.SyncConnected, parent)));
+                triggerPersistentWatches(path, parent, EventType.NodeDeleted);
             }
         };
 
@@ -861,6 +911,60 @@ public class MockZooKeeper extends ZooKeeper {
             return;
         }
 
+    }
+
+    @Override
+    public void multi(Iterable<org.apache.zookeeper.Op> ops, AsyncCallback.MultiCallback cb, Object ctx) {
+        try {
+            List<OpResult> res = multi(ops);
+            cb.processResult(KeeperException.Code.OK.intValue(), (String)null, ctx, res);
+        } catch (Exception e) {
+            cb.processResult(KeeperException.Code.APIERROR.intValue(), (String)null, ctx, null);
+        }
+    }
+
+    @Override
+    public List<OpResult> multi(Iterable<org.apache.zookeeper.Op> ops) throws InterruptedException, KeeperException {
+        List<OpResult> res = new ArrayList<>();
+        for (org.apache.zookeeper.Op op : ops) {
+            switch (op.getType()) {
+                case ZooDefs.OpCode.create:
+                    this.create(op.getPath(), ((org.apache.zookeeper.Op.Create)op).data, null, null);
+                    res.add(new OpResult.CreateResult(op.getPath()));
+                    break;
+                case ZooDefs.OpCode.delete:
+                    this.delete(op.getPath(), -1);
+                    res.add(new OpResult.DeleteResult());
+                    break;
+                case ZooDefs.OpCode.setData:
+                    this.create(op.getPath(), ((org.apache.zookeeper.Op.Create)op).data, null, null);
+                    res.add(new OpResult.SetDataResult(null));
+                    break;
+                default:
+            }
+        }
+        return res;
+    }
+
+    @Override
+    public synchronized void addWatch(String basePath, Watcher watcher, AddWatchMode mode) {
+        persistentWatchers.add(new PersistentWatcher(basePath, watcher, mode));
+    }
+
+    @Override
+    public void addWatch(String basePath, Watcher watcher, AddWatchMode mode, VoidCallback cb, Object ctx) {
+        if (stopped) {
+            cb.processResult(KeeperException.Code.CONNECTIONLOSS.intValue(), basePath, ctx);
+            return;
+        }
+
+        executor.execute(() -> {
+            synchronized (MockZooKeeper.this) {
+                persistentWatchers.add(new PersistentWatcher(basePath, watcher, mode));
+            }
+
+            cb.processResult(KeeperException.Code.OK.intValue(), basePath, ctx);
+        });
     }
 
     @Override
@@ -943,6 +1047,26 @@ public class MockZooKeeper extends ZooKeeper {
                 // Ok
             }
         }
+    }
+
+    private void triggerPersistentWatches(String path, String parent, EventType eventType) {
+        persistentWatchers.forEach(w -> {
+            if (w.mode == AddWatchMode.PERSISTENT_RECURSIVE) {
+                if (path.startsWith(w.getPath())) {
+                    w.watcher.process(new WatchedEvent(eventType, KeeperState.SyncConnected, path));
+                }
+            } else if (w.mode == AddWatchMode.PERSISTENT) {
+                if (w.getPath().equals(path)) {
+                    w.watcher.process(new WatchedEvent(eventType, KeeperState.SyncConnected, path));
+                }
+
+                if (eventType == EventType.NodeCreated || eventType == EventType.NodeDeleted) {
+                    // Also notify parent
+                    w.watcher.process(
+                            new WatchedEvent(EventType.NodeChildrenChanged, KeeperState.SyncConnected, parent));
+                }
+            }
+        });
     }
 
     private static final Logger log = LoggerFactory.getLogger(MockZooKeeper.class);

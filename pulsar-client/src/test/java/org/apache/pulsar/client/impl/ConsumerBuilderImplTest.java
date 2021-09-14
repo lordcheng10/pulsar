@@ -18,7 +18,12 @@
  */
 package org.apache.pulsar.client.impl;
 
-import org.apache.pulsar.client.api.*;
+import org.apache.pulsar.client.api.BatchReceivePolicy;
+import org.apache.pulsar.client.api.Consumer;
+import org.apache.pulsar.client.api.PulsarClientException;
+import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.client.api.SubscriptionInitialPosition;
+import org.apache.pulsar.client.api.SubscriptionMode;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
@@ -119,6 +124,29 @@ public class ConsumerBuilderImplTest {
         consumerBuilderImpl.topic(TOPIC_NAME)
                 .subscriptionName("subscriptionName")
                 .cryptoKeyReader(null);
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testConsumerBuilderImplWhenDefaultCryptoKeyReaderIsNullString() {
+        consumerBuilderImpl.topic(TOPIC_NAME).subscriptionName("subscriptionName")
+                .defaultCryptoKeyReader((String) null);
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testConsumerBuilderImplWhenDefaultCryptoKeyReaderIsEmptyString() {
+        consumerBuilderImpl.topic(TOPIC_NAME).subscriptionName("subscriptionName").defaultCryptoKeyReader("");
+    }
+
+    @Test(expectedExceptions = NullPointerException.class)
+    public void testConsumerBuilderImplWhenDefaultCryptoKeyReaderIsNullMap() {
+        consumerBuilderImpl.topic(TOPIC_NAME).subscriptionName("subscriptionName")
+                .defaultCryptoKeyReader((Map<String, String>) null);
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testConsumerBuilderImplWhenDefaultCryptoKeyReaderIsEmptyMap() {
+        consumerBuilderImpl.topic(TOPIC_NAME).subscriptionName("subscriptionName")
+                .defaultCryptoKeyReader(new HashMap<String, String>());
     }
 
     @Test(expectedExceptions = NullPointerException.class)

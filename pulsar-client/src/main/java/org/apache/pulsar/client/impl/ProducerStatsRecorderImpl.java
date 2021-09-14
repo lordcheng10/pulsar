@@ -39,10 +39,10 @@ import io.netty.util.TimerTask;
 public class ProducerStatsRecorderImpl implements ProducerStatsRecorder {
 
     private static final long serialVersionUID = 1L;
-    private TimerTask stat;
-    private Timeout statTimeout;
-    private ProducerImpl<?> producer;
-    private PulsarClientImpl pulsarClient;
+    private transient TimerTask stat;
+    private transient Timeout statTimeout;
+    private transient ProducerImpl<?> producer;
+    private transient PulsarClientImpl pulsarClient;
     private long oldTime;
     private long statsIntervalSeconds;
     private final LongAdder numMsgsSent;
@@ -55,7 +55,7 @@ public class ProducerStatsRecorderImpl implements ProducerStatsRecorder {
     private final LongAdder totalAcksReceived;
     private static final DecimalFormat DEC = new DecimalFormat("0.000");
     private static final DecimalFormat THROUGHPUT_FORMAT = new DecimalFormat("0.00");
-    private final DoublesSketch ds;
+    private transient final DoublesSketch ds;
 
     private volatile double sendMsgsRate;
     private volatile double sendBytesRate;
@@ -95,7 +95,7 @@ public class ProducerStatsRecorderImpl implements ProducerStatsRecorder {
     private void init(ProducerConfigurationData conf) {
         ObjectMapper m = new ObjectMapper();
         m.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
-        ObjectWriter w = m.writerWithDefaultPrettyPrinter();
+        ObjectWriter w = m.writer();
 
         try {
             log.info("Starting Pulsar producer perf with config: {}", w.writeValueAsString(conf));

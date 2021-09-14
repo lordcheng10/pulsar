@@ -46,7 +46,7 @@ public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
     private static final long serialVersionUID = 1L;
     private TimerTask stat;
     private Timeout statTimeout;
-    private Consumer<?> consumer;
+    private final Consumer<?> consumer;
     private PulsarClientImpl pulsarClient;
     private long oldTime;
     private long statsIntervalSeconds;
@@ -111,7 +111,7 @@ public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
     private void init(ConsumerConfigurationData<?> conf) {
         ObjectMapper m = new ObjectMapper();
         m.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
-        ObjectWriter w = m.writerWithDefaultPrettyPrinter();
+        ObjectWriter w = m.writer();
 
         try {
             log.info("Starting Pulsar consumer status recorder with config: {}", w.writeValueAsString(conf));
@@ -175,7 +175,7 @@ public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
     public void updateNumMsgsReceived(Message<?> message) {
         if (message != null) {
             numMsgsReceived.increment();
-            numBytesReceived.add(message.getData() == null ? 0 : message.getData().length);
+            numBytesReceived.add(message.size());
         }
     }
 

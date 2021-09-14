@@ -23,9 +23,9 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import com.beust.jcommander.ParameterException;
+import com.beust.jcommander.Parameters;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
-import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.RateLimiter;
 
 import io.netty.buffer.ByteBuf;
@@ -34,7 +34,9 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -45,6 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
+import lombok.Cleanup;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.Recorder;
 import org.apache.bookkeeper.client.api.DigestType;
@@ -60,6 +63,9 @@ import org.apache.bookkeeper.mledger.Position;
 import org.apache.bookkeeper.mledger.impl.ManagedLedgerFactoryImpl;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.pulsar.common.allocator.PulsarByteBufAllocator;
+import org.apache.pulsar.metadata.api.MetadataStore;
+import org.apache.pulsar.metadata.api.MetadataStoreConfig;
+import org.apache.pulsar.metadata.api.MetadataStoreFactory;
 import org.apache.pulsar.testclient.utils.PaddingDecimalFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,6 +81,7 @@ public class ManagedLedgerWriter {
     private static Recorder recorder = new Recorder(TimeUnit.SECONDS.toMillis(120000), 5);
     private static Recorder cumulativeRecorder = new Recorder(TimeUnit.SECONDS.toMillis(120000), 5);
 
+    @Parameters(commandDescription = "Write directly on managed-ledgers")
     static class Arguments {
 
         @Parameter(names = { "-h", "--help" }, description = "Help message", help = true)
@@ -135,17 +142,16 @@ public class ManagedLedgerWriter {
         } catch (ParameterException e) {
             System.out.println(e.getMessage());
             jc.usage();
-            System.exit(-1);
+            PerfClientUtils.exit(-1);
         }
 
         if (arguments.help) {
             jc.usage();
-            System.exit(-1);
+            PerfClientUtils.exit(-1);
         }
 
-        arguments.testTime = TimeUnit.SECONDS.toMillis(arguments.testTime);
-
         // Dump config variables
+        PerfClientUtils.printJVMInformation(log);
         ObjectMapper m = new ObjectMapper();
         ObjectWriter w = m.writerWithDefaultPrettyPrinter();
         log.info("Starting Pulsar managed-ledger perf writer with config: {}", w.writeValueAsString(arguments));
@@ -167,7 +173,11 @@ public class ManagedLedgerWriter {
 
         ManagedLedgerFactoryConfig mlFactoryConf = new ManagedLedgerFactoryConfig();
         mlFactoryConf.setMaxCacheSize(0);
-        ManagedLedgerFactory factory = new ManagedLedgerFactoryImpl(bkConf, mlFactoryConf);
+
+        @Cleanup
+        MetadataStore metadataStore = MetadataStoreFactory.create(arguments.zookeeperServers,
+                MetadataStoreConfig.builder().build());
+        ManagedLedgerFactory factory = new ManagedLedgerFactoryImpl(metadataStore, bkConf, mlFactoryConf);
 
         ManagedLedgerConfig mlConf = new ManagedLedgerConfig();
         mlConf.setEnsembleSize(arguments.ensembleSize);
@@ -213,8 +223,7 @@ public class ManagedLedgerWriter {
         Collections.shuffle(managedLedgers);
         AtomicBoolean isDone = new AtomicBoolean();
 
-        List<List<ManagedLedger>> managedLedgersPerThread = Lists.partition(managedLedgers,
-                Math.max(1, managedLedgers.size() / arguments.numThreads));
+        Map<Integer, List<ManagedLedger>> managedLedgersPerThread = allocateToThreads(managedLedgers, arguments.numThreads);
 
         for (int i = 0; i < arguments.numThreads; i++) {
             List<ManagedLedger> managedLedgersForThisThread = managedLedgersPerThread.get(i);
@@ -229,13 +238,14 @@ public class ManagedLedgerWriter {
 
                     // Acquire 1 sec worth of messages to have a slower ramp-up
                     rateLimiter.acquire((int) msgRate);
-                    final long startTime = System.currentTimeMillis();
+                    final long startTime = System.nanoTime();
+                    final long testEndTime = startTime + (long) (arguments.testTime * 1e9);
 
                     final Semaphore semaphore = new Semaphore(maxOutstandingForThisThread);
 
                     final AddEntryCallback addEntryCallback = new AddEntryCallback() {
                         @Override
-                        public void addComplete(Position position, Object ctx) {
+                        public void addComplete(Position position, ByteBuf entryData, Object ctx) {
                             long sendTime = (Long) (ctx);
                             messagesSent.increment();
                             bytesSent.add(payloadData.length);
@@ -250,7 +260,7 @@ public class ManagedLedgerWriter {
                         @Override
                         public void addFailed(ManagedLedgerException exception, Object ctx) {
                             log.warn("Write error on message", exception);
-                            System.exit(-1);
+                            PerfClientUtils.exit(-1);
                         }
                     };
 
@@ -259,22 +269,22 @@ public class ManagedLedgerWriter {
                     while (true) {
                         for (int j = 0; j < nunManagedLedgersForThisThread; j++) {
                             if (arguments.testTime > 0) {
-                                if (System.currentTimeMillis() - startTime > arguments.testTime) {
-                                    log.info("------------------- DONE -----------------------");
+                                if (System.nanoTime() > testEndTime) {
+                                    log.info("------------- DONE (reached the maximum duration: [{} seconds] of production) --------------", arguments.testTime);
                                     printAggregatedStats();
                                     isDone.set(true);
                                     Thread.sleep(5000);
-                                    System.exit(0);
+                                    PerfClientUtils.exit(0);
                                 }
                             }
 
                             if (numMessagesForThisThread > 0) {
                                 if (totalSent++ >= numMessagesForThisThread) {
-                                    log.info("------------------- DONE -----------------------");
+                                    log.info("------------- DONE (reached the maximum number: [{}] of production) --------------", numMessagesForThisThread);
                                     printAggregatedStats();
                                     isDone.set(true);
                                     Thread.sleep(5000);
-                                    System.exit(0);
+                                    PerfClientUtils.exit(0);
                                 }
                             }
 
@@ -332,6 +342,42 @@ public class ManagedLedgerWriter {
         }
 
         factory.shutdown();
+    }
+
+
+    public static <T> Map<Integer, List<T>> allocateToThreads(List<T> managedLedgers, int numThreads) {
+
+        Map<Integer,List<T>> map = new HashMap<>();
+
+        if (managedLedgers.size() >= numThreads) {
+            int threadIndex = 0;
+            for (T managedLedger : managedLedgers) {
+
+                List<T> ledgerList = map.getOrDefault(threadIndex, new ArrayList<>());
+                ledgerList.add(managedLedger);
+                map.put(threadIndex, ledgerList);
+
+                threadIndex++;
+                if (threadIndex >= numThreads) {
+                    threadIndex = threadIndex % numThreads;
+                }
+            }
+
+        } else {
+            int ledgerIndex = 0;
+            for(int threadIndex = 0;threadIndex<numThreads;threadIndex++) {
+                List<T> ledgerList = map.getOrDefault(threadIndex,new ArrayList<>());
+                ledgerList.add(managedLedgers.get(ledgerIndex));
+                map.put(threadIndex,ledgerList);
+
+                ledgerIndex++;
+                if(ledgerIndex >= managedLedgers.size()) {
+                    ledgerIndex = ledgerIndex % managedLedgers.size();
+                }
+            }
+        }
+
+        return map;
     }
 
     private static void printAggregatedStats() {

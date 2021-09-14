@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.type.TypeFactory;
 import com.github.benmanes.caffeine.cache.AsyncCacheLoader;
 import com.github.benmanes.caffeine.cache.AsyncLoadingCache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.google.common.annotations.VisibleForTesting;
 
 import io.netty.util.concurrent.DefaultThreadFactory;
 
@@ -34,17 +35,22 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 
+import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.metadata.api.MetadataCache;
+import org.apache.pulsar.metadata.api.MetadataSerde;
 import org.apache.pulsar.metadata.api.Notification;
 import org.apache.pulsar.metadata.api.NotificationType;
 import org.apache.pulsar.metadata.api.Stat;
 import org.apache.pulsar.metadata.api.extended.CreateOption;
 import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
+import org.apache.pulsar.metadata.api.extended.SessionEvent;
 import org.apache.pulsar.metadata.cache.impl.MetadataCacheImpl;
 
 @Slf4j
@@ -53,7 +59,8 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     private static final long CACHE_REFRESH_TIME_MILLIS = TimeUnit.MINUTES.toMillis(5);
 
     private final CopyOnWriteArrayList<Consumer<Notification>> listeners = new CopyOnWriteArrayList<>();
-    protected final ExecutorService executor;
+    private final CopyOnWriteArrayList<Consumer<SessionEvent>> sessionListeners = new CopyOnWriteArrayList<>();
+    private final ExecutorService executor;
     private final AsyncLoadingCache<String, List<String>> childrenCache;
     private final AsyncLoadingCache<String, Boolean> existsCache;
     private final CopyOnWriteArrayList<MetadataCacheImpl<?>> metadataCaches = new CopyOnWriteArrayList<>();
@@ -114,6 +121,13 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     }
 
     @Override
+    public <T> MetadataCache<T> getMetadataCache(MetadataSerde<T> serde) {
+        MetadataCacheImpl<T> metadataCache = new MetadataCacheImpl<>(this, serde);
+        metadataCaches.add(metadataCache);
+        return metadataCache;
+    }
+
+    @Override
     public final CompletableFuture<List<String>> getChildren(String path) {
         return childrenCache.get(path);
     }
@@ -129,17 +143,21 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     }
 
     protected CompletableFuture<Void> receivedNotification(Notification notification) {
-        return CompletableFuture.supplyAsync(() -> {
-            listeners.forEach(listener -> {
-                try {
-                    listener.accept(notification);
-                } catch (Throwable t) {
-                    log.error("Failed to process metadata store notification", t);
-                }
-            });
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                listeners.forEach(listener -> {
+                    try {
+                        listener.accept(notification);
+                    } catch (Throwable t) {
+                        log.error("Failed to process metadata store notification", t);
+                    }
+                });
 
-            return null;
-        }, executor);
+                return null;
+            }, executor);
+        } catch (RejectedExecutionException e) {
+            return FutureUtil.failedFuture(e);
+        }
     }
 
     @Override
@@ -181,8 +199,25 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
                 });
     }
 
+    @Override
+    public CompletableFuture<Void> deleteRecursive(String path) {
+        return getChildren(path)
+                .thenCompose(children -> FutureUtil.waitForAll(
+                        children.stream()
+                                .map(child -> deleteRecursive(path + "/" + child))
+                                .collect(Collectors.toList())))
+                .thenCompose(__ -> exists(path))
+                .thenCompose(exists -> {
+                    if (exists) {
+                        return delete(path, Optional.empty());
+                    } else {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                });
+    }
+
     protected abstract CompletableFuture<Stat> storePut(String path, byte[] data, Optional<Long> optExpectedVersion,
-            EnumSet<CreateOption> options);
+                                                        EnumSet<CreateOption> options);
 
     @Override
     public final CompletableFuture<Stat> put(String path, byte[] data, Optional<Long> optExpectedVersion,
@@ -206,9 +241,41 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     }
 
     @Override
+    public void registerSessionListener(Consumer<SessionEvent> listener) {
+        sessionListeners.add(listener);
+    }
+
+    protected void receivedSessionEvent(SessionEvent event) {
+        sessionListeners.forEach(l -> {
+            try {
+                l.accept(event);
+            } catch (Throwable t) {
+                log.warn("Error in processing session event", t);
+            }
+        });
+    }
+
+    @Override
     public void close() throws Exception {
         executor.shutdownNow();
         executor.awaitTermination(10, TimeUnit.SECONDS);
+    }
+
+    @VisibleForTesting
+    public void invalidateAll() {
+        childrenCache.synchronous().invalidateAll();
+        existsCache.synchronous().invalidateAll();
+    }
+
+    /**
+     * Run the task in the executor thread and fail the future if the executor is shutting down
+     */
+    protected void execute(Runnable task, CompletableFuture<?> future) {
+        try {
+            executor.execute(task);
+        } catch (Throwable t) {
+            future.completeExceptionally(t);
+        }
     }
 
     protected static String parent(String path) {

@@ -34,26 +34,35 @@ import java.util.concurrent.TimeUnit;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class ClientTestFixtures {
     public static ScheduledExecutorService SCHEDULER = Executors.newSingleThreadScheduledExecutor();
 
-    static <T> PulsarClientImpl createPulsarClientMock() {
+//    static <T> PulsarClientImpl createPulsarClientMock() {
+//        return createPulsarClientMock(mock(ExecutorService.class));
+//    }
+
+    static <T> PulsarClientImpl createPulsarClientMock(ExecutorProvider executorProvider,
+                                                       ExecutorService internalExecutorService) {
         PulsarClientImpl clientMock = mock(PulsarClientImpl.class, Mockito.RETURNS_DEEP_STUBS);
 
         ClientConfigurationData clientConf = new ClientConfigurationData();
         when(clientMock.getConfiguration()).thenReturn(clientConf);
         when(clientMock.timer()).thenReturn(mock(Timer.class));
 
-        when(clientMock.externalExecutorProvider()).thenReturn(mock(ExecutorProvider.class));
+        when(clientMock.getInternalExecutorService()).thenReturn(internalExecutorService);
+        when(clientMock.externalExecutorProvider()).thenReturn(executorProvider);
         when(clientMock.eventLoopGroup().next()).thenReturn(mock(EventLoop.class));
 
         return clientMock;
     }
 
-    static <T> PulsarClientImpl createPulsarClientMockWithMockedClientCnx() {
-        return mockClientCnx(createPulsarClientMock());
+    static <T> PulsarClientImpl createPulsarClientMockWithMockedClientCnx(
+            ExecutorProvider executorProvider,
+            ExecutorService internalExecutorService) {
+        return mockClientCnx(createPulsarClientMock(executorProvider, internalExecutorService));
     }
 
     static PulsarClientImpl mockClientCnx(PulsarClientImpl clientMock) {
@@ -72,7 +81,17 @@ class ClientTestFixtures {
         return future;
     }
 
+    static <T> CompletableFuture<T> createExceptionFuture(Throwable ex, int delayMillis) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        SCHEDULER.schedule(() -> future.completeExceptionally(ex), delayMillis, TimeUnit.MILLISECONDS);
+        return future;
+    }
+
     public static ExecutorService createMockedExecutor() {
         return mock(ExecutorService.class);
+    }
+
+    public static ExecutorProvider createMockedExecutorProvider() {
+        return mock(ExecutorProvider.class);
     }
 }

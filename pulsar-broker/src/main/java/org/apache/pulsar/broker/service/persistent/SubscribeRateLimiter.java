@@ -51,7 +51,7 @@ public class SubscribeRateLimiter {
         subscribeRateLimiter = new ConcurrentHashMap<>();
         this.executorService = brokerService.pulsar().getExecutor();
         // get subscribeRate from topic level policies
-        this.subscribeRate = Optional.ofNullable(brokerService.getTopicPolicies(TopicName.get(this.topicName)))
+        this.subscribeRate = topic.getTopicPolicies()
                 .map(TopicPolicies::getSubscribeRate)
                 .orElse(null);
 
@@ -139,8 +139,12 @@ public class SubscribeRateLimiter {
         if (ratePerConsumer > 0) {
             if (this.subscribeRateLimiter.get(consumerIdentifier) == null) {
                 this.subscribeRateLimiter.put(consumerIdentifier,
-                        new RateLimiter(brokerService.pulsar().getExecutor(), ratePerConsumer,
-                                ratePeriod, TimeUnit.SECONDS, null));
+                        RateLimiter.builder()
+                                .scheduledExecutorService(brokerService.pulsar().getExecutor())
+                                .permits(ratePerConsumer)
+                                .rateTime(ratePeriod)
+                                .timeUnit(TimeUnit.SECONDS)
+                                .build());
             } else {
                 this.subscribeRateLimiter.get(consumerIdentifier)
                         .setRate(ratePerConsumer, ratePeriod, TimeUnit.SECONDS,
@@ -154,7 +158,7 @@ public class SubscribeRateLimiter {
 
     public void onPoliciesUpdate(Policies data) {
         // if subscribe rate is set on topic policy, skip subscribe rate update
-        SubscribeRate subscribeRate = Optional.ofNullable(brokerService.getTopicPolicies(TopicName.get(topicName)))
+        SubscribeRate subscribeRate = brokerService.getTopicPolicies(TopicName.get(topicName))
                 .map(TopicPolicies::getSubscribeRate)
                 .orElse(null);
         if (subscribeRate != null) {
@@ -223,7 +227,7 @@ public class SubscribeRateLimiter {
         SubscribeRate subscribeRate = getPoliciesSubscribeRate(serviceConfig.getClusterName(), policies, topicName);
         if (subscribeRate == null) {
             return serviceConfig.getSubscribeThrottlingRatePerConsumer() > 0
-                    || serviceConfig.getSubscribeRatePeriodPerConsumerInSecond() > 0;
+                    && serviceConfig.getSubscribeRatePeriodPerConsumerInSecond() > 0;
         }
         return true;
     }

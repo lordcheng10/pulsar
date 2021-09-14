@@ -4,7 +4,7 @@ title: Pulsar Python client
 sidebar_label: Python
 ---
 
-Pulsar Python client library is a wrapper over the existing [C++ client library](client-libraries-cpp.md) and exposes all of the [same features](/api/cpp). You can find the code in the [`python` subdirectory](https://github.com/apache/pulsar/tree/master/pulsar-client-cpp/python) of the C++ client code.
+Pulsar Python client library is a wrapper over the existing [C++ client library](client-libraries-cpp.md) and exposes all of the [same features](/api/cpp). You can find the code in the [Python directory](https://github.com/apache/pulsar/tree/master/pulsar-client-cpp/python) of the C++ client code.
 
 All the methods in producer, consumer, and reader of a Python client are thread-safe.
 
@@ -12,7 +12,7 @@ All the methods in producer, consumer, and reader of a Python client are thread-
 
 ## Install
 
-You can install the [`pulsar-client`](https://pypi.python.org/pypi/pulsar-client) library either via [PyPi](https://pypi.python.org/pypi), using [pip](#installation-using-pip), or by building the library from source.
+You can install the [`pulsar-client`](https://pypi.python.org/pypi/pulsar-client) library either via [PyPi](https://pypi.python.org/pypi), using [pip](#installation-using-pip), or by building the library from [source](https://github.com/apache/pulsar/tree/master/pulsar-client-cpp).
 
 ### Install using pip
 
@@ -22,12 +22,26 @@ To install the `pulsar-client` library as a pre-built package using the [pip](ht
 $ pip install pulsar-client=={{pulsar:version_number}}
 ```
 
+### Optional dependencies
+If you install the client libraries on Linux to support services like Pulsar functions or Avro serialization, you can install optional components alongside the  `pulsar-client` library.
+
+```shell
+# avro serialization
+$ pip install pulsar-client=='{{pulsar:version_number}}[avro]'
+
+# functions runtime
+$ pip install pulsar-client=='{{pulsar:version_number}}[functions]'
+
+# all optional components
+$ pip install pulsar-client=='{{pulsar:version_number}}[all]'
+```
+
 Installation via PyPi is available for the following Python versions:
 
 Platform | Supported Python versions
 :--------|:-------------------------
 MacOS <br />  10.13 (High Sierra), 10.14 (Mojave) <br /> | 2.7, 3.7
-Linux | 2.7, 3.4, 3.5, 3.6, 3.7
+Linux | 2.7, 3.4, 3.5, 3.6, 3.7, 3.8
 
 ### Install from source
 
@@ -47,7 +61,7 @@ The complete Python API reference is available at [api/python](/api/python).
 
 ## Examples
 
-You can find a variety of Python code examples for the `pulsar-client` library.
+You can find a variety of Python code examples for the [pulsar-client](/pulsar-client-cpp/python) library.
 
 ### Producer example
 
@@ -71,6 +85,10 @@ client.close()
 The following example creates a consumer with the `my-subscription` subscription name on the `my-topic` topic, receives incoming messages, prints the content and ID of messages that arrive, and acknowledges each message to the Pulsar broker.
 
 ```python
+import pulsar
+
+client = pulsar.Client('pulsar://localhost:6650')
+
 consumer = client.subscribe('my-topic', 'my-subscription')
 
 while True:
@@ -132,7 +150,7 @@ while True:
 
 In addition to subscribing a consumer to a single Pulsar topic, you can also subscribe to multiple topics simultaneously. To use multi-topic subscriptions, you can supply a regular expression (regex) or a `List` of topics. If you select topics via regex, all topics must be within the same Pulsar namespace.
 
-The following is an example. 
+The following is an example: 
 
 ```python
 import re
@@ -288,3 +306,103 @@ class Example(Record):
     a = String()
     sub = MySubRecord()
 ```
+
+## End-to-end encryption
+
+[End-to-end encryption](https://pulsar.apache.org/docs/en/next/cookbooks-encryption/#docsNav) allows applications to encrypt messages at producers and decrypt messages at consumers.
+
+### Configuration
+
+To use the end-to-end encryption feature in the Python client, you need to configure `publicKeyPath` and `privateKeyPath` for both producer and consumer.
+
+```
+publicKeyPath: "./public.pem"
+privateKeyPath: "./private.pem"
+```
+
+### Tutorial
+
+This section provides step-by-step instructions on how to use the end-to-end encryption feature in the Python client.
+
+**Prerequisite**
+
+- Pulsar Python client 2.7.1 or later 
+
+**Step**
+
+1. Create both public and private key pairs.
+
+    **Input**
+
+    ```shell
+    openssl genrsa -out private.pem 2048
+    openssl rsa -in private.pem -pubout -out public.pem
+    ```
+
+2. Create a producer to send encrypted messages.
+
+    **Input**
+
+    ```python
+    import pulsar
+
+    publicKeyPath = "./public.pem"
+    privateKeyPath = "./private.pem"
+    crypto_key_reader = pulsar.CryptoKeyReader(publicKeyPath, privateKeyPath)
+    client = pulsar.Client('pulsar://localhost:6650')
+    producer = client.create_producer(topic='encryption', encryption_key='encryption', crypto_key_reader=crypto_key_reader)
+    producer.send('encryption message'.encode('utf8'))
+    print('sent message')
+    producer.close()
+    client.close()
+    ```
+
+3. Create a consumer to receive encrypted messages.
+
+    **Input**
+
+    ```python
+    import pulsar
+
+    publicKeyPath = "./public.pem"
+    privateKeyPath = "./private.pem"
+    crypto_key_reader = pulsar.CryptoKeyReader(publicKeyPath, privateKeyPath)
+    client = pulsar.Client('pulsar://localhost:6650')
+    consumer = client.subscribe(topic='encryption', subscription_name='encryption-sub', crypto_key_reader=crypto_key_reader)
+    msg = consumer.receive()
+    print("Received msg '{}' id = '{}'".format(msg.data(), msg.message_id()))
+    consumer.close()
+    client.close()
+    ```
+
+4. Run the consumer to receive encrypted messages.
+
+    **Input**
+
+    ```shell
+    python consumer.py
+    ```
+
+5. In a new terminal tab, run the producer to produce encrypted messages.
+
+    **Input**
+
+    ```shell
+    python producer.py
+    ```
+
+    Now you can see the producer sends messages and the consumer receives messages successfully.
+
+    **Output**
+
+    This is from the producer side.
+
+    ```
+    sent message
+    ```
+
+    This is from the consumer side.
+
+    ```
+    Received msg 'encryption message' id = '(0,0,-1,-1)'
+    ```

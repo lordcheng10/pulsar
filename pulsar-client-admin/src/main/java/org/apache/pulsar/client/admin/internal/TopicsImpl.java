@@ -21,12 +21,11 @@ package org.apache.pulsar.client.admin.internal;
 import static com.google.common.base.Preconditions.checkArgument;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -55,14 +54,19 @@ import org.apache.pulsar.client.api.Authentication;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.impl.BatchMessageIdImpl;
 import org.apache.pulsar.client.impl.MessageIdImpl;
 import org.apache.pulsar.client.impl.MessageImpl;
 import org.apache.pulsar.client.impl.ResetCursorData;
+import org.apache.pulsar.common.api.proto.BrokerEntryMetadata;
+import org.apache.pulsar.common.api.proto.CompressionType;
+import org.apache.pulsar.common.api.proto.EncryptionKeys;
 import org.apache.pulsar.common.api.proto.KeyValue;
 import org.apache.pulsar.common.api.proto.MessageMetadata;
 import org.apache.pulsar.common.api.proto.SingleMessageMetadata;
 import org.apache.pulsar.common.naming.NamespaceName;
+import org.apache.pulsar.common.naming.TopicDomain;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.partition.PartitionedTopicMetadata;
 import org.apache.pulsar.common.policies.data.AuthAction;
@@ -72,7 +76,10 @@ import org.apache.pulsar.common.policies.data.DelayedDeliveryPolicies;
 import org.apache.pulsar.common.policies.data.DispatchRate;
 import org.apache.pulsar.common.policies.data.ErrorData;
 import org.apache.pulsar.common.policies.data.InactiveTopicPolicies;
+import org.apache.pulsar.common.policies.data.NonPersistentPartitionedTopicStats;
+import org.apache.pulsar.common.policies.data.NonPersistentTopicStats;
 import org.apache.pulsar.common.policies.data.OffloadPolicies;
+import org.apache.pulsar.common.policies.data.OffloadPoliciesImpl;
 import org.apache.pulsar.common.policies.data.PartitionedTopicInternalStats;
 import org.apache.pulsar.common.policies.data.PartitionedTopicStats;
 import org.apache.pulsar.common.policies.data.PersistencePolicies;
@@ -83,6 +90,7 @@ import org.apache.pulsar.common.policies.data.SubscribeRate;
 import org.apache.pulsar.common.policies.data.TopicStats;
 import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.common.util.Codec;
+import org.apache.pulsar.common.util.DateFormatter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,9 +98,36 @@ public class TopicsImpl extends BaseResource implements Topics {
     private final WebTarget adminTopics;
     private final WebTarget adminV2Topics;
     // CHECKSTYLE.OFF: MemberName
-    static private final String BATCH_HEADER = "X-Pulsar-num-batch-message";
-    static private final String MESSAGE_ID = "X-Pulsar-Message-ID";
-    static private final String PUBLISH_TIME = "X-Pulsar-publish-time";
+    private static final String BATCH_HEADER = "X-Pulsar-num-batch-message";
+    private static final String BATCH_SIZE_HEADER = "X-Pulsar-batch-size";
+    private static final String MESSAGE_ID = "X-Pulsar-Message-ID";
+    private static final String PUBLISH_TIME = "X-Pulsar-publish-time";
+    private static final String EVENT_TIME = "X-Pulsar-event-time";
+    private static final String DELIVER_AT_TIME = "X-Pulsar-deliver-at-time";
+    private static final String BROKER_ENTRY_TIMESTAMP = "X-Pulsar-Broker-Entry-METADATA-timestamp";
+    private static final String BROKER_ENTRY_INDEX = "X-Pulsar-Broker-Entry-METADATA-index";
+    private static final String PRODUCER_NAME = "X-Pulsar-producer-name";
+    private static final String SEQUENCE_ID = "X-Pulsar-sequence-id";
+    private static final String REPLICATED_FROM = "X-Pulsar-replicated-from";
+    private static final String PARTITION_KEY = "X-Pulsar-partition-key";
+    private static final String COMPRESSION = "X-Pulsar-compression";
+    private static final String UNCOMPRESSED_SIZE = "X-Pulsar-uncompressed-size";
+    private static final String ENCRYPTION_ALGO = "X-Pulsar-encryption-algo";
+    private static final String MARKER_TYPE = "X-Pulsar-marker-type";
+    private static final String TXNID_LEAST_BITS = "X-Pulsar-txnid-least-bits";
+    private static final String TXNID_MOST_BITS = "X-Pulsar-txnid-most-bits";
+    private static final String HIGHEST_SEQUENCE_ID = "X-Pulsar-highest-sequence-id";
+    private static final String UUID = "X-Pulsar-uuid";
+    private static final String NUM_CHUNKS_FROM_MSG = "X-Pulsar-num-chunks-from-msg";
+    private static final String TOTAL_CHUNK_MSG_SIZE = "X-Pulsar-total-chunk-msg-size";
+    private static final String CHUNK_ID = "X-Pulsar-chunk-id";
+    private static final String PARTITION_KEY_B64_ENCODED = "X-Pulsar-partition-key-b64-encoded";
+    private static final String NULL_PARTITION_KEY = "X-Pulsar-null-partition-key";
+    private static final String REPLICATED_TO = "X-Pulsar-replicated-to";
+    private static final String ORDERING_KEY = "X-Pulsar-Base64-ordering-key";
+    private static final String SCHEMA_VERSION = "X-Pulsar-Base64-schema-version-b64encoded";
+    private static final String ENCRYPTION_PARAM = "X-Pulsar-Base64-encryption-param";
+    private static final String ENCRYPTION_KEYS = "X-Pulsar-Base64-encryption-keys";
     // CHECKSTYLE.ON: MemberName
 
     public TopicsImpl(WebTarget web, Authentication auth, long readTimeoutMs) {
@@ -103,8 +138,13 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public List<String> getList(String namespace) throws PulsarAdminException {
+        return getList(namespace, null);
+    }
+
+    @Override
+    public List<String> getList(String namespace, TopicDomain topicDomain) throws PulsarAdminException {
         try {
-            return getListAsync(namespace).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getListAsync(namespace, topicDomain).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -117,35 +157,49 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public CompletableFuture<List<String>> getListAsync(String namespace) {
+        return getListAsync(namespace, null);
+    }
+
+    @Override
+    public CompletableFuture<List<String>> getListAsync(String namespace, TopicDomain topicDomain) {
         NamespaceName ns = NamespaceName.get(namespace);
         WebTarget persistentPath = namespacePath("persistent", ns);
         WebTarget nonPersistentPath = namespacePath("non-persistent", ns);
         final CompletableFuture<List<String>> persistentList = new CompletableFuture<>();
         final CompletableFuture<List<String>> nonPersistentList = new CompletableFuture<>();
-        asyncGetRequest(persistentPath,
-                new InvocationCallback<List<String>>() {
-                    @Override
-                    public void completed(List<String> topics) {
-                        persistentList.complete(topics);
-                    }
+        if (topicDomain == null || TopicDomain.persistent.equals(topicDomain)) {
+            asyncGetRequest(persistentPath,
+                    new InvocationCallback<List<String>>() {
+                        @Override
+                        public void completed(List<String> topics) {
+                            persistentList.complete(topics);
+                        }
 
-                    @Override
-                    public void failed(Throwable throwable) {
-                        persistentList.completeExceptionally(getApiException(throwable.getCause()));
-                    }
-                });
-        asyncGetRequest(nonPersistentPath,
-                new InvocationCallback<List<String>>() {
-                    @Override
-                    public void completed(List<String> a) {
-                        nonPersistentList.complete(a);
-                    }
+                        @Override
+                        public void failed(Throwable throwable) {
+                            persistentList.completeExceptionally(getApiException(throwable.getCause()));
+                        }
+                    });
+        } else {
+            persistentList.complete(Collections.emptyList());
+        }
 
-                    @Override
-                    public void failed(Throwable throwable) {
-                        nonPersistentList.completeExceptionally(getApiException(throwable.getCause()));
-                    }
-                });
+        if (topicDomain == null || TopicDomain.non_persistent.equals(topicDomain)) {
+            asyncGetRequest(nonPersistentPath,
+                    new InvocationCallback<List<String>>() {
+                        @Override
+                        public void completed(List<String> a) {
+                            nonPersistentList.complete(a);
+                        }
+
+                        @Override
+                        public void failed(Throwable throwable) {
+                            nonPersistentList.completeExceptionally(getApiException(throwable.getCause()));
+                        }
+                    });
+        } else {
+            nonPersistentList.complete(Collections.emptyList());
+        }
 
         return persistentList.thenCombine(nonPersistentList,
                 (l1, l2) -> new ArrayList<>(Stream.concat(l1.stream(), l2.stream()).collect(Collectors.toSet())));
@@ -364,9 +418,15 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public CompletableFuture<Void> createPartitionedTopicAsync(String topic, int numPartitions) {
+        return createPartitionedTopicAsync(topic, numPartitions, false);
+    }
+
+    public CompletableFuture<Void> createPartitionedTopicAsync(
+            String topic, int numPartitions, boolean createLocalTopicOnly) {
         checkArgument(numPartitions > 0, "Number of partitions should be more than 0");
         TopicName tn = validateTopic(topic);
-        WebTarget path = topicPath(tn, "partitions");
+        WebTarget path = topicPath(tn, "partitions")
+                .queryParam("createLocalTopicOnly", Boolean.toString(createLocalTopicOnly));
         return asyncPutRequest(path, Entity.entity(numPartitions, MediaType.APPLICATION_JSON));
     }
 
@@ -626,9 +686,11 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public TopicStats getStats(String topic, boolean getPreciseBacklog) throws PulsarAdminException {
+    public TopicStats getStats(String topic, boolean getPreciseBacklog,
+                               boolean subscriptionBacklogSize) throws PulsarAdminException {
         try {
-            return getStatsAsync(topic, getPreciseBacklog).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getStatsAsync(topic, getPreciseBacklog, subscriptionBacklogSize)
+                    .get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -640,23 +702,45 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<TopicStats> getStatsAsync(String topic, boolean getPreciseBacklog) {
+    public CompletableFuture<TopicStats> getStatsAsync(String topic, boolean getPreciseBacklog,
+                                                       boolean subscriptionBacklogSize) {
         TopicName tn = validateTopic(topic);
-        WebTarget path = topicPath(tn, "stats").queryParam("getPreciseBacklog", getPreciseBacklog);
+        WebTarget path = topicPath(tn, "stats")
+                .queryParam("getPreciseBacklog", getPreciseBacklog)
+                .queryParam("subscriptionBacklogSize", subscriptionBacklogSize);
         final CompletableFuture<TopicStats> future = new CompletableFuture<>();
-        asyncGetRequest(path,
-                new InvocationCallback<TopicStats>() {
 
-                    @Override
-                    public void completed(TopicStats response) {
-                        future.complete(response);
-                    }
+        InvocationCallback<TopicStats> persistentCB = new InvocationCallback<TopicStats>() {
+            @Override
+            public void completed(TopicStats response) {
+                future.complete(response);
+            }
 
-                    @Override
-                    public void failed(Throwable throwable) {
-                        future.completeExceptionally(getApiException(throwable.getCause()));
-                    }
-                });
+            @Override
+            public void failed(Throwable throwable) {
+                future.completeExceptionally(getApiException(throwable.getCause()));
+            }
+        };
+
+        InvocationCallback<NonPersistentTopicStats> nonpersistentCB =
+                new InvocationCallback<NonPersistentTopicStats>() {
+            @Override
+            public void completed(NonPersistentTopicStats response) {
+                future.complete(response);
+            }
+
+            @Override
+            public void failed(Throwable throwable) {
+                future.completeExceptionally(getApiException(throwable.getCause()));
+            }
+        };
+
+        if (topic.startsWith(TopicDomain.non_persistent.value())) {
+            asyncGetRequest(path, nonpersistentCB);
+        } else {
+            asyncGetRequest(path, persistentCB);
+        }
+
         return future;
     }
 
@@ -707,7 +791,7 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public JsonObject getInternalInfo(String topic) throws PulsarAdminException {
+    public String getInternalInfo(String topic) throws PulsarAdminException {
         try {
             return getInternalInfoAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
@@ -721,16 +805,15 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<JsonObject> getInternalInfoAsync(String topic) {
+    public CompletableFuture<String> getInternalInfoAsync(String topic) {
         TopicName tn = validateTopic(topic);
         WebTarget path = topicPath(tn, "internal-info");
-        final CompletableFuture<JsonObject> future = new CompletableFuture<>();
+        final CompletableFuture<String> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<String>() {
                     @Override
                     public void completed(String response) {
-                        JsonObject json = new Gson().fromJson(response, JsonObject.class);
-                        future.complete(json);
+                        future.complete(response);
                     }
 
                     @Override
@@ -742,10 +825,11 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public PartitionedTopicStats getPartitionedStats(String topic, boolean perPartition, boolean getPreciseBacklog)
+    public PartitionedTopicStats getPartitionedStats(String topic, boolean perPartition, boolean getPreciseBacklog,
+                                                     boolean subscriptionBacklogSize)
             throws PulsarAdminException {
         try {
-            return getPartitionedStatsAsync(topic, perPartition, getPreciseBacklog)
+            return getPartitionedStatsAsync(topic, perPartition, getPreciseBacklog, subscriptionBacklogSize)
                     .get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
@@ -759,27 +843,52 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public CompletableFuture<PartitionedTopicStats> getPartitionedStatsAsync(String topic,
-            boolean perPartition, boolean getPreciseBacklog) {
+            boolean perPartition, boolean getPreciseBacklog, boolean subscriptionBacklogSize) {
         TopicName tn = validateTopic(topic);
         WebTarget path = topicPath(tn, "partitioned-stats");
-        path = path.queryParam("perPartition", perPartition).queryParam("getPreciseBacklog", getPreciseBacklog);
+        path = path.queryParam("perPartition", perPartition)
+                .queryParam("getPreciseBacklog", getPreciseBacklog)
+                .queryParam("subscriptionBacklogSize", subscriptionBacklogSize);
         final CompletableFuture<PartitionedTopicStats> future = new CompletableFuture<>();
-        asyncGetRequest(path,
-                new InvocationCallback<PartitionedTopicStats>() {
 
-                    @Override
-                    public void completed(PartitionedTopicStats response) {
-                        if (!perPartition) {
-                            response.partitions.clear();
-                        }
-                        future.complete(response);
-                    }
+        InvocationCallback<NonPersistentPartitionedTopicStats> nonpersistentCB =
+                new InvocationCallback<NonPersistentPartitionedTopicStats>() {
 
-                    @Override
-                    public void failed(Throwable throwable) {
-                        future.completeExceptionally(getApiException(throwable.getCause()));
-                    }
-                });
+            @Override
+            public void completed(NonPersistentPartitionedTopicStats response) {
+                if (!perPartition) {
+                    response.getPartitions().clear();
+                }
+                future.complete(response);
+            }
+
+            @Override
+            public void failed(Throwable throwable) {
+                future.completeExceptionally(getApiException(throwable.getCause()));
+            }
+        };
+
+        InvocationCallback<PartitionedTopicStats> persistentCB = new InvocationCallback<PartitionedTopicStats>() {
+
+            @Override
+            public void completed(PartitionedTopicStats response) {
+                if (!perPartition) {
+                    response.getPartitions().clear();
+                }
+                future.complete(response);
+            }
+
+            @Override
+            public void failed(Throwable throwable) {
+                future.completeExceptionally(getApiException(throwable.getCause()));
+            }
+        };
+
+        if (topic.startsWith(TopicDomain.non_persistent.value())) {
+            asyncGetRequest(path, nonpersistentCB);
+        } else {
+            asyncGetRequest(path, persistentCB);
+        }
         return future;
     }
 
@@ -926,6 +1035,33 @@ public class TopicsImpl extends BaseResource implements Topics {
         WebTarget path = topicPath(tn, "subscription", encodedSubName,
                 "expireMessages", String.valueOf(expireTimeInSeconds));
         return asyncPostRequest(path, Entity.entity("", MediaType.APPLICATION_JSON));
+    }
+
+    @Override
+    public void expireMessages(String topic, String subscriptionName, MessageId messageId, boolean isExcluded)
+            throws PulsarAdminException {
+        try {
+            expireMessagesAsync(topic, subscriptionName, messageId, isExcluded)
+                    .get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Void> expireMessagesAsync(String topic, String subscriptionName,
+                                                       MessageId messageId, boolean isExcluded) {
+        TopicName tn = validateTopic(topic);
+        String encodedSubName = Codec.encode(subscriptionName);
+        ResetCursorData resetCursorData = new ResetCursorData(messageId);
+        resetCursorData.setExcluded(isExcluded);
+        WebTarget path = topicPath(tn, "subscription", encodedSubName, "expireMessages");
+        return asyncPostRequest(path, Entity.entity(resetCursorData, MediaType.APPLICATION_JSON));
     }
 
     @Override
@@ -1077,6 +1213,27 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
+    public void truncate(String topic) throws PulsarAdminException {
+        try {
+            truncateAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Void> truncateAsync(String topic) {
+        TopicName tn = validateTopic(topic);
+        WebTarget path = topicPath(tn, "truncate"); //
+        return asyncDeleteRequest(path);
+    }
+
+    @Override
     public CompletableFuture<Message<byte[]>> getMessageByIdAsync(String topic, long ledgerId, long entryId) {
         CompletableFuture<Message<byte[]>> future = new CompletableFuture<>();
         getRemoteMessageById(topic, ledgerId, entryId).handle((r, ex) -> {
@@ -1132,6 +1289,44 @@ public class TopicsImpl extends BaseResource implements Topics {
             throw new PulsarAdminException.TimeoutException(e);
         }
     }
+
+    @Override
+    public CompletableFuture<MessageId> getMessageIdByTimestampAsync(String topic, long timestamp) {
+        TopicName tn = validateTopic(topic);
+        WebTarget path = topicPath(tn, "messageid", Long.toString(timestamp));
+        final CompletableFuture<MessageId> future = new CompletableFuture<>();
+        asyncGetRequest(path,
+                new InvocationCallback<MessageIdImpl>() {
+                    @Override
+                    public void completed(MessageIdImpl response) {
+                        future.complete(response);
+                    }
+
+                    @Override
+                    public void failed(Throwable throwable) {
+                        future.completeExceptionally(getApiException(throwable.getCause()));
+                    }
+                });
+        return future;
+    }
+
+
+    @Override
+    public MessageId getMessageIdByTimestamp(String topic, long timestamp)
+            throws PulsarAdminException {
+        try {
+            return getMessageIdByTimestampAsync(topic, timestamp).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+
 
     @Override
     public void createSubscription(String topic, String subscriptionName, MessageId messageId)
@@ -1384,6 +1579,24 @@ public class TopicsImpl extends BaseResource implements Topics {
         }
 
         String msgId = response.getHeaderString(MESSAGE_ID);
+
+        // build broker entry metadata if exist
+        String brokerEntryTimestamp = response.getHeaderString(BROKER_ENTRY_TIMESTAMP);
+        String brokerEntryIndex = response.getHeaderString(BROKER_ENTRY_INDEX);
+        BrokerEntryMetadata brokerEntryMetadata;
+        if (brokerEntryTimestamp == null && brokerEntryIndex == null) {
+            brokerEntryMetadata = null;
+        } else {
+            brokerEntryMetadata = new BrokerEntryMetadata();
+            if (brokerEntryTimestamp != null) {
+                brokerEntryMetadata.setBrokerTimestamp(DateFormatter.parse(brokerEntryTimestamp.toString()));
+            }
+
+            if (brokerEntryIndex != null) {
+                brokerEntryMetadata.setIndex(Long.parseLong(brokerEntryIndex));
+            }
+        }
+
         MessageMetadata messageMetadata = new MessageMetadata();
         try (InputStream stream = (InputStream) response.getEntity()) {
             byte[] data = new byte[stream.available()];
@@ -1393,7 +1606,17 @@ public class TopicsImpl extends BaseResource implements Topics {
             MultivaluedMap<String, Object> headers = response.getHeaders();
             Object tmp = headers.getFirst(PUBLISH_TIME);
             if (tmp != null) {
-                properties.put("publish-time", (String) tmp);
+                messageMetadata.setPublishTime(DateFormatter.parse(tmp.toString()));
+            }
+
+            tmp = headers.getFirst(EVENT_TIME);
+            if (tmp != null) {
+                messageMetadata.setEventTime(DateFormatter.parse(tmp.toString()));
+            }
+
+            tmp = headers.getFirst(DELIVER_AT_TIME);
+            if (tmp != null) {
+                messageMetadata.setDeliverAtTime(DateFormatter.parse(tmp.toString()));
             }
 
             tmp = headers.getFirst("X-Pulsar-null-value");
@@ -1401,11 +1624,109 @@ public class TopicsImpl extends BaseResource implements Topics {
                 messageMetadata.setNullValue(Boolean.parseBoolean(tmp.toString()));
             }
 
-            tmp = headers.getFirst(BATCH_HEADER);
-            if (response.getHeaderString(BATCH_HEADER) != null) {
-                properties.put(BATCH_HEADER, (String) tmp);
-                return getIndividualMsgsFromBatch(topic, msgId, data, properties, messageMetadata);
+            tmp = headers.getFirst(PRODUCER_NAME);
+            if (tmp != null) {
+                messageMetadata.setProducerName(tmp.toString());
             }
+            tmp = headers.getFirst(SEQUENCE_ID);
+            if (tmp != null) {
+                messageMetadata.setSequenceId(Long.parseLong(tmp.toString()));
+            }
+            tmp = headers.getFirst(REPLICATED_FROM);
+            if (tmp != null) {
+                messageMetadata.setReplicatedFrom(tmp.toString());
+            }
+            tmp = headers.getFirst(PARTITION_KEY);
+            if (tmp != null) {
+                messageMetadata.setPartitionKey(tmp.toString());
+            }
+            tmp = headers.getFirst(COMPRESSION);
+            if (tmp != null) {
+                messageMetadata.setCompression(CompressionType.valueOf(tmp.toString()));
+            }
+            tmp = headers.getFirst(UNCOMPRESSED_SIZE);
+            if (tmp != null) {
+                messageMetadata.setUncompressedSize(Integer.parseInt(tmp.toString()));
+            }
+            tmp = headers.getFirst(ENCRYPTION_ALGO);
+            if (tmp != null) {
+                messageMetadata.setEncryptionAlgo(tmp.toString());
+            }
+            tmp = headers.getFirst(PARTITION_KEY_B64_ENCODED);
+            if (tmp != null) {
+                messageMetadata.setPartitionKeyB64Encoded(Boolean.parseBoolean(tmp.toString()));
+            }
+            tmp = headers.getFirst(MARKER_TYPE);
+            if (tmp != null) {
+                messageMetadata.setMarkerType(Integer.parseInt(tmp.toString()));
+            }
+            tmp = headers.getFirst(TXNID_LEAST_BITS);
+            if (tmp != null) {
+                messageMetadata.setTxnidLeastBits(Long.parseLong(tmp.toString()));
+            }
+            tmp = headers.getFirst(TXNID_MOST_BITS);
+            if (tmp != null) {
+                messageMetadata.setTxnidMostBits(Long.parseLong(tmp.toString()));
+            }
+            tmp = headers.getFirst(HIGHEST_SEQUENCE_ID);
+            if (tmp != null) {
+                messageMetadata.setHighestSequenceId(Long.parseLong(tmp.toString()));
+            }
+            tmp = headers.getFirst(UUID);
+            if (tmp != null) {
+                messageMetadata.setUuid(tmp.toString());
+            }
+            tmp = headers.getFirst(NUM_CHUNKS_FROM_MSG);
+            if (tmp != null) {
+                messageMetadata.setNumChunksFromMsg(Integer.parseInt(tmp.toString()));
+            }
+            tmp = headers.getFirst(TOTAL_CHUNK_MSG_SIZE);
+            if (tmp != null) {
+                messageMetadata.setTotalChunkMsgSize(Integer.parseInt(tmp.toString()));
+            }
+            tmp = headers.getFirst(CHUNK_ID);
+            if (tmp != null) {
+                messageMetadata.setChunkId(Integer.parseInt(tmp.toString()));
+            }
+            tmp = headers.getFirst(NULL_PARTITION_KEY);
+            if (tmp != null) {
+                messageMetadata.setNullPartitionKey(Boolean.parseBoolean(tmp.toString()));
+            }
+            tmp = headers.getFirst(ENCRYPTION_PARAM);
+            if (tmp != null) {
+                messageMetadata.setEncryptionParam(Base64.getDecoder().decode(tmp.toString()));
+            }
+            tmp = headers.getFirst(ORDERING_KEY);
+            if (tmp != null) {
+                messageMetadata.setOrderingKey(Base64.getDecoder().decode(tmp.toString()));
+            }
+            tmp = headers.getFirst(SCHEMA_VERSION);
+            if (tmp != null) {
+                messageMetadata.setSchemaVersion(Base64.getDecoder().decode(tmp.toString()));
+            }
+            tmp = headers.getFirst(ENCRYPTION_PARAM);
+            if (tmp != null) {
+                messageMetadata.setEncryptionParam(Base64.getDecoder().decode(tmp.toString()));
+            }
+            List<Object> tmpList = headers.get(REPLICATED_TO);
+            if (tmpList != null) {
+                for (Object o : tmpList) {
+                    messageMetadata.addReplicateTo(o.toString());
+                }
+            }
+            tmpList = headers.get(ENCRYPTION_KEYS);
+            if (tmpList != null) {
+                for (Object o : tmpList) {
+                    EncryptionKeys encryptionKey = messageMetadata.addEncryptionKey();
+                    encryptionKey.parseFrom(Base64.getDecoder().decode(o.toString()));
+                }
+            }
+
+            tmp = headers.getFirst(BATCH_SIZE_HEADER);
+            if (tmp != null) {
+                properties.put(BATCH_SIZE_HEADER, (String) tmp);
+            }
+
             for (Entry<String, List<Object>> entry : headers.entrySet()) {
                 String header = entry.getKey();
                 if (header.contains("X-Pulsar-PROPERTY-")) {
@@ -1414,13 +1735,33 @@ public class TopicsImpl extends BaseResource implements Topics {
                 }
             }
 
-            return Collections.singletonList(new MessageImpl<byte[]>(topic, msgId, properties,
-                    Unpooled.wrappedBuffer(data), Schema.BYTES, messageMetadata));
+            tmp = headers.getFirst(BATCH_HEADER);
+            if (tmp != null) {
+                properties.put(BATCH_HEADER, (String) tmp);
+            }
+
+            boolean isEncrypted = false;
+            tmp = headers.getFirst("X-Pulsar-Is-Encrypted");
+            if (tmp != null) {
+                isEncrypted = Boolean.parseBoolean(tmp.toString());
+            }
+
+            if (!isEncrypted && response.getHeaderString(BATCH_HEADER) != null) {
+                return getIndividualMsgsFromBatch(topic, msgId, data, properties, messageMetadata, brokerEntryMetadata);
+            }
+
+            MessageImpl message = new MessageImpl(topic, msgId, properties,
+                    Unpooled.wrappedBuffer(data), Schema.BYTES, messageMetadata);
+            if (brokerEntryMetadata != null) {
+                message.setBrokerEntryMetadata(brokerEntryMetadata);
+            }
+            return Collections.singletonList(message);
         }
     }
 
     private List<Message<byte[]>> getIndividualMsgsFromBatch(String topic, String msgId, byte[] data,
-                                 Map<String, String> properties, MessageMetadata msgMetadataBuilder) {
+                                 Map<String, String> properties, MessageMetadata msgMetadataBuilder,
+                                                             BrokerEntryMetadata brokerEntryMetadata) {
         List<Message<byte[]>> ret = new ArrayList<>();
         int batchSize = Integer.parseInt(properties.get(BATCH_HEADER));
         ByteBuf buf = Unpooled.wrappedBuffer(data);
@@ -1435,8 +1776,12 @@ public class TopicsImpl extends BaseResource implements Topics {
                         properties.put(entry.getKey(), entry.getValue());
                     }
                 }
-                ret.add(new MessageImpl<>(topic, batchMsgId, properties, singleMessagePayload,
-                        Schema.BYTES, msgMetadataBuilder));
+                MessageImpl message = new MessageImpl<>(topic, batchMsgId, properties, singleMessagePayload,
+                        Schema.BYTES, msgMetadataBuilder);
+                if (brokerEntryMetadata != null) {
+                    message.setBrokerEntryMetadata(brokerEntryMetadata);
+                }
+                ret.add(message);
             } catch (Exception ex) {
                 log.error("Exception occurred while trying to get BatchMsgId: {}", batchMsgId, ex);
             }
@@ -1486,9 +1831,16 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public Map<BacklogQuotaType, BacklogQuota> getBacklogQuotaMap(String topic) throws PulsarAdminException {
+        return getBacklogQuotaMap(topic, false);
+    }
+
+    @Override
+    public Map<BacklogQuotaType, BacklogQuota> getBacklogQuotaMap(String topic, boolean applied)
+            throws PulsarAdminException {
         try {
             TopicName tn = validateTopic(topic);
             WebTarget path = topicPath(tn, "backlogQuotaMap");
+            path = path.queryParam("applied", applied);
             return request(path).get(new GenericType<Map<BacklogQuotaType, BacklogQuota>>() {
             });
         } catch (Exception e) {
@@ -1497,22 +1849,24 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public void setBacklogQuota(String topic, BacklogQuota backlogQuota) throws PulsarAdminException {
+    public void setBacklogQuota(String topic, BacklogQuota backlogQuota,
+                                BacklogQuotaType backlogQuotaType) throws PulsarAdminException {
         try {
             TopicName tn = validateTopic(topic);
             WebTarget path = topicPath(tn, "backlogQuota");
-            request(path).post(Entity.entity(backlogQuota, MediaType.APPLICATION_JSON), ErrorData.class);
+            request(path.queryParam("backlogQuotaType", backlogQuotaType.toString()))
+                    .post(Entity.entity(backlogQuota, MediaType.APPLICATION_JSON), ErrorData.class);
         } catch (Exception e) {
             throw getApiException(e);
         }
     }
 
     @Override
-    public void removeBacklogQuota(String topic) throws PulsarAdminException {
+    public void removeBacklogQuota(String topic, BacklogQuotaType backlogQuotaType) throws PulsarAdminException {
         try {
             TopicName tn = validateTopic(topic);
             WebTarget path = topicPath(tn, "backlogQuota");
-            request(path.queryParam("backlogQuotaType", BacklogQuotaType.destination_storage.toString()))
+            request(path.queryParam("backlogQuotaType", backlogQuotaType.toString()))
                     .delete(ErrorData.class);
         } catch (Exception e) {
             throw getApiException(e);
@@ -1521,8 +1875,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public Integer getMaxUnackedMessagesOnConsumer(String topic) throws PulsarAdminException {
+        return getMaxUnackedMessagesOnConsumer(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<Integer> getMaxUnackedMessagesOnConsumerAsync(String topic) {
+        return getMaxUnackedMessagesOnConsumerAsync(topic, false);
+    }
+
+    @Override
+    public Integer getMaxUnackedMessagesOnConsumer(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getMaxUnackedMessagesOnConsumerAsync(topic).
+            return getMaxUnackedMessagesOnConsumerAsync(topic, applied).
                     get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
@@ -1535,9 +1899,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<Integer> getMaxUnackedMessagesOnConsumerAsync(String topic) {
+    public CompletableFuture<Integer> getMaxUnackedMessagesOnConsumerAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "maxUnackedMessagesOnConsumer");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<Integer> future = new CompletableFuture<>();
         asyncGetRequest(path, new InvocationCallback<Integer>() {
             @Override
@@ -1687,9 +2052,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public DelayedDeliveryPolicies getDelayedDeliveryPolicy(String topic) throws PulsarAdminException {
+    public DelayedDeliveryPolicies getDelayedDeliveryPolicy(String topic
+            , boolean applied) throws PulsarAdminException {
         try {
-            return getDelayedDeliveryPolicyAsync(topic).
+            return getDelayedDeliveryPolicyAsync(topic, applied).
                     get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
@@ -1702,9 +2068,11 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<DelayedDeliveryPolicies> getDelayedDeliveryPolicyAsync(String topic) {
+    public CompletableFuture<DelayedDeliveryPolicies> getDelayedDeliveryPolicyAsync(String topic
+            , boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "delayedDelivery");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<DelayedDeliveryPolicies> future = new CompletableFuture<>();
         asyncGetRequest(path, new InvocationCallback<DelayedDeliveryPolicies>() {
             @Override
@@ -1718,6 +2086,16 @@ public class TopicsImpl extends BaseResource implements Topics {
             }
         });
         return future;
+    }
+
+    @Override
+    public DelayedDeliveryPolicies getDelayedDeliveryPolicy(String topic) throws PulsarAdminException {
+        return getDelayedDeliveryPolicy(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<DelayedDeliveryPolicies> getDelayedDeliveryPolicyAsync(String topic) {
+        return getDelayedDeliveryPolicyAsync(topic, false);
     }
 
     @Override
@@ -1800,6 +2178,51 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
+    public Boolean getDeduplicationStatus(String topic) throws PulsarAdminException {
+        return getDeduplicationStatus(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<Boolean> getDeduplicationStatusAsync(String topic) {
+        return getDeduplicationStatusAsync(topic, false);
+    }
+
+    @Override
+    public Boolean getDeduplicationStatus(String topic, boolean applied) throws PulsarAdminException {
+        try {
+            return getDeduplicationStatusAsync(topic, applied).
+                    get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Boolean> getDeduplicationStatusAsync(String topic, boolean applied) {
+        TopicName topicName = validateTopic(topic);
+        WebTarget path = topicPath(topicName, "deduplicationEnabled");
+        path = path.queryParam("applied", applied);
+        final CompletableFuture<Boolean> future = new CompletableFuture<>();
+        asyncGetRequest(path, new InvocationCallback<Boolean>() {
+            @Override
+            public void completed(Boolean enabled) {
+                future.complete(enabled);
+            }
+
+            @Override
+            public void failed(Throwable throwable) {
+                future.completeExceptionally(getApiException(throwable.getCause()));
+            }
+        });
+        return future;
+    }
+
+    @Override
     public void enableDeduplication(String topic, boolean enabled) throws PulsarAdminException {
         try {
             enableDeduplicationAsync(topic, enabled).
@@ -1816,6 +2239,28 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public CompletableFuture<Void> enableDeduplicationAsync(String topic, boolean enabled) {
+        TopicName topicName = validateTopic(topic);
+        WebTarget path = topicPath(topicName, "deduplicationEnabled");
+        return asyncPostRequest(path, Entity.entity(enabled, MediaType.APPLICATION_JSON));
+    }
+
+    @Override
+    public void setDeduplicationStatus(String topic, boolean enabled) throws PulsarAdminException {
+        try {
+            enableDeduplicationAsync(topic, enabled).
+                    get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Void> setDeduplicationStatusAsync(String topic, boolean enabled) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "deduplicationEnabled");
         return asyncPostRequest(path, Entity.entity(enabled, MediaType.APPLICATION_JSON));
@@ -1844,9 +2289,40 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public OffloadPolicies getOffloadPolicies(String topic) throws PulsarAdminException {
+    public void removeDeduplicationStatus(String topic) throws PulsarAdminException {
         try {
-            return getOffloadPoliciesAsync(topic).
+            removeDeduplicationStatusAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Void> removeDeduplicationStatusAsync(String topic) {
+        TopicName tn = validateTopic(topic);
+        WebTarget path = topicPath(tn, "deduplicationEnabled");
+        return asyncDeleteRequest(path);
+    }
+
+    @Override
+    public OffloadPolicies getOffloadPolicies(String topic) throws PulsarAdminException {
+        return getOffloadPolicies(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<OffloadPolicies> getOffloadPoliciesAsync(String topic) {
+        return getOffloadPoliciesAsync(topic, false);
+    }
+
+    @Override
+    public OffloadPolicies getOffloadPolicies(String topic, boolean applied) throws PulsarAdminException {
+        try {
+            return getOffloadPoliciesAsync(topic, applied).
                     get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
@@ -1859,13 +2335,14 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<OffloadPolicies> getOffloadPoliciesAsync(String topic) {
+    public CompletableFuture<OffloadPolicies> getOffloadPoliciesAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "offloadPolicies");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<OffloadPolicies> future = new CompletableFuture<>();
-        asyncGetRequest(path, new InvocationCallback<OffloadPolicies>() {
+        asyncGetRequest(path, new InvocationCallback<OffloadPoliciesImpl>() {
             @Override
-            public void completed(OffloadPolicies offloadPolicies) {
+            public void completed(OffloadPoliciesImpl offloadPolicies) {
                 future.complete(offloadPolicies);
             }
 
@@ -1896,7 +2373,7 @@ public class TopicsImpl extends BaseResource implements Topics {
     public CompletableFuture<Void> setOffloadPoliciesAsync(String topic, OffloadPolicies offloadPolicies) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "offloadPolicies");
-        return asyncPostRequest(path, Entity.entity(offloadPolicies, MediaType.APPLICATION_JSON));
+        return asyncPostRequest(path, Entity.entity((OffloadPoliciesImpl) offloadPolicies, MediaType.APPLICATION_JSON));
     }
 
     @Override
@@ -1923,8 +2400,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public Integer getMaxUnackedMessagesOnSubscription(String topic) throws PulsarAdminException {
+        return getMaxUnackedMessagesOnSubscription(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<Integer> getMaxUnackedMessagesOnSubscriptionAsync(String topic) {
+        return getMaxUnackedMessagesOnSubscriptionAsync(topic, false);
+    }
+
+    @Override
+    public Integer getMaxUnackedMessagesOnSubscription(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getMaxUnackedMessagesOnSubscriptionAsync(topic).
+            return getMaxUnackedMessagesOnSubscriptionAsync(topic, applied).
                     get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
@@ -1937,9 +2424,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<Integer> getMaxUnackedMessagesOnSubscriptionAsync(String topic) {
+    public CompletableFuture<Integer> getMaxUnackedMessagesOnSubscriptionAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "maxUnackedMessagesOnSubscription");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<Integer> future = new CompletableFuture<>();
         asyncGetRequest(path, new InvocationCallback<Integer>() {
             @Override
@@ -2062,8 +2550,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public RetentionPolicies getRetention(String topic) throws PulsarAdminException {
+        return getRetention(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<RetentionPolicies> getRetentionAsync(String topic) {
+        return getRetentionAsync(topic, false);
+    }
+
+    @Override
+    public RetentionPolicies getRetention(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getRetentionAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getRetentionAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2075,9 +2573,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<RetentionPolicies> getRetentionAsync(String topic) {
+    public CompletableFuture<RetentionPolicies> getRetentionAsync(String topic, boolean applied) {
         TopicName tn = validateTopic(topic);
         WebTarget path = topicPath(tn, "retention");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<RetentionPolicies> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<RetentionPolicies>() {
@@ -2138,8 +2637,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public PersistencePolicies getPersistence(String topic) throws PulsarAdminException {
+        return getPersistence(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<PersistencePolicies> getPersistenceAsync(String topic) {
+        return getPersistenceAsync(topic, false);
+    }
+
+    @Override
+    public PersistencePolicies getPersistence(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getPersistenceAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getPersistenceAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2151,9 +2660,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<PersistencePolicies> getPersistenceAsync(String topic) {
+    public CompletableFuture<PersistencePolicies> getPersistenceAsync(String topic, boolean applied) {
         TopicName tn = validateTopic(topic);
         WebTarget path = topicPath(tn, "persistence");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<PersistencePolicies> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<PersistencePolicies>() {
@@ -2192,9 +2702,9 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public DispatchRate getDispatchRate(String topic) throws PulsarAdminException {
+    public DispatchRate getDispatchRate(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getDispatchRateAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getDispatchRateAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2206,23 +2716,34 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<DispatchRate> getDispatchRateAsync(String topic) {
+    public CompletableFuture<DispatchRate> getDispatchRateAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "dispatchRate");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<DispatchRate> future = new CompletableFuture<>();
         asyncGetRequest(path,
-            new InvocationCallback<DispatchRate>() {
-                @Override
-                public void completed(DispatchRate dispatchRate) {
-                    future.complete(dispatchRate);
-                }
+                new InvocationCallback<DispatchRate>() {
+                    @Override
+                    public void completed(DispatchRate dispatchRate) {
+                        future.complete(dispatchRate);
+                    }
 
-                @Override
-                public void failed(Throwable throwable) {
-                    future.completeExceptionally(getApiException(throwable.getCause()));
-                }
-            });
+                    @Override
+                    public void failed(Throwable throwable) {
+                        future.completeExceptionally(getApiException(throwable.getCause()));
+                    }
+                });
         return future;
+    }
+
+    @Override
+    public DispatchRate getDispatchRate(String topic) throws PulsarAdminException {
+        return getDispatchRate(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<DispatchRate> getDispatchRateAsync(String topic) {
+        return getDispatchRateAsync(topic, false);
     }
 
     @Override
@@ -2268,9 +2789,9 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public DispatchRate getSubscriptionDispatchRate(String topic) throws PulsarAdminException {
+    public DispatchRate getSubscriptionDispatchRate(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getSubscriptionDispatchRateAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getSubscriptionDispatchRateAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2282,9 +2803,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<DispatchRate> getSubscriptionDispatchRateAsync(String topic) {
+    public CompletableFuture<DispatchRate> getSubscriptionDispatchRateAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "subscriptionDispatchRate");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<DispatchRate> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<DispatchRate>() {
@@ -2299,6 +2821,16 @@ public class TopicsImpl extends BaseResource implements Topics {
                     }
                 });
         return future;
+    }
+
+    @Override
+    public DispatchRate getSubscriptionDispatchRate(String topic) throws PulsarAdminException {
+        return getSubscriptionDispatchRate(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<DispatchRate> getSubscriptionDispatchRateAsync(String topic) {
+        return getSubscriptionDispatchRateAsync(topic, false);
     }
 
     @Override
@@ -2345,8 +2877,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public Long getCompactionThreshold(String topic) throws PulsarAdminException {
+        return getCompactionThreshold(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<Long> getCompactionThresholdAsync(String topic) {
+        return getCompactionThresholdAsync(topic, false);
+    }
+
+    @Override
+    public Long getCompactionThreshold(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getCompactionThresholdAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getCompactionThresholdAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2358,9 +2900,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<Long> getCompactionThresholdAsync(String topic) {
+    public CompletableFuture<Long> getCompactionThresholdAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "compactionThreshold");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<Long> future = new CompletableFuture<>();
         asyncGetRequest(path,
             new InvocationCallback<Long>() {
@@ -2575,8 +3118,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public Integer getMaxProducers(String topic) throws PulsarAdminException {
+        return getMaxProducers(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<Integer> getMaxProducersAsync(String topic) {
+        return getMaxProducersAsync(topic, false);
+    }
+
+    @Override
+    public Integer getMaxProducers(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getMaxProducersAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getMaxProducersAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2588,9 +3141,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<Integer> getMaxProducersAsync(String topic) {
+    public CompletableFuture<Integer> getMaxProducersAsync(String topic, boolean applied) {
         TopicName tn = validateTopic(topic);
         WebTarget path = topicPath(tn, "maxProducers");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<Integer> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<Integer>() {
@@ -2804,8 +3358,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public Integer getMaxConsumers(String topic) throws PulsarAdminException {
+        return getMaxConsumers(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<Integer> getMaxConsumersAsync(String topic) {
+        return getMaxConsumersAsync(topic, false);
+    }
+
+    @Override
+    public Integer getMaxConsumers(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getMaxConsumersAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getMaxConsumersAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2817,9 +3381,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<Integer> getMaxConsumersAsync(String topic) {
+    public CompletableFuture<Integer> getMaxConsumersAsync(String topic, boolean applied) {
         TopicName tn = validateTopic(topic);
         WebTarget path = topicPath(tn, "maxConsumers");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<Integer> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<Integer>() {
@@ -2956,9 +3521,12 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public DispatchRate getReplicatorDispatchRate(String topic) throws PulsarAdminException {
+    public void setSubscriptionTypesEnabled(
+            String topic, Set<SubscriptionType>
+            subscriptionTypesEnabled) throws PulsarAdminException {
         try {
-            return getReplicatorDispatchRateAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            setSubscriptionTypesEnabledAsync(topic, subscriptionTypesEnabled)
+                    .get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -2970,9 +3538,76 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
+    public CompletableFuture<Void> setSubscriptionTypesEnabledAsync(String topic,
+                                                                    Set<SubscriptionType> subscriptionTypesEnabled) {
+        TopicName tn = validateTopic(topic);
+        WebTarget path = topicPath(tn, "subscriptionTypesEnabled");
+        return asyncPostRequest(path, Entity.entity(subscriptionTypesEnabled, MediaType.APPLICATION_JSON));
+    }
+
+    @Override
+    public Set<SubscriptionType> getSubscriptionTypesEnabled(String topic) throws PulsarAdminException {
+        try {
+            return getSubscriptionTypesEnabledAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Set<SubscriptionType>> getSubscriptionTypesEnabledAsync(String topic) {
+        TopicName topicName = validateTopic(topic);
+        WebTarget path = topicPath(topicName, "subscriptionTypesEnabled");
+        final CompletableFuture<Set<SubscriptionType>> future = new CompletableFuture<>();
+        asyncGetRequest(path,
+                new InvocationCallback<Set<SubscriptionType>>() {
+                    @Override
+                    public void completed(Set<SubscriptionType> subscriptionTypesEnabled) {
+                        future.complete(subscriptionTypesEnabled);
+                    }
+
+                    @Override
+                    public void failed(Throwable throwable) {
+                        future.completeExceptionally(getApiException(throwable.getCause()));
+                    }
+                });
+        return future;
+    }
+
+    @Override
+    public DispatchRate getReplicatorDispatchRate(String topic) throws PulsarAdminException {
+        return getReplicatorDispatchRate(topic, false);
+    }
+
+    @Override
     public CompletableFuture<DispatchRate> getReplicatorDispatchRateAsync(String topic) {
+        return getReplicatorDispatchRateAsync(topic, false);
+    }
+
+    @Override
+    public DispatchRate getReplicatorDispatchRate(String topic, boolean applied) throws PulsarAdminException {
+        try {
+            return getReplicatorDispatchRateAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<DispatchRate> getReplicatorDispatchRateAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "replicatorDispatchRate");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<DispatchRate> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<DispatchRate>() {
@@ -3033,8 +3668,18 @@ public class TopicsImpl extends BaseResource implements Topics {
 
     @Override
     public SubscribeRate getSubscribeRate(String topic) throws PulsarAdminException {
+        return getSubscribeRate(topic, false);
+    }
+
+    @Override
+    public CompletableFuture<SubscribeRate> getSubscribeRateAsync(String topic) {
+        return getSubscribeRateAsync(topic, false);
+    }
+
+    @Override
+    public SubscribeRate getSubscribeRate(String topic, boolean applied) throws PulsarAdminException {
         try {
-            return getSubscribeRateAsync(topic).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            return getSubscribeRateAsync(topic, applied).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -3046,9 +3691,10 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
-    public CompletableFuture<SubscribeRate> getSubscribeRateAsync(String topic) {
+    public CompletableFuture<SubscribeRate> getSubscribeRateAsync(String topic, boolean applied) {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "subscribeRate");
+        path = path.queryParam("applied", applied);
         final CompletableFuture<SubscribeRate> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<SubscribeRate>() {
@@ -3105,6 +3751,30 @@ public class TopicsImpl extends BaseResource implements Topics {
         TopicName topicName = validateTopic(topic);
         WebTarget path = topicPath(topicName, "subscribeRate");
         return asyncDeleteRequest(path);
+    }
+
+    @Override
+    public void setReplicatedSubscriptionStatus(String topic, String subName, boolean enabled)
+            throws PulsarAdminException {
+        try {
+            setReplicatedSubscriptionStatusAsync(topic, subName, enabled).get(this.readTimeoutMs,
+                    TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Void> setReplicatedSubscriptionStatusAsync(String topic, String subName, boolean enabled) {
+        TopicName topicName = validateTopic(topic);
+        String encodedSubName = Codec.encode(subName);
+        WebTarget path = topicPath(topicName, "subscription", encodedSubName, "replicatedSubscriptionStatus");
+        return asyncPostRequest(path, Entity.entity(enabled, MediaType.APPLICATION_JSON));
     }
 
     private static final Logger log = LoggerFactory.getLogger(TopicsImpl.class);

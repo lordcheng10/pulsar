@@ -19,6 +19,7 @@
 package org.apache.pulsar.client.admin.internal;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -31,6 +32,7 @@ import javax.ws.rs.client.WebTarget;
 import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.admin.Schemas;
 import org.apache.pulsar.client.api.Authentication;
+import org.apache.pulsar.client.impl.schema.SchemaInfoImpl;
 import org.apache.pulsar.client.internal.DefaultImplementation;
 import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.protocol.schema.DeleteSchemaResponse;
@@ -45,11 +47,13 @@ import org.apache.pulsar.common.schema.SchemaType;
 
 public class SchemasImpl extends BaseResource implements Schemas {
 
-    private final WebTarget target;
+    private final WebTarget adminV2;
+    private final WebTarget adminV1;
 
     public SchemasImpl(WebTarget web, Authentication auth, long readTimeoutMs) {
         super(auth, readTimeoutMs);
-        this.target = web.path("/admin/v2/schemas");
+        this.adminV1 = web.path("/admin/schemas");
+        this.adminV2 = web.path("/admin/v2/schemas");
     }
 
     @Override
@@ -407,53 +411,50 @@ public class SchemasImpl extends BaseResource implements Schemas {
     }
 
     private WebTarget schemaPath(TopicName topicName) {
-        return target
-            .path(topicName.getTenant())
-            .path(topicName.getNamespacePortion())
-            .path(topicName.getEncodedLocalName())
-            .path("schema");
+        return topicPath(topicName, "schema");
     }
 
     private WebTarget versionPath(TopicName topicName) {
-        return target
-                .path(topicName.getTenant())
-                .path(topicName.getNamespacePortion())
-                .path(topicName.getEncodedLocalName())
-                .path("version");
+        return topicPath(topicName, "version");
     }
 
     private WebTarget schemasPath(TopicName topicName) {
-        return target
-                .path(topicName.getTenant())
-                .path(topicName.getNamespacePortion())
-                .path(topicName.getEncodedLocalName())
-                .path("schemas");
+        return topicPath(topicName, "schemas");
     }
 
     private WebTarget compatibilityPath(TopicName topicName) {
-        return target
-                .path(topicName.getTenant())
-                .path(topicName.getNamespacePortion())
-                .path(topicName.getEncodedLocalName())
-                .path("compatibility");
+        return topicPath(topicName, "compatibility");
+    }
+
+    private WebTarget topicPath(TopicName topic, String... parts) {
+        final WebTarget base = topic.isV2() ? adminV2 : adminV1;
+        WebTarget topicPath = base.path(topic.getRestPath(false));
+        topicPath = WebTargets.addParts(topicPath, parts);
+        return topicPath;
     }
 
     // the util function converts `GetSchemaResponse` to `SchemaInfo`
     static SchemaInfo convertGetSchemaResponseToSchemaInfo(TopicName tn,
                                                            GetSchemaResponse response) {
-        SchemaInfo info = new SchemaInfo();
+
         byte[] schema;
         if (response.getType() == SchemaType.KEY_VALUE) {
-            schema = DefaultImplementation.convertKeyValueDataStringToSchemaInfoSchema(
-                    response.getData().getBytes(UTF_8));
+            try {
+                schema = DefaultImplementation.getDefaultImplementation().convertKeyValueDataStringToSchemaInfoSchema(
+                        response.getData().getBytes(UTF_8));
+            } catch (IOException conversionError) {
+                throw new RuntimeException(conversionError);
+            }
         } else {
             schema = response.getData().getBytes(UTF_8);
         }
-        info.setSchema(schema);
-        info.setType(response.getType());
-        info.setProperties(response.getProperties());
-        info.setName(tn.getLocalName());
-        return info;
+
+        return SchemaInfoImpl.builder()
+                .schema(schema)
+                .type(response.getType())
+                .properties(response.getProperties())
+                .name(tn.getLocalName())
+                .build();
     }
 
     static SchemaInfoWithVersion convertGetSchemaResponseToSchemaInfoWithVersion(TopicName tn,
@@ -470,28 +471,31 @@ public class SchemasImpl extends BaseResource implements Schemas {
 
 
     // the util function exists for backward compatibility concern
-    static String convertSchemaDataToStringLegacy(SchemaInfo schemaInfo) {
+    static String convertSchemaDataToStringLegacy(SchemaInfo schemaInfo) throws IOException {
         byte[] schemaData = schemaInfo.getSchema();
         if (null == schemaInfo.getSchema()) {
             return "";
         }
 
         if (schemaInfo.getType() == SchemaType.KEY_VALUE) {
-           return DefaultImplementation.convertKeyValueSchemaInfoDataToString(
-                   DefaultImplementation.decodeKeyValueSchemaInfo(schemaInfo));
+           return DefaultImplementation.getDefaultImplementation().convertKeyValueSchemaInfoDataToString(
+                   DefaultImplementation.getDefaultImplementation().decodeKeyValueSchemaInfo(schemaInfo));
         }
 
         return new String(schemaData, UTF_8);
     }
 
     static PostSchemaPayload convertSchemaInfoToPostSchemaPayload(SchemaInfo schemaInfo) {
-
-        PostSchemaPayload payload = new PostSchemaPayload();
-        payload.setType(schemaInfo.getType().name());
-        payload.setProperties(schemaInfo.getProperties());
-        // for backward compatibility concern, we convert `bytes` to `string`
-        // we can consider fixing it in a new version of rest endpoint
-        payload.setSchema(convertSchemaDataToStringLegacy(schemaInfo));
-        return payload;
+        try {
+            PostSchemaPayload payload = new PostSchemaPayload();
+            payload.setType(schemaInfo.getType().name());
+            payload.setProperties(schemaInfo.getProperties());
+            // for backward compatibility concern, we convert `bytes` to `string`
+            // we can consider fixing it in a new version of rest endpoint
+            payload.setSchema(convertSchemaDataToStringLegacy(schemaInfo));
+            return payload;
+        } catch (IOException conversionError) {
+            throw new RuntimeException(conversionError);
+        }
     }
 }

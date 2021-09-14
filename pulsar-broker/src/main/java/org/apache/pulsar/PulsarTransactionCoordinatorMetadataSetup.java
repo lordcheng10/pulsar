@@ -22,7 +22,8 @@ import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.TopicName;
-import org.apache.zookeeper.ZooKeeper;
+import org.apache.pulsar.common.util.CmdGenerateDocs;
+import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
 
 /**
  * Setup the transaction coordinator metadata for a cluster, the setup will create pulsar/system namespace and create
@@ -52,6 +53,8 @@ public class PulsarTransactionCoordinatorMetadataSetup {
         @Parameter(names = { "-h", "--help" }, description = "Show this help message")
         private boolean help = false;
 
+        @Parameter(names = {"-g", "--generate-docs"}, description = "Generate docs")
+        private boolean generateDocs = false;
     }
 
     public static void main(String[] args) throws Exception {
@@ -62,6 +65,12 @@ public class PulsarTransactionCoordinatorMetadataSetup {
             jcommander.parse(args);
             if (arguments.help) {
                 jcommander.usage();
+                return;
+            }
+            if (arguments.generateDocs) {
+                CmdGenerateDocs cmd = new CmdGenerateDocs("pulsar");
+                cmd.addCommand("initialize-transaction-coordinator-metadata", arguments);
+                cmd.run(null);
                 return;
             }
         } catch (Exception e) {
@@ -80,20 +89,20 @@ public class PulsarTransactionCoordinatorMetadataSetup {
             System.exit(1);
         }
 
-        ZooKeeper configStoreZk = PulsarClusterMetadataSetup
-                .initZk(arguments.configurationStore, arguments.zkSessionTimeoutMillis);
+        try (MetadataStoreExtended configStore = PulsarClusterMetadataSetup
+                .initMetadataStore(arguments.configurationStore, arguments.zkSessionTimeoutMillis)) {
+            // Create system tenant
+            PulsarClusterMetadataSetup
+                    .createTenantIfAbsent(configStore, NamespaceName.SYSTEM_NAMESPACE.getTenant(), arguments.cluster);
 
-        // Create system tenant
-        PulsarClusterMetadataSetup
-                .createTenantIfAbsent(configStoreZk, NamespaceName.SYSTEM_NAMESPACE.getTenant(), arguments.cluster);
+            // Create system namespace
+            PulsarClusterMetadataSetup.createNamespaceIfAbsent(configStore, NamespaceName.SYSTEM_NAMESPACE,
+                    arguments.cluster);
 
-        // Create system namespace
-        PulsarClusterMetadataSetup.createNamespaceIfAbsent(configStoreZk, NamespaceName.SYSTEM_NAMESPACE,
-                arguments.cluster);
-
-        // Create transaction coordinator assign partitioned topic
-        PulsarClusterMetadataSetup.createPartitionedTopic(configStoreZk, TopicName.TRANSACTION_COORDINATOR_ASSIGN,
-                arguments.numTransactionCoordinators);
+            // Create transaction coordinator assign partitioned topic
+            PulsarClusterMetadataSetup.createPartitionedTopic(configStore, TopicName.TRANSACTION_COORDINATOR_ASSIGN,
+                    arguments.numTransactionCoordinators);
+        }
 
         System.out.println("Transaction coordinator metadata setup success");
     }

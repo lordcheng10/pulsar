@@ -26,17 +26,24 @@
 #include "PartitionedConsumerImpl.h"
 #include "MultiTopicsConsumerImpl.h"
 #include "PatternMultiTopicsConsumerImpl.h"
-#include "SimpleLoggerImpl.h"
+#include <pulsar/ConsoleLoggerFactory.h>
 #include <boost/algorithm/string/predicate.hpp>
 #include <sstream>
 #include <lib/HTTPLookupService.h>
 #include <lib/TopicName.h>
 #include <algorithm>
-#include <regex>
 #include <random>
 #include <mutex>
 #ifdef USE_LOG4CXX
 #include "Log4CxxLogger.h"
+#endif
+
+#ifdef PULSAR_USE_BOOST_REGEX
+#include <boost/regex.hpp>
+#define PULSAR_REGEX_NAMESPACE boost
+#else
+#include <regex>
+#define PULSAR_REGEX_NAMESPACE std
 #endif
 
 DECLARE_LOG_OBJECT()
@@ -45,7 +52,7 @@ namespace pulsar {
 
 static const char hexDigits[] = {'0', '1', '2', '3', '4', '5', '6', '7',
                                  '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
-static std::uniform_int_distribution<> hexDigitsDist(0, sizeof(hexDigits));
+static std::uniform_int_distribution<> hexDigitsDist(0, sizeof(hexDigits) - 1);
 static std::mt19937 randomEngine =
     std::mt19937(std::chrono::high_resolution_clock::now().time_since_epoch().count());
 
@@ -82,6 +89,7 @@ ClientImpl::ClientImpl(const std::string& serviceUrl, const ClientConfiguration&
       state_(Open),
       serviceUrl_(serviceUrl),
       clientConfiguration_(detectTls(serviceUrl, clientConfiguration)),
+      memoryLimitController_(clientConfiguration.getMemoryLimit()),
       ioExecutorProvider_(std::make_shared<ExecutorServiceProvider>(clientConfiguration_.getIOThreads())),
       listenerExecutorProvider_(
           std::make_shared<ExecutorServiceProvider>(clientConfiguration_.getMessageListenerThreads())),
@@ -100,11 +108,11 @@ ClientImpl::ClientImpl(const std::string& serviceUrl, const ClientConfiguration&
             loggerFactory = Log4CxxLoggerFactory::create(clientConfiguration_.getLogConfFilePath());
         } else {
             // Use default simple console logger
-            loggerFactory = SimpleLoggerFactory::create();
+            loggerFactory.reset(new ConsoleLoggerFactory);
         }
 #else
         // Use default simple console logger
-        loggerFactory = SimpleLoggerFactory::create();
+        loggerFactory.reset(new ConsoleLoggerFactory);
 #endif
     }
     LogUtils::setLoggerFactory(std::move(loggerFactory));
@@ -124,6 +132,8 @@ ClientImpl::ClientImpl(const std::string& serviceUrl, const ClientConfiguration&
 ClientImpl::~ClientImpl() { shutdown(); }
 
 const ClientConfiguration& ClientImpl::conf() const { return clientConfiguration_; }
+
+MemoryLimitController& ClientImpl::getMemoryLimitController() { return memoryLimitController_; }
 
 ExecutorServiceProviderPtr ClientImpl::getIOExecutorProvider() { return ioExecutorProvider_; }
 
@@ -264,7 +274,7 @@ void ClientImpl::createPatternMultiTopicsConsumer(const Result result, const Nam
     if (result == ResultOk) {
         ConsumerImplBasePtr consumer;
 
-        std::regex pattern(regexPattern);
+        PULSAR_REGEX_NAMESPACE::regex pattern(regexPattern);
 
         NamespaceTopicsPtr matchTopics =
             PatternMultiTopicsConsumerImpl::topicsPatternFilter(*topics, pattern);
@@ -477,8 +487,9 @@ void ClientImpl::closeAsync(CloseCallback callback) {
     state_ = Closing;
     lock.unlock();
 
-    LOG_INFO("Closing Pulsar client");
     SharedInt numberOfOpenHandlers = std::make_shared<int>(producers.size() + consumers.size());
+    LOG_INFO("Closing Pulsar client with " << producers.size() << " producers and " << consumers.size()
+                                           << " consumers");
 
     for (ProducersList::iterator it = producers.begin(); it != producers.end(); ++it) {
         ProducerImplBasePtr producer = it->lock();
@@ -503,7 +514,7 @@ void ClientImpl::closeAsync(CloseCallback callback) {
     }
 
     if (*numberOfOpenHandlers == 0 && callback) {
-        callback(ResultOk);
+        handleClose(ResultOk, numberOfOpenHandlers, callback);
     }
 }
 
@@ -556,10 +567,21 @@ void ClientImpl::shutdown() {
         }
     }
 
-    pool_.close();
+    if (producers.size() + consumers.size() > 0) {
+        LOG_DEBUG(producers.size() << " producers and " << consumers.size()
+                                   << " consumers have been shutdown.");
+    }
+    if (!pool_.close()) {
+        // pool_ has already been closed. It means shutdown() has been called before.
+        return;
+    }
+    LOG_DEBUG("ConnectionPool is closed");
     ioExecutorProvider_->close();
+    LOG_DEBUG("ioExecutorProvider_ is closed");
     listenerExecutorProvider_->close();
+    LOG_DEBUG("listenerExecutorProvider_ is closed");
     partitionListenerExecutorProvider_->close();
+    LOG_DEBUG("partitionListenerExecutorProvider_ is closed");
 }
 
 uint64_t ClientImpl::newProducerId() {
@@ -575,6 +597,30 @@ uint64_t ClientImpl::newConsumerId() {
 uint64_t ClientImpl::newRequestId() {
     Lock lock(mutex_);
     return requestIdGenerator_++;
+}
+
+uint64_t ClientImpl::getNumberOfProducers() {
+    Lock lock(mutex_);
+    uint64_t numberOfAliveProducers = 0;
+    for (const auto& producer : producers_) {
+        const auto& producerImpl = producer.lock();
+        if (producerImpl) {
+            numberOfAliveProducers += producerImpl->getNumberOfConnectedProducer();
+        }
+    }
+    return numberOfAliveProducers;
+}
+
+uint64_t ClientImpl::getNumberOfConsumers() {
+    Lock lock(mutex_);
+    uint64_t numberOfAliveConsumers = 0;
+    for (const auto& consumer : consumers_) {
+        const auto consumerImpl = consumer.lock();
+        if (consumerImpl) {
+            numberOfAliveConsumers += consumerImpl->getNumberOfConnectedConsumer();
+        }
+    }
+    return numberOfAliveConsumers;
 }
 
 const ClientConfiguration& ClientImpl::getClientConfig() const { return clientConfiguration_; }

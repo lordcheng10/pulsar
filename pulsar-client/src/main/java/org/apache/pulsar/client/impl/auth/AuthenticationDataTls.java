@@ -32,13 +32,17 @@ import org.apache.pulsar.common.util.SecurityUtility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+
 public class AuthenticationDataTls implements AuthenticationDataProvider {
+    private static final long serialVersionUID = 1L;
     protected X509Certificate[] tlsCertificates;
     protected PrivateKey tlsPrivateKey;
-    private FileModifiedTimeUpdater certFile, keyFile;
+    private transient FileModifiedTimeUpdater certFile, keyFile;
     // key and cert using stream
-    private InputStream certStream, keyStream;
-    private Supplier<ByteArrayInputStream> certStreamProvider, keyStreamProvider, trustStoreStreamProvider;
+    private transient InputStream certStream, keyStream;
+    @SuppressFBWarnings(value="SE_TRANSIENT_FIELD_NOT_RESTORED", justification = "Using custom serializer which Findbugs can't detect")
+    private transient Supplier<ByteArrayInputStream> certStreamProvider, keyStreamProvider, trustStoreStreamProvider;
 
     public AuthenticationDataTls(String certFilePath, String keyFilePath) throws KeyManagementException {
         if (certFilePath == null) {

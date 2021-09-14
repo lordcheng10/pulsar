@@ -29,6 +29,7 @@ import org.apache.pulsar.client.impl.ProducerImpl;
 import org.apache.pulsar.common.configuration.PulsarConfigurationLoader;
 import org.apache.pulsar.common.policies.data.SubscriptionStats;
 import org.apache.pulsar.common.policies.data.TopicStats;
+import org.apache.pulsar.metadata.impl.ZKMetadataStore;
 import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,13 +62,14 @@ public class ProxyEnableHAProxyProtocolTest extends MockedPulsarServiceBaseTest 
 
         proxyService = Mockito.spy(new ProxyService(proxyConfig, new AuthenticationService(
                 PulsarConfigurationLoader.convertFrom(proxyConfig))));
-        doReturn(mockZooKeeperClientFactory).when(proxyService).getZooKeeperClientFactory();
+        doReturn(new ZKMetadataStore(mockZooKeeper)).when(proxyService).createLocalMetadataStore();
+        doReturn(new ZKMetadataStore(mockZooKeeperGlobal)).when(proxyService).createConfigurationMetadataStore();
 
         proxyService.start();
     }
 
     @Override
-    @AfterClass
+    @AfterClass(alwaysRun = true)
     protected void cleanup() throws Exception {
         internalCleanup();
 
@@ -103,15 +105,15 @@ public class ProxyEnableHAProxyProtocolTest extends MockedPulsarServiceBaseTest 
         Assert.assertEquals(received, messages);
 
         TopicStats topicStats = admin.topics().getStats(topicName);
-        Assert.assertEquals(topicStats.subscriptions.size(), 1);
-        SubscriptionStats subscriptionStats = topicStats.subscriptions.get(subName);
-        Assert.assertEquals(subscriptionStats.consumers.size(), 1);
-        Assert.assertEquals(subscriptionStats.consumers.get(0).getAddress(),
+        Assert.assertEquals(topicStats.getSubscriptions().size(), 1);
+        SubscriptionStats subscriptionStats = topicStats.getSubscriptions().get(subName);
+        Assert.assertEquals(subscriptionStats.getConsumers().size(), 1);
+        Assert.assertEquals(subscriptionStats.getConsumers().get(0).getAddress(),
                 ((ConsumerImpl) consumer).getClientCnx().ctx().channel().localAddress().toString().replaceFirst("/", ""));
 
         topicStats = admin.topics().getStats(topicName);
-        Assert.assertEquals(topicStats.publishers.size(), 1);
-        Assert.assertEquals(topicStats.publishers.get(0).getAddress(),
+        Assert.assertEquals(topicStats.getPublishers().size(), 1);
+        Assert.assertEquals(topicStats.getPublishers().get(0).getAddress(),
                 ((ProducerImpl) producer).getClientCnx().ctx().channel().localAddress().toString().replaceFirst("/", ""));
     }
 }

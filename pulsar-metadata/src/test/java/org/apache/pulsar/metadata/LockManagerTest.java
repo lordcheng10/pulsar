@@ -19,34 +19,38 @@
 package org.apache.pulsar.metadata;
 
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.fail;
-
+import static org.testng.Assert.assertFalse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Optional;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-
+import java.util.function.Supplier;
 import lombok.Cleanup;
-
+import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.metadata.api.MetadataCache;
 import org.apache.pulsar.metadata.api.MetadataStoreConfig;
 import org.apache.pulsar.metadata.api.MetadataStoreException.LockBusyException;
 import org.apache.pulsar.metadata.api.coordination.CoordinationService;
 import org.apache.pulsar.metadata.api.coordination.LockManager;
 import org.apache.pulsar.metadata.api.coordination.ResourceLock;
+import org.apache.pulsar.metadata.api.extended.CreateOption;
 import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
 import org.apache.pulsar.metadata.coordination.impl.CoordinationServiceImpl;
+import org.awaitility.Awaitility;
 import org.testng.annotations.Test;
 
 public class LockManagerTest extends BaseMetadataStoreTest {
 
     @Test(dataProvider = "impl")
-    public void acquireLocks(String provider, String url) throws Exception {
+    public void acquireLocks(String provider, Supplier<String> urlSupplier) throws Exception {
         @Cleanup
-        MetadataStoreExtended store = MetadataStoreExtended.create(url, MetadataStoreConfig.builder().build());
+        MetadataStoreExtended store = MetadataStoreExtended.create(urlSupplier.get(),
+                MetadataStoreConfig.builder().build());
 
         @Cleanup
         CoordinationService coordinationService = new CoordinationServiceImpl(store);
@@ -68,13 +72,6 @@ public class LockManagerTest extends BaseMetadataStoreTest {
             latchLock1.countDown();
         });
         assertEquals(latchLock1.getCount(), 1);
-
-        try {
-            lockManager.acquireLock("/my/path/1", "lock-2").join();
-            fail("should have failed");
-        } catch (CompletionException e) {
-            assertException(e, LockBusyException.class);
-        }
 
         assertEquals(lockManager.listLocks("/my/path").join(), Collections.singletonList("1"));
         assertEquals(lockManager.readLock("/my/path/1").join(), Optional.of("lock-1"));
@@ -99,9 +96,10 @@ public class LockManagerTest extends BaseMetadataStoreTest {
     }
 
     @Test(dataProvider = "impl")
-    public void cleanupOnClose(String provider, String url) throws Exception {
+    public void cleanupOnClose(String provider, Supplier<String> urlSupplier) throws Exception {
         @Cleanup
-        MetadataStoreExtended store = MetadataStoreExtended.create(url, MetadataStoreConfig.builder().build());
+        MetadataStoreExtended store = MetadataStoreExtended.create(urlSupplier.get(),
+                MetadataStoreConfig.builder().build());
 
         @Cleanup
         CoordinationService coordinationService = new CoordinationServiceImpl(store);
@@ -128,9 +126,10 @@ public class LockManagerTest extends BaseMetadataStoreTest {
     }
 
     @Test(dataProvider = "impl")
-    public void updateValue(String provider, String url) throws Exception {
+    public void updateValue(String provider, Supplier<String> urlSupplier) throws Exception {
         @Cleanup
-        MetadataStoreExtended store = MetadataStoreExtended.create(url, MetadataStoreConfig.builder().build());
+        MetadataStoreExtended store = MetadataStoreExtended.create(urlSupplier.get(),
+                MetadataStoreConfig.builder().build());
 
         MetadataCache<String> cache = store.getMetadataCache(String.class);
 
@@ -147,5 +146,92 @@ public class LockManagerTest extends BaseMetadataStoreTest {
         lock.updateValue("value-2").join();
         assertEquals(lock.getValue(), "value-2");
         assertEquals(cache.get("/my/path/1").join().get(), "value-2");
+    }
+
+    @Test(dataProvider = "impl")
+    public void revalidateLockWithinSameSession(String provider, Supplier<String> urlSupplier) throws Exception {
+        @Cleanup
+        MetadataStoreExtended store = MetadataStoreExtended.create(urlSupplier.get(),
+                MetadataStoreConfig.builder().build());
+
+        @Cleanup
+        CoordinationService cs2 = new CoordinationServiceImpl(store);
+        @Cleanup
+        LockManager<String> lm2 = cs2.getLockManager(String.class);
+
+        String path1 = newKey();
+
+        // Simulate existing lock with same content
+        store.put(path1, "\"value-1\"".getBytes(StandardCharsets.UTF_8), Optional.of(-1L),
+                EnumSet.of(CreateOption.Ephemeral)).join();
+        ResourceLock<String> rl2 = lm2.acquireLock(path1, "value-1").join();
+
+        assertEquals(new String(store.get(path1).join().get().getValue()), "\"value-1\"");
+        assertFalse(rl2.getLockExpiredFuture().isDone());
+
+        String path2 = newKey();
+
+        // Simulate existing lock with different content
+        store.put(path2, "\"value-1\"".getBytes(StandardCharsets.UTF_8), Optional.of(-1L),
+                EnumSet.of(CreateOption.Ephemeral)).join();
+        rl2 = lm2.acquireLock(path2, "value-2").join();
+
+        assertEquals(new String(store.get(path2).join().get().getValue()), "\"value-2\"");
+        assertFalse(rl2.getLockExpiredFuture().isDone());
+    }
+
+    @Test(dataProvider = "impl")
+    public void revalidateLockOnDifferentSession(String provider, Supplier<String> urlSupplier) throws Exception {
+        if (provider.equals("Memory")) {
+            // Local memory provider doesn't really have the concept of multiple sessions
+            return;
+        }
+
+        @Cleanup
+        MetadataStoreExtended store1 = MetadataStoreExtended.create(urlSupplier.get(),
+                MetadataStoreConfig.builder().build());
+        @Cleanup
+        MetadataStoreExtended store2 = MetadataStoreExtended.create(urlSupplier.get(),
+                MetadataStoreConfig.builder().build());
+
+        @Cleanup
+        CoordinationService cs1 = new CoordinationServiceImpl(store1);
+        @Cleanup
+        LockManager<String> lm1 = cs1.getLockManager(String.class);
+
+        @Cleanup
+        CoordinationService cs2 = new CoordinationServiceImpl(store2);
+        @Cleanup
+        LockManager<String> lm2 = cs2.getLockManager(String.class);
+
+        String path1 = newKey();
+
+        // Simulate existing lock with different content
+        ResourceLock<String> rl1 = lm1.acquireLock(path1, "value-1").join();
+
+        try {
+            lm2.acquireLock(path1, "value-2").join();
+        } catch (CompletionException e) {
+            assertEquals(e.getCause().getClass(), LockBusyException.class);
+        }
+
+        // Lock-1 should not get invalidated
+        assertFalse(rl1.getLockExpiredFuture().isDone());
+
+        assertEquals(new String(store1.get(path1).join().get().getValue()), "\"value-1\"");
+
+        // Simulate existing lock with same content. The 2nd acquirer will steal the lock
+        String path2 = newKey();
+        store1.put(path2, ObjectMapperFactory.getThreadLocal().writeValueAsBytes("value-1"), Optional.of(-1L));
+
+        ResourceLock<String> rl2 = lm2.acquireLock(path2, "value-1").join();
+
+        assertFalse(rl2.getLockExpiredFuture().isDone());
+
+        Awaitility.await().untilAsserted(() -> {
+            // On 'store1' we might see for a short amount of time an empty result still cached while the lock is
+            // being reacquired.
+            assertEquals(new String(store1.get(path2).join().get().getValue()), "\"value-1\"");
+        });
     }
 }

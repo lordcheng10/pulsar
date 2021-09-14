@@ -19,9 +19,9 @@
 package org.apache.pulsar.client.impl;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
-import com.google.common.annotations.VisibleForTesting;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.impl.HandlerState.State;
 import org.slf4j.Logger;
@@ -35,7 +35,9 @@ public class ConnectionHandler {
 
     protected final HandlerState state;
     protected final Backoff backoff;
-    protected long epoch = 0L;
+    private static final AtomicLongFieldUpdater<ConnectionHandler> EPOCH_UPDATER = AtomicLongFieldUpdater
+            .newUpdater(ConnectionHandler.class, "epoch");
+    private volatile long epoch = 0L;
     protected volatile long lastConnectionClosedTimestamp = 0L;
 
     interface Connection {
@@ -104,12 +106,15 @@ public class ConnectionHandler {
         state.setState(State.Connecting);
         state.client.timer().newTimeout(timeout -> {
             log.info("[{}] [{}] Reconnecting after connection was closed", state.topic, state.getHandlerName());
-            ++epoch;
+            incrementEpoch();
             grabCnx();
         }, delayMs, TimeUnit.MILLISECONDS);
     }
 
-    @VisibleForTesting
+    protected long incrementEpoch() {
+        return EPOCH_UPDATER.incrementAndGet(this);
+    }
+
     public void connectionClosed(ClientCnx cnx) {
         lastConnectionClosedTimestamp = System.currentTimeMillis();
         state.client.getCnxPool().releaseConnection(cnx);
@@ -124,7 +129,7 @@ public class ConnectionHandler {
                     delayMs / 1000.0);
             state.client.timer().newTimeout(timeout -> {
                 log.info("[{}] [{}] Reconnecting after timeout", state.topic, state.getHandlerName());
-                ++epoch;
+                incrementEpoch();
                 grabCnx();
             }, delayMs, TimeUnit.MILLISECONDS);
         }
@@ -134,7 +139,6 @@ public class ConnectionHandler {
         backoff.reset();
     }
 
-    @VisibleForTesting
     public ClientCnx cnx() {
         return CLIENT_CNX_UPDATER.get(this);
     }
@@ -162,7 +166,6 @@ public class ConnectionHandler {
         return false;
     }
 
-    @VisibleForTesting
     public long getEpoch() {
         return epoch;
     }

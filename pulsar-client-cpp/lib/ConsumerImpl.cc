@@ -53,19 +53,14 @@ ConsumerImpl::ConsumerImpl(const ClientImplPtr client, const std::string& topic,
       startMessageId_(startMessageId),
       // This is the initial capacity of the queue
       incomingMessages_(std::max(config_.getReceiverQueueSize(), 1)),
-      pendingReceives_(),
-      availablePermits_(conf.getReceiverQueueSize()),
+      availablePermits_(0),
+      receiverQueueRefillThreshold_(config_.getReceiverQueueSize() / 2),
       consumerId_(client->newConsumerId()),
       consumerName_(config_.getConsumerName()),
-      partitionIndex_(-1),
-      consumerCreatedPromise_(),
       messageListenerRunning_(true),
       batchAcknowledgementTracker_(topic_, subscriptionName, (long)consumerId_),
-      brokerConsumerStats_(),
-      consumerStatsBasePtr_(),
       negativeAcksTracker_(client, *this, conf),
       ackGroupingTrackerPtr_(std::make_shared<AckGroupingTracker>()),
-      msgCrypto_(),
       readCompacted_(conf.isReadCompacted()),
       lastMessageInBroker_(Optional<MessageId>::of(MessageId())) {
     std::stringstream consumerStrStream;
@@ -183,10 +178,10 @@ void ConsumerImpl::connectionOpened(const ClientConnectionPtr& cnx) {
 
     ClientImplPtr client = client_.lock();
     uint64_t requestId = client->newRequestId();
-    SharedBuffer cmd =
-        Commands::newSubscribe(topic_, subscription_, consumerId_, requestId, getSubType(), consumerName_,
-                               subscriptionMode_, startMessageId_, readCompacted_, config_.getProperties(),
-                               config_.getSchema(), getInitialPosition(), config_.getKeySharedPolicy());
+    SharedBuffer cmd = Commands::newSubscribe(
+        topic_, subscription_, consumerId_, requestId, getSubType(), consumerName_, subscriptionMode_,
+        startMessageId_, readCompacted_, config_.getProperties(), config_.getSchema(), getInitialPosition(),
+        config_.isReplicateSubscriptionStateEnabled(), config_.getKeySharedPolicy());
     cnx->sendRequestWithId(cmd, requestId)
         .addListener(
             std::bind(&ConsumerImpl::handleCreateConsumer, shared_from_this(), cnx, std::placeholders::_1));
@@ -202,9 +197,12 @@ void ConsumerImpl::connectionFailed(Result result) {
     }
 }
 
-void ConsumerImpl::receiveMessages(const ClientConnectionPtr& cnx, unsigned int count) {
-    SharedBuffer cmd = Commands::newFlow(consumerId_, count);
-    cnx->sendCommand(cmd);
+void ConsumerImpl::sendFlowPermitsToBroker(const ClientConnectionPtr& cnx, int numMessages) {
+    if (cnx && numMessages > 0) {
+        LOG_DEBUG(getName() << "Send more permits: " << numMessages);
+        SharedBuffer cmd = Commands::newFlow(consumerId_, static_cast<unsigned int>(numMessages));
+        cnx->sendCommand(cmd);
+    }
 }
 
 void ConsumerImpl::handleCreateConsumer(const ClientConnectionPtr& cnx, Result result) {
@@ -223,7 +221,7 @@ void ConsumerImpl::handleCreateConsumer(const ClientConnectionPtr& cnx, Result r
             backoff_.reset();
             // Complicated logic since we don't have a isLocked() function for mutex
             if (waitingForZeroQueueSizeMessage) {
-                receiveMessages(cnx, 1);
+                sendFlowPermitsToBroker(cnx, 1);
             }
             availablePermits_ = 0;
         }
@@ -231,9 +229,9 @@ void ConsumerImpl::handleCreateConsumer(const ClientConnectionPtr& cnx, Result r
         LOG_DEBUG(getName() << "Send initial flow permits: " << config_.getReceiverQueueSize());
         if (consumerTopicType_ == NonPartitioned || !firstTime) {
             if (config_.getReceiverQueueSize() != 0) {
-                receiveMessages(cnx, config_.getReceiverQueueSize());
+                sendFlowPermitsToBroker(cnx, config_.getReceiverQueueSize());
             } else if (messageListener_) {
-                receiveMessages(cnx, 1);
+                sendFlowPermitsToBroker(cnx, 1);
             }
         }
         consumerCreatedPromise_.setValue(shared_from_this());
@@ -380,11 +378,9 @@ void ConsumerImpl::messageReceived(const ClientConnectionPtr& cnx, const proto::
     }
 
     if (messageListener_) {
-        Lock lock(messageListenerMutex_);
         if (!messageListenerRunning_) {
             return;
         }
-        lock.unlock();
         // Trigger message listener callback in a separate thread
         while (numOfMessageReceived--) {
             listenerExecutor_->postWork(std::bind(&ConsumerImpl::internalListener, shared_from_this()));
@@ -427,6 +423,7 @@ uint32_t ConsumerImpl::receiveIndividualMessagesFromBatch(const ClientConnection
         // This is a cheap copy since message contains only one shared pointer (impl_)
         Message msg = Commands::deSerializeSingleMessageInBatch(batchedMessage, i);
         msg.impl_->setRedeliveryCount(redeliveryCount);
+        msg.impl_->setTopicName(batchedMessage.getTopicName());
 
         if (startMessageId_.is_present()) {
             const MessageId& msgId = msg.getMessageId();
@@ -555,16 +552,15 @@ void ConsumerImpl::discardCorruptedMessage(const ClientConnectionPtr& cnx,
 }
 
 void ConsumerImpl::internalListener() {
-    Lock lock(messageListenerMutex_);
     if (!messageListenerRunning_) {
         return;
     }
-    lock.unlock();
     Message msg;
     if (!incomingMessages_.pop(msg, std::chrono::milliseconds(0))) {
         // This will only happen when the connection got reset and we cleared the queue
         return;
     }
+    trackMessage(msg);
     try {
         consumerStatsBasePtr_->receivedMessage(msg, ResultOk);
         lastDequedMessage_ = Optional<MessageId>::of(msg.getMessageId());
@@ -572,7 +568,7 @@ void ConsumerImpl::internalListener() {
     } catch (const std::exception& e) {
         LOG_ERROR(getName() << "Exception thrown from listener" << e.what());
     }
-    messageProcessed(msg);
+    messageProcessed(msg, false);
 }
 
 Result ConsumerImpl::fetchSingleMessageFromBroker(Message& msg) {
@@ -595,10 +591,7 @@ Result ConsumerImpl::fetchSingleMessageFromBroker(Message& msg) {
     waitingForZeroQueueSizeMessage = true;
     localLock.unlock();
 
-    if (currentCnx) {
-        LOG_DEBUG(getName() << "Send more permits: " << 1);
-        receiveMessages(currentCnx, 1);
-    }
+    sendFlowPermitsToBroker(currentCnx, 1);
 
     while (true) {
         incomingMessages_.pop(msg);
@@ -645,11 +638,7 @@ void ConsumerImpl::receiveAsync(ReceiveCallback& callback) {
         lock.unlock();
 
         if (config_.getReceiverQueueSize() == 0) {
-            ClientConnectionPtr currentCnx = getCnx().lock();
-            if (currentCnx) {
-                LOG_DEBUG(getName() << "Send more permits: " << 1);
-                receiveMessages(currentCnx, 1);
-            }
+            sendFlowPermitsToBroker(getCnx().lock(), 1);
         }
     }
 }
@@ -707,7 +696,7 @@ Result ConsumerImpl::receiveHelper(Message& msg, int timeout) {
     }
 }
 
-void ConsumerImpl::messageProcessed(Message& msg) {
+void ConsumerImpl::messageProcessed(Message& msg, bool track) {
     Lock lock(mutex_);
     lastDequedMessage_ = Optional<MessageId>::of(msg.getMessageId());
 
@@ -718,7 +707,9 @@ void ConsumerImpl::messageProcessed(Message& msg) {
     }
 
     increaseAvailablePermits(currentCnx);
-    trackMessage(msg);
+    if (track) {
+        trackMessage(msg);
+    }
 }
 
 /**
@@ -751,20 +742,13 @@ Optional<MessageId> ConsumerImpl::clearReceiveQueue() {
     }
 }
 
-void ConsumerImpl::increaseAvailablePermits(const ClientConnectionPtr& currentCnx, int numberOfPermits) {
-    int additionalPermits = 0;
+void ConsumerImpl::increaseAvailablePermits(const ClientConnectionPtr& currentCnx, int delta) {
+    int newAvailablePermits = availablePermits_.fetch_add(delta) + delta;
 
-    availablePermits_ += numberOfPermits;
-    if (availablePermits_ >= config_.getReceiverQueueSize() / 2) {
-        additionalPermits = availablePermits_;
-        availablePermits_ = 0;
-    }
-    if (additionalPermits > 0) {
-        if (currentCnx) {
-            LOG_DEBUG(getName() << "Send more permits: " << additionalPermits);
-            receiveMessages(currentCnx, additionalPermits);
-        } else {
-            LOG_DEBUG(getName() << "Connection is not ready, Unable to send flow Command");
+    while (newAvailablePermits >= receiverQueueRefillThreshold_ && messageListenerRunning_) {
+        if (availablePermits_.compare_exchange_weak(newAvailablePermits, 0)) {
+            sendFlowPermitsToBroker(currentCnx, newAvailablePermits);
+            break;
         }
     }
 }
@@ -784,6 +768,7 @@ inline proto::CommandSubscribe_SubType ConsumerImpl::getSubType() {
         case ConsumerKeyShared:
             return proto::CommandSubscribe_SubType_Key_Shared;
     }
+    BOOST_THROW_EXCEPTION(std::logic_error("Invalid ConsumerType enumeration value"));
 }
 
 inline proto::CommandSubscribe_InitialPosition ConsumerImpl::getInitialPosition() {
@@ -795,6 +780,7 @@ inline proto::CommandSubscribe_InitialPosition ConsumerImpl::getInitialPosition(
         case InitialPositionEarliest:
             return proto::CommandSubscribe_InitialPosition::CommandSubscribe_InitialPosition_Earliest;
     }
+    BOOST_THROW_EXCEPTION(std::logic_error("Invalid InitialPosition enumeration value"));
 }
 
 void ConsumerImpl::statsCallback(Result res, ResultCallback callback, proto::CommandAck_AckType ackType) {
@@ -971,7 +957,6 @@ Result ConsumerImpl::pauseMessageListener() {
     if (!messageListener_) {
         return ResultInvalidConfiguration;
     }
-    Lock lock(messageListenerMutex_);
     messageListenerRunning_ = false;
     return ResultOk;
 }
@@ -981,19 +966,19 @@ Result ConsumerImpl::resumeMessageListener() {
         return ResultInvalidConfiguration;
     }
 
-    Lock lock(messageListenerMutex_);
     if (messageListenerRunning_) {
         // Not paused
         return ResultOk;
     }
     messageListenerRunning_ = true;
     const size_t count = incomingMessages_.size();
-    lock.unlock();
 
     for (size_t i = 0; i < count; i++) {
         // Trigger message listener callback in a separate thread
         listenerExecutor_->postWork(std::bind(&ConsumerImpl::internalListener, shared_from_this()));
     }
+    // Check current permits and determine whether to send FLOW command
+    this->increaseAvailablePermits(getCnx().lock(), 0);
     return ResultOk;
 }
 
@@ -1167,7 +1152,7 @@ void ConsumerImpl::hasMessageAvailableAsync(HasMessageAvailableCallback callback
         return;
     }
 
-    getLastMessageIdAsync([this, lastDequed, callback](Result result, MessageId messageId) {
+    getLastMessageIdAsync([lastDequed, callback](Result result, MessageId messageId) {
         if (result == ResultOk) {
             if (messageId > lastDequed && messageId.entryId() != -1) {
                 callback(ResultOk, true);
@@ -1238,5 +1223,12 @@ void ConsumerImpl::trackMessage(const Message& msg) {
         unAckedMessageTrackerPtr_->add(msg.getMessageId());
     }
 }
+
+bool ConsumerImpl::isConnected() const {
+    Lock lock(mutex_);
+    return !getCnx().expired() && state_ == Ready;
+}
+
+uint64_t ConsumerImpl::getNumberOfConnectedConsumer() { return isConnected() ? 1 : 0; }
 
 } /* namespace pulsar */

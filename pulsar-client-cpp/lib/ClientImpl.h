@@ -22,6 +22,7 @@
 #include <pulsar/Client.h>
 #include "ExecutorService.h"
 #include "BinaryProtoLookupService.h"
+#include "MemoryLimitController.h"
 #include "ConnectionPool.h"
 #include "LookupDataResult.h"
 #include <mutex>
@@ -76,9 +77,14 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     void closeAsync(CloseCallback callback);
     void shutdown();
 
+    MemoryLimitController& getMemoryLimitController();
+
     uint64_t newProducerId();
     uint64_t newConsumerId();
     uint64_t newRequestId();
+
+    uint64_t getNumberOfProducers();
+    uint64_t getNumberOfConsumers();
 
     const ClientConfiguration& getClientConfig() const;
 
@@ -130,6 +136,7 @@ class ClientImpl : public std::enable_shared_from_this<ClientImpl> {
     State state_;
     std::string serviceUrl_;
     ClientConfiguration clientConfiguration_;
+    MemoryLimitController memoryLimitController_;
 
     ExecutorServiceProviderPtr ioExecutorProvider_;
     ExecutorServiceProviderPtr listenerExecutorProvider_;

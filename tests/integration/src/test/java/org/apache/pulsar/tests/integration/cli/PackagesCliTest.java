@@ -18,6 +18,7 @@
  */
 package org.apache.pulsar.tests.integration.cli;
 
+import org.apache.pulsar.tests.TestRetrySupport;
 import org.apache.pulsar.tests.integration.containers.BrokerContainer;
 import org.apache.pulsar.tests.integration.docker.ContainerExecResult;
 import org.apache.pulsar.tests.integration.topologies.PulsarCluster;
@@ -35,23 +36,25 @@ import org.testng.annotations.Test;
 import java.util.HashMap;
 import java.util.Map;
 
-public class PackagesCliTest {
+public class PackagesCliTest extends TestRetrySupport {
 
-    private final static String clusterNamePrefix = "packages-service";
+    private static final String clusterNamePrefix = "packages-service";
     private PulsarCluster pulsarCluster;
 
-    @BeforeClass
-    public void setup() throws Exception {
+    @BeforeClass(alwaysRun = true)
+    public final void setup() throws Exception {
+        incrementSetupNumber();
         PulsarClusterSpec spec = PulsarClusterSpec.builder()
-            .clusterName(String.format("%s-%s", clusterNamePrefix, RandomStringUtils.randomAlphabetic(6)))
-            .brokerEnvs(getPackagesManagementServiceEnvs())
-            .build();
+                .clusterName(String.format("%s-%s", clusterNamePrefix, RandomStringUtils.randomAlphabetic(6)))
+                .brokerEnvs(getPackagesManagementServiceEnvs())
+                .build();
         pulsarCluster = PulsarCluster.forSpec(spec);
         pulsarCluster.start();
     }
 
-    @AfterClass
-    public void teardown() {
+    @AfterClass(alwaysRun = true)
+    public final void cleanup() {
+        markCurrentSetupNumberCleaned();
         if (pulsarCluster != null) {
             pulsarCluster.stop();
             pulsarCluster = null;
@@ -85,13 +88,13 @@ public class PackagesCliTest {
     public void testPackagesOperationsWithUploadingPackages() throws Exception {
         String testPackageName = "function://public/default/test@v1";
         ContainerExecResult result = runPackagesCommand("upload", "--description", "a test package",
-            "--path", PulsarCluster.ADMIN_SCRIPT, testPackageName);
+                "--path", PulsarCluster.ADMIN_SCRIPT, testPackageName);
         assertEquals(result.getExitCode(), 0);
 
         BrokerContainer container = pulsarCluster.getBroker(0);
         String downloadFile = "tmp-file-" + RandomStringUtils.randomAlphabetic(8);
         String[] downloadCmd = new String[]{PulsarCluster.ADMIN_SCRIPT, "packages", "download",
-            "--path", downloadFile, testPackageName};
+                "--path", downloadFile, testPackageName};
         result = container.execCmd(downloadCmd);
         assertEquals(result.getExitCode(), 0);
 
@@ -116,7 +119,7 @@ public class PackagesCliTest {
 
         String contact = "test@apache.org";
         result = runPackagesCommand("update-metadata", "--description", "a test package",
-            "--contact", contact, "-PpropertyA=A", testPackageName);
+                "--contact", contact, "-PpropertyA=A", testPackageName);
         assertEquals(result.getExitCode(), 0);
 
         result = runPackagesCommand("get-metadata", testPackageName);
@@ -131,7 +134,7 @@ public class PackagesCliTest {
 
         result = runPackagesCommand("list-versions", "function://public/default/test");
         assertEquals(result.getExitCode(), 0);
-        assertTrue(result.getStdout().isEmpty());
+        result.assertNoStdout();
     }
 
     private ContainerExecResult runPackagesCommand(String... commands) throws Exception {

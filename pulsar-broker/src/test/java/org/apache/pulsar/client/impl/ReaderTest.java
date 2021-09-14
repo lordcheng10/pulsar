@@ -20,6 +20,7 @@ package org.apache.pulsar.client.impl;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 import com.google.common.collect.Lists;
@@ -30,13 +31,18 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest;
 import org.apache.pulsar.broker.service.StickyKeyConsumerSelector;
 import org.apache.pulsar.client.admin.PulsarAdminException;
+import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
 import org.apache.pulsar.client.api.MessageRoutingMode;
@@ -47,16 +53,21 @@ import org.apache.pulsar.client.api.Range;
 import org.apache.pulsar.client.api.Reader;
 import org.apache.pulsar.client.api.ReaderBuilder;
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.policies.data.ClusterData;
 import org.apache.pulsar.common.policies.data.RetentionPolicies;
-import org.apache.pulsar.common.policies.data.TenantInfo;
+import org.apache.pulsar.common.policies.data.TenantInfoImpl;
+import org.apache.pulsar.common.policies.data.TopicStats;
 import org.apache.pulsar.common.util.Murmur3_32Hash;
+import org.apache.pulsar.schema.Schemas;
+import org.awaitility.Awaitility;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 @Slf4j
+@Test(groups = "broker-impl")
 public class ReaderTest extends MockedPulsarServiceBaseTest {
 
     private static final String subscription = "reader-sub";
@@ -67,9 +78,9 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
         super.internalSetup();
 
         admin.clusters().createCluster("test",
-                new ClusterData(pulsar.getWebServiceAddress()));
+                ClusterData.builder().serviceUrl(pulsar.getWebServiceAddress()).build());
         admin.tenants().createTenant("my-property",
-                new TenantInfo(Sets.newHashSet("appid1", "appid2"), Sets.newHashSet("test")));
+                new TenantInfoImpl(Sets.newHashSet("appid1", "appid2"), Sets.newHashSet("test")));
         admin.namespaces().createNamespace("my-property/my-ns", Sets.newHashSet("test"));
     }
 
@@ -144,7 +155,7 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
             Assert.assertTrue(keys.remove(reader.readNext().getKey()));
         }
         // start from latest with start message inclusive should only read the last message in batch
-        Assert.assertTrue(keys.size() == 9);
+        assertEquals(keys.size(), 9);
         Assert.assertFalse(keys.contains("key9"));
         Assert.assertFalse(reader.hasMessageAvailable());
     }
@@ -170,6 +181,46 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
         Assert.assertFalse(readLatest.hasMessageAvailable());
     }
 
+    @Test
+    public void testMultiTopicSeekByFunction() throws Exception {
+        final String topicName = "persistent://my-property/my-ns/test" + UUID.randomUUID();
+        int msgNum = 10;
+        publishMessages(topicName, msgNum, false);
+        Reader<byte[]> reader = pulsarClient
+                .newReader().startMessageIdInclusive().startMessageId(MessageId.latest)
+                .topic(topicName).subscriptionName("my-sub").create();
+        long now = System.currentTimeMillis();
+        reader.seek((topic) -> now);
+        assertNull(reader.readNext(1, TimeUnit.SECONDS));
+        // seek by time
+        reader.seek((topic) -> {
+            assertFalse(TopicName.get(topic).isPartitioned());
+            return now - 999999;
+        });
+        int count = 0;
+        while (true) {
+            Message<byte[]> message = reader.readNext(1, TimeUnit.SECONDS);
+            if (message == null) {
+                break;
+            }
+            count++;
+        }
+        assertEquals(count, msgNum);
+        // seek by msg id
+        reader.seek((topic) -> {
+            assertFalse(TopicName.get(topic).isPartitioned());
+            return MessageId.earliest;
+        });
+        count = 0;
+        while (true) {
+            Message<byte[]> message = reader.readNext(1, TimeUnit.SECONDS);
+            if (message == null) {
+                break;
+            }
+            count++;
+        }
+        assertEquals(count, msgNum);
+    }
 
     @Test
     public void testReadFromPartition() throws Exception {
@@ -288,17 +339,17 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
                 .startMessageId(MessageId.earliest)
             .create();
 
-        Assert.assertEquals(admin.topics().getStats(topic).subscriptions.size(), 2);
+        Assert.assertEquals(admin.topics().getStats(topic).getSubscriptions().size(), 2);
         Assert.assertEquals(admin.topics().getInternalStats(topic, false).cursors.size(), 2);
 
         reader1.close();
 
-        Assert.assertEquals(admin.topics().getStats(topic).subscriptions.size(), 1);
+        Assert.assertEquals(admin.topics().getStats(topic).getSubscriptions().size(), 1);
         Assert.assertEquals(admin.topics().getInternalStats(topic, false).cursors.size(), 1);
 
         reader2.close();
 
-        Assert.assertEquals(admin.topics().getStats(topic).subscriptions.size(), 0);
+        Assert.assertEquals(admin.topics().getStats(topic).getSubscriptions().size(), 0);
         Assert.assertEquals(admin.topics().getInternalStats(topic, false).cursors.size(), 0);
 
     }
@@ -394,7 +445,7 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
         assertEquals(receivedMessages.size(), expectedMessages);
         for (String receivedMessage : receivedMessages) {
             log.info("Receive message {}", receivedMessage);
-            assertTrue(Integer.valueOf(receivedMessage) <= StickyKeyConsumerSelector.DEFAULT_RANGE_SIZE / 2);
+            assertTrue(Integer.parseInt(receivedMessage) <= StickyKeyConsumerSelector.DEFAULT_RANGE_SIZE / 2);
         }
 
     }
@@ -405,7 +456,7 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
         doTestReaderSubName(false);
     }
 
-    public void doTestReaderSubName(boolean setPrefix) throws Exception {
+    private void doTestReaderSubName(boolean setPrefix) throws Exception {
         final String topic = "persistent://my-property/my-ns/testReaderSubName" + System.currentTimeMillis();
         final String subName = "my-sub-name";
 
@@ -463,6 +514,92 @@ public class ReaderTest extends MockedPulsarServiceBaseTest {
                 .topic(topic)
                 .startMessageId(MessageId.earliest).create().close();
 
+    }
+
+    @Test(timeOut = 30000)
+    public void testAvoidUsingIoThreadToGetValueOfMessage() throws Exception {
+        final String topic = "persistent://my-property/my-ns/testAvoidUsingIoThreadToGetValueOfMessage";
+
+        @Cleanup
+        Producer<Schemas.PersonOne> producer = pulsarClient.newProducer(Schema.AVRO(Schemas.PersonOne.class))
+                .topic(topic)
+                .create();
+
+        producer.send(new Schemas.PersonOne(1));
+
+        @Cleanup
+        Reader<Schemas.PersonOne> reader = pulsarClient.newReader(Schema.AVRO(Schemas.PersonOne.class))
+                .topic(topic)
+                .startMessageId(MessageId.earliest)
+                .create();
+
+        CountDownLatch latch = new CountDownLatch(1);
+        List<Schemas.PersonOne> received = new ArrayList<>(1);
+        // Make sure the message is added to the incoming queue
+        Awaitility.await().untilAsserted(() ->
+                assertTrue(((ReaderImpl<?>) reader).getConsumer().incomingMessages.size() > 0));
+        reader.hasMessageAvailableAsync().whenComplete((has, e) -> {
+            if (e == null && has) {
+                CompletableFuture<Message<Schemas.PersonOne>> future = reader.readNextAsync();
+                // Make sure the future completed
+                Awaitility.await().pollInterval(1, TimeUnit.MILLISECONDS).untilAsserted(future::isDone);
+                future.whenComplete((msg, ex) -> {
+                    if (ex == null) {
+                        received.add(msg.getValue());
+                    }
+                    latch.countDown();
+                });
+            } else {
+                latch.countDown();
+            }
+        });
+        latch.await();
+        Assert.assertEquals(received.size(), 1);
+    }
+
+    @Test(timeOut = 1000 * 10)
+    public void removeNonPersistentTopicReaderTest() throws Exception {
+        final String topic = "non-persistent://my-property/my-ns/non-topic";
+
+        Reader<byte[]> reader = pulsarClient.newReader()
+                .topic(topic)
+                .startMessageId(MessageId.earliest)
+                .create();
+        Reader<byte[]> reader2 = pulsarClient.newReader()
+                .topic(topic)
+                .startMessageId(MessageId.earliest)
+                .create();
+
+        Awaitility.await()
+                .pollDelay(3, TimeUnit.SECONDS)
+                .until(() -> {
+                    TopicStats topicStats = admin.topics().getStats(topic);
+                    System.out.println("subscriptions size: " + topicStats.getSubscriptions().size());
+                    return topicStats.getSubscriptions().size() == 2;
+                });
+
+        reader.close();
+        reader2.close();
+
+        Awaitility.await().until(() -> {
+            TopicStats topicStats = admin.topics().getStats(topic);
+            System.out.println("subscriptions size: " + topicStats.getSubscriptions().size());
+            return topicStats.getSubscriptions().size() == 0;
+        });
+
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topic(topic)
+                .subscriptionName("sub")
+                .subscribe();
+        consumer.close();
+
+        Awaitility.await()
+                .pollDelay(3, TimeUnit.SECONDS)
+                .until(() -> {
+            TopicStats topicStats = admin.topics().getStats(topic);
+            System.out.println("subscriptions size: " + topicStats.getSubscriptions().size());
+            return topicStats.getSubscriptions().size() == 1;
+        });
     }
 
 }

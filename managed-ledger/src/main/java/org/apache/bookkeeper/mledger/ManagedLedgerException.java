@@ -23,7 +23,7 @@ import org.apache.bookkeeper.common.annotation.InterfaceStability;
 
 @InterfaceAudience.LimitedPrivate
 @InterfaceStability.Stable
-@SuppressWarnings({"serial", "checkstyle:javadoctype"})
+@SuppressWarnings({ "serial", "checkstyle:javadoctype" })
 public class ManagedLedgerException extends Exception {
     public ManagedLedgerException(String msg) {
         super(msg);
@@ -31,6 +31,10 @@ public class ManagedLedgerException extends Exception {
 
     public ManagedLedgerException(Throwable e) {
         super(e);
+    }
+
+    public ManagedLedgerException(String msg, Throwable e) {
+        super(msg, e);
     }
 
     public static ManagedLedgerException getManagedLedgerException(Throwable e) {
@@ -160,6 +164,21 @@ public class ManagedLedgerException extends Exception {
     public static class ManagedLedgerInterceptException extends ManagedLedgerException {
         public ManagedLedgerInterceptException(String msg) {
             super(msg);
+        }
+
+        public ManagedLedgerInterceptException(Throwable e) {
+            super(e);
+        }
+    }
+
+    public static class ManagedLedgerFactoryClosedException extends ManagedLedgerException {
+
+        public ManagedLedgerFactoryClosedException() {
+            super("ManagedLedgerFactory is already closed.");
+        }
+
+        public ManagedLedgerFactoryClosedException(Throwable e) {
+            super(e);
         }
     }
 

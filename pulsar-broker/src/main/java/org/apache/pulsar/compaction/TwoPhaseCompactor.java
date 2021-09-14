@@ -21,15 +21,14 @@ package org.apache.pulsar.compaction;
 import com.google.common.collect.ImmutableMap;
 import io.netty.buffer.ByteBuf;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import org.apache.bookkeeper.client.BKException;
 import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.bookkeeper.client.LedgerHandle;
@@ -62,12 +61,14 @@ public class TwoPhaseCompactor extends Compactor {
     private static final Logger log = LoggerFactory.getLogger(TwoPhaseCompactor.class);
     private static final int MAX_OUTSTANDING = 500;
     private static final String COMPACTED_TOPIC_LEDGER_PROPERTY = "CompactedTopicLedger";
+    private final Duration phaseOneLoopReadTimeout;
 
     public TwoPhaseCompactor(ServiceConfiguration conf,
                              PulsarClient pulsar,
                              BookKeeper bk,
                              ScheduledExecutorService scheduler) {
         super(conf, pulsar, bk, scheduler);
+        phaseOneLoopReadTimeout = Duration.ofSeconds(conf.getBrokerServiceCompactionPhaseOneLoopTimeInSeconds());
     }
 
     @Override
@@ -116,23 +117,31 @@ public class TwoPhaseCompactor extends Compactor {
             return;
         }
         CompletableFuture<RawMessage> future = reader.readNextAsync();
-        scheduleTimeout(future);
+        FutureUtil.addTimeoutHandling(future,
+                phaseOneLoopReadTimeout, scheduler,
+                () -> FutureUtil.createTimeoutException("Timeout", getClass(), "phaseOneLoop(...)"));
 
         future.thenAcceptAsync(m -> {
             try {
                 MessageId id = m.getMessageId();
                 boolean deletedMessage = false;
+                boolean replaceMessage = false;
+                mxBean.addCompactionReadOp(reader.getTopic(), m.getHeadersAndPayload().readableBytes());
                 if (RawBatchConverter.isReadableBatch(m)) {
                     try {
                         for (ImmutableTriple<MessageId, String, Integer> e : RawBatchConverter
                                 .extractIdsAndKeysAndSize(m)) {
                             if (e != null) {
                                 if (e.getRight() > 0) {
-                                    latestForKey.put(e.getMiddle(), e.getLeft());
+                                    MessageId old = latestForKey.put(e.getMiddle(), e.getLeft());
+                                    replaceMessage = old != null;
                                 } else {
                                     deletedMessage = true;
                                     latestForKey.remove(e.getMiddle());
                                 }
+                            }
+                            if (replaceMessage || deletedMessage) {
+                                mxBean.addCompactionRemovedEvent(reader.getTopic());
                             }
                         }
                     } catch (IOException ioe) {
@@ -143,14 +152,17 @@ public class TwoPhaseCompactor extends Compactor {
                     Pair<String, Integer> keyAndSize = extractKeyAndSize(m);
                     if (keyAndSize != null) {
                         if (keyAndSize.getRight() > 0) {
-                            latestForKey.put(keyAndSize.getLeft(), id);
+                            MessageId old = latestForKey.put(keyAndSize.getLeft(), id);
+                            replaceMessage = old != null;
                         } else {
                             deletedMessage = true;
                             latestForKey.remove(keyAndSize.getLeft());
                         }
                     }
+                    if (replaceMessage || deletedMessage) {
+                        mxBean.addCompactionRemovedEvent(reader.getTopic());
+                    }
                 }
-
                 MessageId first = firstMessageId.orElse(deletedMessage ? null : id);
                 MessageId to = deletedMessage ? toMessageId.orElse(null) : id;
                 if (id.compareTo(lastMessageId) == 0) {
@@ -169,15 +181,6 @@ public class TwoPhaseCompactor extends Compactor {
         }, scheduler).exceptionally(ex -> {
             loopPromise.completeExceptionally(ex);
             return null;
-        });
-    }
-
-    private void scheduleTimeout(CompletableFuture<RawMessage> future) {
-        Future<?> timeout = scheduler.schedule(() -> {
-            future.completeExceptionally(new TimeoutException("Timeout"));
-        }, 10, TimeUnit.SECONDS);
-        future.whenComplete((res, exception) -> {
-            timeout.cancel(true);
         });
     }
 
@@ -233,6 +236,7 @@ public class TwoPhaseCompactor extends Compactor {
             try {
                 MessageId id = m.getMessageId();
                 Optional<RawMessage> messageToAdd = Optional.empty();
+                mxBean.addCompactionReadOp(reader.getTopic(), m.getHeadersAndPayload().readableBytes());
                 if (RawBatchConverter.isReadableBatch(m)) {
                     try {
                         messageToAdd = RawBatchConverter.rebatchMessage(
@@ -261,7 +265,7 @@ public class TwoPhaseCompactor extends Compactor {
                     RawMessage message = messageToAdd.get();
                     try {
                         outstanding.acquire();
-                        CompletableFuture<Void> addFuture = addToCompactedLedger(lh, message)
+                        CompletableFuture<Void> addFuture = addToCompactedLedger(lh, message, reader.getTopic())
                                 .whenComplete((res, exception2) -> {
                                     outstanding.release();
                                     if (exception2 != null) {
@@ -362,12 +366,15 @@ public class TwoPhaseCompactor extends Compactor {
         return bkf;
     }
 
-    private CompletableFuture<Void> addToCompactedLedger(LedgerHandle lh, RawMessage m) {
+    private CompletableFuture<Void> addToCompactedLedger(LedgerHandle lh, RawMessage m, String topic) {
         CompletableFuture<Void> bkf = new CompletableFuture<>();
         ByteBuf serialized = m.serialize();
         try {
+            mxBean.addCompactionWriteOp(topic, m.getHeadersAndPayload().readableBytes());
+            long start = System.nanoTime();
             lh.asyncAddEntry(serialized,
                     (rc, ledger, eid, ctx) -> {
+                        mxBean.addCompactionLatencyOp(topic, System.nanoTime() - start, TimeUnit.NANOSECONDS);
                         if (rc != BKException.Code.OK) {
                             bkf.completeExceptionally(BKException.create(rc));
                         } else {
@@ -406,5 +413,9 @@ public class TwoPhaseCompactor extends Compactor {
             this.lastReadId = lastReadId;
             this.latestForKey = latestForKey;
         }
+    }
+
+    public long getPhaseOneLoopReadTimeoutInSeconds() {
+        return phaseOneLoopReadTimeout.getSeconds();
     }
 }

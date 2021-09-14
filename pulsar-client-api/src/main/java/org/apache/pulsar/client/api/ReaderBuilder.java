@@ -18,6 +18,7 @@
  */
 package org.apache.pulsar.client.api;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -110,6 +111,13 @@ public interface ReaderBuilder<T> extends Cloneable {
     ReaderBuilder<T> topic(String topicName);
 
     /**
+     * Specify topics this reader will read from.
+     * @param topicNames
+     * @return
+     */
+    ReaderBuilder<T> topics(List<String> topicNames);
+
+    /**
      * The initial reader positioning is done by specifying a message id. The options are:
      * <ul>
      * <li>{@link MessageId#earliest}: Start reading from the earliest message available in the topic</li>
@@ -168,6 +176,30 @@ public interface ReaderBuilder<T> extends Cloneable {
      * @return the reader builder instance
      */
     ReaderBuilder<T> cryptoKeyReader(CryptoKeyReader cryptoKeyReader);
+
+    /**
+     * Sets the default implementation of {@link CryptoKeyReader}.
+     *
+     * <p>Configure the key reader to be used to decrypt the message payloads.
+     *
+     * @param privateKey
+     *            the private key that is always used to decrypt message payloads.
+     * @return the reader builder instance
+     * @since 2.8.0
+     */
+    ReaderBuilder<T> defaultCryptoKeyReader(String privateKey);
+
+    /**
+     * Sets the default implementation of {@link CryptoKeyReader}.
+     *
+     * <p>Configure the key reader to be used to decrypt the message payloads.
+     *
+     * @param privateKeys
+     *            the map of private key names and their URIs used to decrypt message payloads.
+     * @return the reader builder instance
+     * @since 2.8.0
+     */
+    ReaderBuilder<T> defaultCryptoKeyReader(Map<String, String> privateKeys);
 
     /**
      * Sets the {@link ConsumerCryptoFailureAction} to specify.
@@ -248,4 +280,14 @@ public interface ReaderBuilder<T> extends Cloneable {
      * @return the reader builder instance
      */
     ReaderBuilder<T> keyHashRange(Range... ranges);
+
+    /**
+     * Enable pooling of messages and the underlying data buffers.
+     * <p/>
+     * When pooling is enabled, the application is responsible for calling Message.release() after the handling of every
+     * received message. If “release()” is not called on a received message, there will be a memory leak. If an
+     * application attempts to use and already “released” message, it might experience undefined behavior (for example, memory
+     * corruption, deserialization error, etc.).
+     */
+    ReaderBuilder<T> poolMessages(boolean poolMessages);
 }

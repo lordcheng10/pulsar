@@ -22,7 +22,8 @@ import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import java.util.List;
 import org.apache.pulsar.common.naming.NamespaceName;
-import org.apache.zookeeper.ZooKeeper;
+import org.apache.pulsar.common.util.CmdGenerateDocs;
+import org.apache.pulsar.metadata.api.MetadataStore;
 
 /**
  * Setup the initial namespace of the cluster without startup the Pulsar broker.
@@ -49,9 +50,11 @@ public class PulsarInitialNamespaceSetup {
         @Parameter(names = { "-h", "--help" }, description = "Show this help message")
         private boolean help = false;
 
+        @Parameter(names = {"-g", "--generate-docs"}, description = "Generate docs")
+        private boolean generateDocs = false;
     }
 
-    public static void main(String[] args) throws Exception {
+    public static int doMain(String[] args) throws Exception {
         Arguments arguments = new Arguments();
         JCommander jcommander = new JCommander();
         try {
@@ -59,40 +62,51 @@ public class PulsarInitialNamespaceSetup {
             jcommander.parse(args);
             if (arguments.help) {
                 jcommander.usage();
-                return;
+                return 0;
+            }
+            if (arguments.generateDocs) {
+                CmdGenerateDocs cmd = new CmdGenerateDocs("pulsar");
+                cmd.addCommand("initialize-namespace", arguments);
+                cmd.run(null);
+                return 0;
             }
         } catch (Exception e) {
             jcommander.usage();
-            throw e;
+            return 1;
         }
 
         if (arguments.configurationStore == null) {
             System.err.println("Configuration store address argument is required (--configuration-store)");
             jcommander.usage();
-            System.exit(1);
+            return 1;
         }
 
-        ZooKeeper configStoreZk = PulsarClusterMetadataSetup
-                .initZk(arguments.configurationStore, arguments.zkSessionTimeoutMillis);
+        try (MetadataStore configStore = PulsarClusterMetadataSetup
+                .initMetadataStore(arguments.configurationStore, arguments.zkSessionTimeoutMillis)) {
+            for (String namespace : arguments.namespaces) {
+                NamespaceName namespaceName = null;
+                try {
+                    namespaceName = NamespaceName.get(namespace);
+                } catch (Exception e) {
+                    System.out.println("Invalid namespace name.");
+                    return 1;
+                }
 
-        for (String namespace : arguments.namespaces) {
-            NamespaceName namespaceName = null;
-            try {
-                namespaceName = NamespaceName.get(namespace);
-            } catch (Exception e) {
-                System.out.println("Invalid namespace name.");
-                System.exit(1);
+                // Create specified tenant
+                PulsarClusterMetadataSetup
+                        .createTenantIfAbsent(configStore, namespaceName.getTenant(), arguments.cluster);
+
+                // Create specified namespace
+                PulsarClusterMetadataSetup.createNamespaceIfAbsent(configStore, namespaceName,
+                        arguments.cluster);
             }
-
-            // Create system tenant
-            PulsarClusterMetadataSetup
-                    .createTenantIfAbsent(configStoreZk, namespaceName.getTenant(), arguments.cluster);
-
-            // Create system namespace
-            PulsarClusterMetadataSetup.createNamespaceIfAbsent(configStoreZk, namespaceName,
-                    arguments.cluster);
         }
 
         System.out.println("Initial namespace setup success");
+        return 0;
+    }
+
+    public static void main(String[] args) throws Exception {
+        System.exit(doMain(args));
     }
 }

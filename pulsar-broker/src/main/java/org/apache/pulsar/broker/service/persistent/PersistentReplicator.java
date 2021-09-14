@@ -26,27 +26,26 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import org.apache.bookkeeper.mledger.AsyncCallbacks;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.ClearBacklogCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.DeleteCallback;
-import org.apache.bookkeeper.mledger.AsyncCallbacks.OpenCursorCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.ReadEntriesCallback;
 import org.apache.bookkeeper.mledger.AsyncCallbacks.ReadEntryCallback;
 import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.ManagedCursor;
 import org.apache.bookkeeper.mledger.ManagedCursor.IndividualDeletedEntries;
-import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.ManagedLedgerException;
 import org.apache.bookkeeper.mledger.ManagedLedgerException.CursorAlreadyClosedException;
 import org.apache.bookkeeper.mledger.ManagedLedgerException.TooManyRequestsException;
 import org.apache.bookkeeper.mledger.Position;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
+import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.service.AbstractReplicator;
 import org.apache.pulsar.broker.service.BrokerService;
 import org.apache.pulsar.broker.service.BrokerServiceException.NamingException;
-import org.apache.pulsar.broker.service.BrokerServiceException.PersistenceException;
 import org.apache.pulsar.broker.service.BrokerServiceException.TopicBusyException;
 import org.apache.pulsar.broker.service.Replicator;
 import org.apache.pulsar.broker.service.persistent.DispatchRateLimiter.Type;
@@ -56,10 +55,10 @@ import org.apache.pulsar.client.impl.Backoff;
 import org.apache.pulsar.client.impl.MessageImpl;
 import org.apache.pulsar.client.impl.ProducerImpl;
 import org.apache.pulsar.client.impl.SendCallback;
-import org.apache.pulsar.common.api.proto.CommandSubscribe.InitialPosition;
 import org.apache.pulsar.common.api.proto.MarkerType;
 import org.apache.pulsar.common.policies.data.Policies;
-import org.apache.pulsar.common.policies.data.ReplicatorStats;
+import org.apache.pulsar.common.policies.data.stats.ReplicatorStatsImpl;
+import org.apache.pulsar.common.schema.SchemaInfo;
 import org.apache.pulsar.common.stats.Rate;
 import org.apache.pulsar.common.util.Codec;
 import org.slf4j.Logger;
@@ -69,9 +68,7 @@ public class PersistentReplicator extends AbstractReplicator
         implements Replicator, ReadEntriesCallback, DeleteCallback {
 
     private final PersistentTopic topic;
-    private final String replicatorName;
-    private final ManagedLedger ledger;
-    protected ManagedCursor cursor;
+    protected final ManagedCursor cursor;
 
     private Optional<DispatchRateLimiter> dispatchRateLimiter = Optional.empty();
 
@@ -101,20 +98,17 @@ public class PersistentReplicator extends AbstractReplicator
     private final Backoff readFailureBackoff = new Backoff(1, TimeUnit.SECONDS,
             1, TimeUnit.MINUTES, 0, TimeUnit.MILLISECONDS);
 
-    private PersistentMessageExpiryMonitor expiryMonitor;
+    private final PersistentMessageExpiryMonitor expiryMonitor;
     // for connected subscriptions, message expiry will be checked if the backlog is greater than this threshold
     private static final int MINIMUM_BACKLOG_FOR_EXPIRY_CHECK = 1000;
 
-    private final ReplicatorStats stats = new ReplicatorStats();
+    private final ReplicatorStatsImpl stats = new ReplicatorStatsImpl();
 
-    // Only for test
     public PersistentReplicator(PersistentTopic topic, ManagedCursor cursor, String localCluster, String remoteCluster,
-                                BrokerService brokerService) throws NamingException {
+                                BrokerService brokerService) throws NamingException, PulsarServerException {
         super(topic.getName(), topic.getReplicatorPrefix(), localCluster, remoteCluster, brokerService);
-        this.replicatorName = cursor.getName();
-        this.ledger = cursor.getManagedLedger();
-        this.cursor = cursor;
         this.topic = topic;
+        this.cursor = cursor;
         this.expiryMonitor = new PersistentMessageExpiryMonitor(topicName,
                 Codec.decode(cursor.getName()), cursor, null);
         HAVE_PENDING_READ_UPDATER.set(this, FALSE);
@@ -123,26 +117,6 @@ public class PersistentReplicator extends AbstractReplicator
         readBatchSize = Math.min(
                 producerQueueSize,
                 topic.getBrokerService().pulsar().getConfiguration().getDispatcherMaxReadBatchSize());
-        readMaxSizeBytes = topic.getBrokerService().pulsar().getConfiguration().getDispatcherMaxReadSizeBytes();
-        producerQueueThreshold = (int) (producerQueueSize * 0.9);
-
-        this.initializeDispatchRateLimiterIfNeeded(Optional.empty());
-
-        startProducer();
-    }
-
-    public PersistentReplicator(PersistentTopic topic, String replicatorName, String localCluster, String remoteCluster,
-            BrokerService brokerService, ManagedLedger ledger) throws NamingException {
-        super(topic.getName(), topic.getReplicatorPrefix(), localCluster, remoteCluster, brokerService);
-        this.replicatorName = replicatorName;
-        this.ledger = ledger;
-        this.topic = topic;
-        HAVE_PENDING_READ_UPDATER.set(this, FALSE);
-        PENDING_MESSAGES_UPDATER.set(this, 0);
-
-        readBatchSize = Math.min(
-            producerQueueSize,
-            topic.getBrokerService().pulsar().getConfiguration().getDispatcherMaxReadBatchSize());
         readMaxSizeBytes = topic.getBrokerService().pulsar().getConfiguration().getDispatcherMaxReadSizeBytes();
         producerQueueThreshold = (int) (producerQueueSize * 0.9);
 
@@ -190,43 +164,11 @@ public class PersistentReplicator extends AbstractReplicator
 
     @Override
     protected void disableReplicatorRead() {
-        // deactivate cursor after successfully close the producer
-        this.cursor.setInactive();
-    }
-
-    @Override
-    protected synchronized CompletableFuture<Void> openCursorAsync() {
-        log.info("[{}][{} -> {}] Starting open cursor for replicator", topicName, localCluster, remoteCluster);
-        if (cursor != null) {
-            log.info("[{}][{} -> {}] Using the exists cursor for replicator", topicName, localCluster, remoteCluster);
-            if (expiryMonitor == null) {
-                this.expiryMonitor = new PersistentMessageExpiryMonitor(topicName,
-                        Codec.decode(cursor.getName()), cursor, null);
-            }
-            return CompletableFuture.completedFuture(null);
+        if (this.cursor != null) {
+            // deactivate cursor after successfully close the producer
+            this.cursor.setInactive();
         }
-        CompletableFuture<Void> res = new CompletableFuture<>();
-        ledger.asyncOpenCursor(replicatorName, InitialPosition.Earliest, new OpenCursorCallback() {
-            @Override
-            public void openCursorComplete(ManagedCursor cursor, Object ctx) {
-                log.info("[{}][{} -> {}] Open cursor succeed for replicator", topicName, localCluster, remoteCluster);
-                PersistentReplicator.this.cursor = cursor;
-                PersistentReplicator.this.expiryMonitor = new PersistentMessageExpiryMonitor(topicName,
-                        Codec.decode(cursor.getName()), cursor, null);
-                res.complete(null);
-            }
-
-            @Override
-            public void openCursorFailed(ManagedLedgerException exception, Object ctx) {
-                log.warn("[{}][{} -> {}] Open cursor failed for replicator", topicName,
-                        localCluster, remoteCluster, exception);
-                res.completeExceptionally(new PersistenceException(exception));
-            }
-
-        }, null);
-        return res;
     }
-
 
     /**
      * Calculate available permits for read entries.
@@ -419,7 +361,15 @@ public class PersistentReplicator extends AbstractReplicator
 
                 headersAndPayload.retain();
 
-                producer.sendAsync(msg, ProducerSendCallback.create(this, entry, msg));
+                getSchemaInfo(msg).thenAccept(schemaInfo -> {
+                    msg.setSchemaInfoForReplicator(schemaInfo);
+                    producer.sendAsync(msg, ProducerSendCallback.create(this, entry, msg));
+                }).exceptionally(ex -> {
+                    log.error("[{}][{} -> {}] Failed to get schema from local cluster", topicName,
+                            localCluster, remoteCluster, ex);
+                    return null;
+                });
+
                 atLeastOneMessageSentForReplication = true;
             }
         } catch (Exception e) {
@@ -440,11 +390,21 @@ public class PersistentReplicator extends AbstractReplicator
         }
     }
 
+    private CompletableFuture<SchemaInfo> getSchemaInfo(MessageImpl msg) throws ExecutionException {
+        if (msg.getSchemaVersion() == null || msg.getSchemaVersion().length == 0) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return client.getSchemaProviderLoadingCache().get(topicName)
+                .getSchemaByVersion(msg.getSchemaVersion());
+    }
+
     public void updateCursorState() {
-        if (producer != null && producer.isConnected()) {
-            this.cursor.setActive();
-        } else {
-            this.cursor.setInactive();
+        if (this.cursor != null) {
+            if (producer != null && producer.isConnected()) {
+                this.cursor.setActive();
+            } else {
+                this.cursor.setInactive();
+            }
         }
     }
 
@@ -682,13 +642,11 @@ public class PersistentReplicator extends AbstractReplicator
         msgExpired.calculateRate();
         stats.msgRateOut = msgOut.getRate();
         stats.msgThroughputOut = msgOut.getValueRate();
-        if (expiryMonitor != null) {
-            stats.msgRateExpired = msgExpired.getRate() + expiryMonitor.getMessageExpiryRate();
-        }
+        stats.msgRateExpired = msgExpired.getRate() + expiryMonitor.getMessageExpiryRate();
     }
 
-    public ReplicatorStats getStats() {
-        stats.replicationBacklog = cursor.getNumberOfEntriesInBacklog(false);
+    public ReplicatorStatsImpl getStats() {
+        stats.replicationBacklog = cursor != null ? cursor.getNumberOfEntriesInBacklog(false) : 0;
         stats.connected = producer != null && producer.isConnected();
         stats.replicationDelayInSeconds = getReplicationDelayInSeconds();
 
@@ -715,16 +673,19 @@ public class PersistentReplicator extends AbstractReplicator
         return 0L;
     }
 
-    public void expireMessages(int messageTTLInSeconds) {
+    public boolean expireMessages(int messageTTLInSeconds) {
         if ((cursor.getNumberOfEntriesInBacklog(false) == 0)
                 || (cursor.getNumberOfEntriesInBacklog(false) < MINIMUM_BACKLOG_FOR_EXPIRY_CHECK
                         && !topic.isOldestMessageExpired(cursor, messageTTLInSeconds))) {
             // don't do anything for almost caught-up connected subscriptions
-            return;
+            return false;
         }
-        if (expiryMonitor != null) {
-            expiryMonitor.expireMessages(messageTTLInSeconds);
-        }
+
+        return expiryMonitor.expireMessages(messageTTLInSeconds);
+    }
+
+    public boolean expireMessages(Position position) {
+        return expiryMonitor.expireMessages(position);
     }
 
     @Override
@@ -748,7 +709,8 @@ public class PersistentReplicator extends AbstractReplicator
 
         int markerType = msg.getMessageBuilder().getMarkerType();
 
-        if (!remoteCluster.equals(msg.getMessageBuilder().getReplicatedFrom())) {
+        if (!(msg.getMessageBuilder().hasReplicatedFrom()
+                && remoteCluster.equals(msg.getMessageBuilder().getReplicatedFrom()))) {
             // Only consider markers that are coming from the same cluster that this
             // replicator instance is assigned to.
             // All the replicators will see all the markers, but we need to only process

@@ -20,22 +20,22 @@ package org.apache.pulsar.client.impl;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static org.apache.pulsar.common.protocol.Commands.hasChecksum;
-import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ComparisonChain;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Queues;
 import com.scurrilous.circe.checksum.Crc32cIntChecksum;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.Recycler;
 import io.netty.util.Recycler.Handle;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.Timeout;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -46,17 +46,20 @@ import java.util.TreeMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
 import java.util.stream.Collectors;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.ConsumerCryptoFailureAction;
@@ -77,9 +80,12 @@ import org.apache.pulsar.client.api.transaction.TxnID;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
 import org.apache.pulsar.client.impl.crypto.MessageCryptoBc;
 import org.apache.pulsar.client.impl.transaction.TransactionImpl;
+import org.apache.pulsar.client.util.ExecutorProvider;
 import org.apache.pulsar.client.util.RetryMessageUtil;
+import org.apache.pulsar.common.allocator.PulsarByteBufAllocator;
 import org.apache.pulsar.common.api.EncryptionContext;
 import org.apache.pulsar.common.api.EncryptionContext.EncryptionKey;
+import org.apache.pulsar.common.api.proto.BrokerEntryMetadata;
 import org.apache.pulsar.common.api.proto.CommandAck.AckType;
 import org.apache.pulsar.common.api.proto.CommandAck.ValidationError;
 import org.apache.pulsar.common.api.proto.CommandSubscribe.InitialPosition;
@@ -96,6 +102,7 @@ import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.common.schema.SchemaInfo;
 import org.apache.pulsar.common.schema.SchemaType;
+import org.apache.pulsar.common.util.CompletableFutureCancellationHandler;
 import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.common.util.SafeCollectionUtils;
 import org.apache.pulsar.common.util.collections.BitSetRecyclable;
@@ -120,13 +127,18 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     protected volatile MessageId lastDequeuedMessageId = MessageId.earliest;
     private volatile MessageId lastMessageIdInBroker = MessageId.earliest;
 
-    private final long subscribeTimeout;
+    private final long lookupDeadline;
+
+    @SuppressWarnings("rawtypes")
+    private static final AtomicLongFieldUpdater<ConsumerImpl> SUBSCRIBE_DEADLINE_UPDATER = AtomicLongFieldUpdater
+            .newUpdater(ConsumerImpl.class, "subscribeDeadline");
+    @SuppressWarnings("unused")
+    private volatile long subscribeDeadline = 0; // gets set on first successful connection
+
     private final int partitionIndex;
     private final boolean hasParentConsumer;
 
     private final int receiverQueueRefillThreshold;
-
-    private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
     private final UnAckedMessageTracker unAckedMessageTracker;
     private final AcknowledgmentsGroupingTracker acknowledgmentsGroupingTracker;
@@ -163,7 +175,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     private final DeadLetterPolicy deadLetterPolicy;
 
-    private volatile Producer<T> deadLetterProducer;
+    private volatile CompletableFuture<Producer<byte[]>> deadLetterProducer;
 
     private volatile Producer<T> retryLetterProducer;
     private final ReadWriteLock createProducerLock = new ReentrantReadWriteLock();
@@ -182,13 +194,15 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     private final BlockingQueue<String> pendingChunkedMessageUuidQueue;
 
     private final boolean createTopicIfDoesNotExist;
+    private final boolean poolMessages;
 
     private final AtomicReference<ClientCnx> clientCnxUsedForConsumerRegistration = new AtomicReference<>();
+    private final List<Throwable> previousExceptions = new CopyOnWriteArrayList<Throwable>();
 
     static <T> ConsumerImpl<T> newConsumerImpl(PulsarClientImpl client,
                                                String topic,
                                                ConsumerConfigurationData<T> conf,
-                                               ExecutorService listenerExecutor,
+                                               ExecutorProvider executorProvider,
                                                int partitionIndex,
                                                boolean hasParentConsumer,
                                                CompletableFuture<Consumer<T>> subscribeFuture,
@@ -196,14 +210,14 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                                                Schema<T> schema,
                                                ConsumerInterceptors<T> interceptors,
                                                boolean createTopicIfDoesNotExist) {
-        return newConsumerImpl(client, topic, conf, listenerExecutor, partitionIndex, hasParentConsumer, subscribeFuture,
+        return newConsumerImpl(client, topic, conf, executorProvider, partitionIndex, hasParentConsumer, subscribeFuture,
                 startMessageId, schema, interceptors, createTopicIfDoesNotExist, 0);
     }
 
     static <T> ConsumerImpl<T> newConsumerImpl(PulsarClientImpl client,
                                                String topic,
                                                ConsumerConfigurationData<T> conf,
-                                               ExecutorService listenerExecutor,
+                                               ExecutorProvider executorProvider,
                                                int partitionIndex,
                                                boolean hasParentConsumer,
                                                CompletableFuture<Consumer<T>> subscribeFuture,
@@ -213,30 +227,30 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                                                boolean createTopicIfDoesNotExist,
                                                long startMessageRollbackDurationInSec) {
         if (conf.getReceiverQueueSize() == 0) {
-            return new ZeroQueueConsumerImpl<>(client, topic, conf, listenerExecutor, partitionIndex, hasParentConsumer,
+            return new ZeroQueueConsumerImpl<>(client, topic, conf, executorProvider, partitionIndex, hasParentConsumer,
                     subscribeFuture,
                     startMessageId, schema, interceptors,
                     createTopicIfDoesNotExist);
         } else {
-            return new ConsumerImpl<>(client, topic, conf, listenerExecutor, partitionIndex, hasParentConsumer,
+            return new ConsumerImpl<>(client, topic, conf, executorProvider, partitionIndex, hasParentConsumer,
                     subscribeFuture, startMessageId, startMessageRollbackDurationInSec /* rollback time in sec to start msgId */,
                     schema, interceptors, createTopicIfDoesNotExist);
         }
     }
 
     protected ConsumerImpl(PulsarClientImpl client, String topic, ConsumerConfigurationData<T> conf,
-            ExecutorService listenerExecutor, int partitionIndex, boolean hasParentConsumer,
-            CompletableFuture<Consumer<T>> subscribeFuture, MessageId startMessageId,
-            long startMessageRollbackDurationInSec, Schema<T> schema, ConsumerInterceptors<T> interceptors,
-            boolean createTopicIfDoesNotExist) {
-        super(client, topic, conf, conf.getReceiverQueueSize(), listenerExecutor, subscribeFuture, schema, interceptors);
+           ExecutorProvider executorProvider, int partitionIndex, boolean hasParentConsumer,
+           CompletableFuture<Consumer<T>> subscribeFuture, MessageId startMessageId,
+           long startMessageRollbackDurationInSec, Schema<T> schema, ConsumerInterceptors<T> interceptors,
+           boolean createTopicIfDoesNotExist) {
+        super(client, topic, conf, conf.getReceiverQueueSize(), executorProvider, subscribeFuture, schema, interceptors);
         this.consumerId = client.newConsumerId();
         this.subscriptionMode = conf.getSubscriptionMode();
         this.startMessageId = startMessageId != null ? new BatchMessageIdImpl((MessageIdImpl) startMessageId) : null;
         this.initialStartMessageId = this.startMessageId;
         this.startMessageRollbackDurationInSec = startMessageRollbackDurationInSec;
         AVAILABLE_PERMITS_UPDATER.set(this, 0);
-        this.subscribeTimeout = System.currentTimeMillis() + client.getConfiguration().getOperationTimeoutMs();
+        this.lookupDeadline = System.currentTimeMillis() + client.getConfiguration().getLookupTimeoutMs();
         this.partitionIndex = partitionIndex;
         this.hasParentConsumer = hasParentConsumer;
         this.receiverQueueRefillThreshold = conf.getReceiverQueueSize() / 2;
@@ -246,10 +260,11 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         this.negativeAcksTracker = new NegativeAcksTracker(this, conf);
         this.resetIncludeHead = conf.isResetIncludeHead();
         this.createTopicIfDoesNotExist = createTopicIfDoesNotExist;
-        this.maxPendingChunkedMessage = conf.getMaxPendingChuckedMessage();
+        this.maxPendingChunkedMessage = conf.getMaxPendingChunkedMessage();
         this.pendingChunkedMessageUuidQueue = new GrowableArrayBlockingQueue<>();
         this.expireTimeOfIncompleteChunkedMessageMillis = conf.getExpireTimeOfIncompleteChunkedMessageMillis();
         this.autoAckOldestChunkedMessageOnQueueFull = conf.isAutoAckOldestChunkedMessageOnQueueFull();
+        this.poolMessages = conf.isPoolMessages();
 
         if (client.getConfiguration().getStatsIntervalSeconds() > 0) {
             stats = new ConsumerStatsRecorderImpl(client, conf, this);
@@ -407,25 +422,17 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     protected CompletableFuture<Message<T>> internalReceiveAsync() {
         CompletableFutureCancellationHandler cancellationHandler = new CompletableFutureCancellationHandler();
         CompletableFuture<Message<T>> result = cancellationHandler.createFuture();
-        Message<T> message = null;
-        try {
-            lock.writeLock().lock();
-            message = incomingMessages.poll(0, TimeUnit.MILLISECONDS);
+        internalPinnedExecutor.execute(() -> {
+            Message<T> message = incomingMessages.poll();
             if (message == null) {
                 pendingReceives.add(result);
                 cancellationHandler.setCancelAction(() -> pendingReceives.remove(result));
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            result.completeExceptionally(e);
-        } finally {
-            lock.writeLock().unlock();
-        }
-
-        if (message != null) {
-            messageProcessed(message);
-            result.complete(beforeConsume(message));
-        }
+            if (message != null) {
+                messageProcessed(message);
+                result.complete(beforeConsume(message));
+            }
+        });
 
         return result;
     }
@@ -470,11 +477,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     protected CompletableFuture<Messages<T>> internalBatchReceiveAsync() {
         CompletableFutureCancellationHandler cancellationHandler = new CompletableFutureCancellationHandler();
         CompletableFuture<Messages<T>> result = cancellationHandler.createFuture();
-        try {
-            lock.writeLock().lock();
-            if (pendingBatchReceives == null) {
-                pendingBatchReceives = Queues.newConcurrentLinkedQueue();
-            }
+        internalPinnedExecutor.execute(() -> {
             if (hasEnoughMessagesForBatchReceive()) {
                 MessagesImpl<T> messages = getNewMessagesImpl();
                 Message<T> msgPeeked = incomingMessages.peek();
@@ -493,15 +496,13 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 pendingBatchReceives.add(opBatchReceive);
                 cancellationHandler.setCancelAction(() -> pendingBatchReceives.remove(opBatchReceive));
             }
-        } finally {
-            lock.writeLock().unlock();
-        }
+        });
         return result;
     }
 
     @Override
     protected CompletableFuture<Void> doAcknowledge(MessageId messageId, AckType ackType,
-                                                    Map<String,Long> properties,
+                                                    Map<String, Long> properties,
                                                     TransactionImpl txn) {
         checkArgument(messageId instanceof MessageIdImpl);
         if (getState() != State.Ready && getState() != State.Connecting) {
@@ -531,12 +532,17 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     @SuppressWarnings("unchecked")
     @Override
     protected CompletableFuture<Void> doReconsumeLater(Message<?> message, AckType ackType,
-                                                       Map<String,Long> properties,
+                                                       Map<String, Long> properties,
                                                        long delayTime,
                                                        TimeUnit unit) {
         MessageId messageId = message.getMessageId();
-        if(messageId instanceof TopicMessageIdImpl) {
-            messageId = ((TopicMessageIdImpl)messageId).getInnerMessageId();
+        if (messageId == null) {
+            return FutureUtil.failedFuture(new PulsarClientException
+                    .InvalidMessageException("Cannot handle message with null messageId"));
+        }
+
+        if (messageId instanceof TopicMessageIdImpl) {
+            messageId = ((TopicMessageIdImpl) messageId).getInnerMessageId();
         }
         checkArgument(messageId instanceof MessageIdImpl);
         if (getState() != State.Ready && getState() != State.Connecting) {
@@ -553,8 +559,8 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             delayTime = 0;
         }
         if (retryLetterProducer == null) {
+            createProducerLock.writeLock().lock();
             try {
-                createProducerLock.writeLock().lock();
                 if (retryLetterProducer == null) {
                     retryLetterProducer = client.newProducer(schema)
                             .topic(this.deadLetterPolicy.getRetryLetterTopic())
@@ -568,65 +574,46 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 createProducerLock.writeLock().unlock();
             }
         }
+        CompletableFuture<Void> result = new CompletableFuture<>();
         if (retryLetterProducer != null) {
             try {
-                MessageImpl<T> retryMessage = null;
-                String originMessageIdStr = null;
-                String originTopicNameStr = null;
-                if (message instanceof TopicMessageImpl) {
-                    retryMessage = (MessageImpl<T>) ((TopicMessageImpl<T>) message).getMessage();
-                    originMessageIdStr = ((TopicMessageIdImpl) message.getMessageId()).getInnerMessageId().toString();
-                    originTopicNameStr = ((TopicMessageIdImpl) message.getMessageId()).getTopicName();
-                } else if (message instanceof MessageImpl) {
-                    retryMessage = (MessageImpl<T>) message;
-                    originMessageIdStr = ((MessageImpl<T>) message).getMessageId().toString();
-                    originTopicNameStr =  ((MessageImpl<T>) message).getTopicName();
-                }
-                SortedMap<String, String> propertiesMap = new TreeMap<>();
+                MessageImpl<T> retryMessage = (MessageImpl<T>) getMessageImpl(message);
+                String originMessageIdStr = getOriginMessageIdStr(message);
+                String originTopicNameStr = getOriginTopicNameStr(message);
+                SortedMap<String, String> propertiesMap
+                        = getPropertiesMap(message, originMessageIdStr, originTopicNameStr);
                 int reconsumetimes = 1;
-                if (message.getProperties() != null) {
-                    propertiesMap.putAll(message.getProperties());
-                }
-
                 if (propertiesMap.containsKey(RetryMessageUtil.SYSTEM_PROPERTY_RECONSUMETIMES)) {
-                    reconsumetimes = Integer.valueOf(propertiesMap.get(RetryMessageUtil.SYSTEM_PROPERTY_RECONSUMETIMES));
+                    reconsumetimes = Integer.parseInt(propertiesMap.get(RetryMessageUtil.SYSTEM_PROPERTY_RECONSUMETIMES));
                     reconsumetimes = reconsumetimes + 1;
-
-                } else {
-                    propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_REAL_TOPIC, originTopicNameStr);
-                    propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_ORIGIN_MESSAGE_ID, originMessageIdStr);
                 }
-
                 propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_RECONSUMETIMES, String.valueOf(reconsumetimes));
                 propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_DELAY_TIME, String.valueOf(unit.toMillis(delayTime)));
 
-               if (reconsumetimes > this.deadLetterPolicy.getMaxRedeliverCount()) {
-                   processPossibleToDLQ((MessageIdImpl)messageId);
-                    if (deadLetterProducer == null) {
-                        try {
-                            createProducerLock.writeLock().lock();
-                            if (deadLetterProducer == null) {
-                                deadLetterProducer = client.newProducer(schema)
-                                        .topic(this.deadLetterPolicy
-                                        .getDeadLetterTopic())
-                                        .blockIfQueueFull(false)
-                                        .create();
-                            }
-                        } catch (Exception e) {
-                           log.error("Create dead letter producer exception with topic: {}", deadLetterPolicy.getDeadLetterTopic(), e);
-                        } finally {
-                           createProducerLock.writeLock().unlock();
-                        }
-                   }
-                   if (deadLetterProducer != null) {
-                       propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_REAL_TOPIC, originTopicNameStr);
-                       propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_ORIGIN_MESSAGE_ID, originMessageIdStr);
-                       TypedMessageBuilder<T> typedMessageBuilderNew = deadLetterProducer.newMessage()
-                               .value(retryMessage.getValue())
-                               .properties(propertiesMap);
-                       typedMessageBuilderNew.send();
-                       return doAcknowledge(messageId, ackType, properties, null);
-                   }
+                if (reconsumetimes > this.deadLetterPolicy.getMaxRedeliverCount() && StringUtils.isNotBlank(deadLetterPolicy.getDeadLetterTopic())) {
+                    initDeadLetterProducerIfNeeded();
+                    MessageId finalMessageId = messageId;
+                    deadLetterProducer.thenAccept(dlqProducer -> {
+                        TypedMessageBuilder<byte[]> typedMessageBuilderNew =
+                                dlqProducer.newMessage(Schema.AUTO_PRODUCE_BYTES(retryMessage.getReaderSchema().get()))
+                                        .value(retryMessage.getData())
+                                        .properties(propertiesMap);
+                        typedMessageBuilderNew.sendAsync().thenAccept(msgId -> {
+                            doAcknowledge(finalMessageId, ackType, properties, null).thenAccept(v -> {
+                                result.complete(null);
+                            }).exceptionally(ex -> {
+                                result.completeExceptionally(ex);
+                                return null;
+                            });
+                        }).exceptionally(ex -> {
+                            result.completeExceptionally(ex);
+                            return null;
+                        });
+                    }).exceptionally(ex -> {
+                        result.completeExceptionally(ex);
+                        deadLetterProducer = null;
+                        return null;
+                    });
                 } else {
                     TypedMessageBuilder<T> typedMessageBuilderNew = retryLetterProducer.newMessage()
                             .value(retryMessage.getValue())
@@ -641,14 +628,57 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                     return doAcknowledge(messageId, ackType, properties, null);
                 }
             } catch (Exception e) {
-                log.error("Send to retry letter topic exception with topic: {}, messageId: {}", deadLetterProducer.getTopic(), messageId, e);
-                Set<MessageId> messageIds = new HashSet<>();
-                messageIds.add(messageId);
+                log.error("Send to retry letter topic exception with topic: {}, messageId: {}", retryLetterProducer.getTopic(), messageId, e);
+                Set<MessageId> messageIds = Collections.singleton(messageId);
                 unAckedMessageTracker.remove(messageId);
                 redeliverUnacknowledgedMessages(messageIds);
             }
         }
-        return CompletableFuture.completedFuture(null);
+        MessageId finalMessageId = messageId;
+        result.exceptionally(ex -> {
+            Set<MessageId> messageIds = Collections.singleton(finalMessageId);
+            unAckedMessageTracker.remove(finalMessageId);
+            redeliverUnacknowledgedMessages(messageIds);
+            return null;
+        });
+        return result;
+    }
+
+    private SortedMap<String, String> getPropertiesMap(Message<?> message, String originMessageIdStr, String originTopicNameStr) {
+        SortedMap<String, String> propertiesMap = new TreeMap<>();
+        if (message.getProperties() != null) {
+            propertiesMap.putAll(message.getProperties());
+        }
+        propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_REAL_TOPIC, originTopicNameStr);
+        propertiesMap.put(RetryMessageUtil.SYSTEM_PROPERTY_ORIGIN_MESSAGE_ID, originMessageIdStr);
+        return propertiesMap;
+    }
+
+    private String getOriginMessageIdStr(Message<?> message) {
+        if (message instanceof TopicMessageImpl) {
+            return ((TopicMessageIdImpl) message.getMessageId()).getInnerMessageId().toString();
+        } else if (message instanceof MessageImpl) {
+            return message.getMessageId().toString();
+        }
+        return null;
+    }
+
+    private String getOriginTopicNameStr(Message<?> message) {
+        if (message instanceof TopicMessageImpl) {
+            return ((TopicMessageIdImpl) message.getMessageId()).getTopicName();
+        } else if (message instanceof MessageImpl) {
+            return message.getTopicName();
+        }
+        return null;
+    }
+
+    private MessageImpl<?> getMessageImpl(Message<?> message) {
+        if (message instanceof TopicMessageImpl) {
+            return (MessageImpl<?>) ((TopicMessageImpl<?>) message).getMessage();
+        } else if (message instanceof MessageImpl) {
+            return (MessageImpl<?>) message;
+        }
+        return null;
     }
 
     @Override
@@ -661,20 +691,27 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     @Override
     public void connectionOpened(final ClientCnx cnx) {
+        previousExceptions.clear();
+
         if (getState() == State.Closing || getState() == State.Closed) {
             setState(State.Closed);
             closeConsumerTasks();
             deregisterFromClientCnx();
             client.cleanupConsumer(this);
-            failPendingReceive();
             clearReceiverQueue();
             return;
         }
         setClientCnx(cnx);
 
-        log.info("[{}][{}] Subscribing to topic on cnx {}, consumerId {}", topic, subscription, cnx.ctx().channel(),consumerId);
+        log.info("[{}][{}] Subscribing to topic on cnx {}, consumerId {}", topic, subscription, cnx.ctx().channel(), consumerId);
 
         long requestId = client.newRequestId();
+        if (duringSeek.get()) {
+            acknowledgmentsGroupingTracker.flushAndClean();
+        }
+
+        SUBSCRIBE_DEADLINE_UPDATER
+            .compareAndSet(this, 0L, System.currentTimeMillis() + client.getConfiguration().getOperationTimeoutMs());
 
         int currentSize;
         synchronized (this) {
@@ -709,7 +746,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         ByteBuf request = Commands.newSubscribe(topic, subscription, consumerId, requestId, getSubType(), priorityLevel,
                 consumerName, isDurable, startMessageIdData, metadata, readCompacted,
                 conf.isReplicateSubscriptionState(), InitialPosition.valueOf(subscriptionInitialPosition.getValue()),
-        startMessageRollbackDuration, si, createTopicIfDoesNotExist, conf.getKeySharedPolicy());
+                startMessageRollbackDuration, si, createTopicIfDoesNotExist, conf.getKeySharedPolicy());
 
         cnx.sendRequestWithId(request, requestId).thenRun(() -> {
             synchronized (ConsumerImpl.this) {
@@ -731,9 +768,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             boolean firstTimeConnect = subscribeFuture.complete(this);
             // if the consumer is not partitioned or is re-connected and is partitioned, we send the flow
             // command to receive messages.
-            // For readers too (isDurable==false), the partition idx will be set though we have to
-            // send available permits immediately after establishing the reader session
-            if (!(firstTimeConnect && hasParentConsumer && isDurable) && conf.getReceiverQueueSize() != 0) {
+            if (!(firstTimeConnect && hasParentConsumer) && conf.getReceiverQueueSize() != 0) {
                 increaseAvailablePermits(cnx, conf.getReceiverQueueSize());
             }
         }).exceptionally((e) -> {
@@ -748,7 +783,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
             if (e.getCause() instanceof PulsarClientException
                     && PulsarClientException.isRetriableError(e.getCause())
-                    && System.currentTimeMillis() < subscribeTimeout) {
+                    && System.currentTimeMillis() < SUBSCRIBE_DEADLINE_UPDATER.get(ConsumerImpl.this)) {
                 reconnectLater(e.getCause());
             } else if (!subscribeFuture.isDone()) {
                 // unable to create new consumer, fail operation
@@ -812,7 +847,8 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 previousMessage = new BatchMessageIdImpl(nextMessageInQueue.getLedgerId(),
                         nextMessageInQueue.getEntryId() - 1, nextMessageInQueue.getPartitionIndex(), -1);
             }
-
+            // release messages if they are pooled messages
+            currentMessageQueue.forEach(Message::release);
             return previousMessage;
         } else if (!lastDequeuedMessageId.equals(MessageId.earliest)) {
             // If the queue was empty we need to restart from the message just after the last one that has been dequeued
@@ -828,37 +864,56 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
      * send the flow command to have the broker start pushing messages
      */
     private void sendFlowPermitsToBroker(ClientCnx cnx, int numMessages) {
-        if (cnx != null) {
+        if (cnx != null && numMessages > 0) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] [{}] Adding {} additional permits", topic, subscription, numMessages);
             }
-
-            cnx.ctx().writeAndFlush(Commands.newFlow(consumerId, numMessages), cnx.ctx().voidPromise());
+            if (log.isDebugEnabled()) {
+                cnx.ctx().writeAndFlush(Commands.newFlow(consumerId, numMessages))
+                        .addListener(writeFuture -> {
+                            if (!writeFuture.isSuccess()) {
+                                log.debug("Consumer {} failed to send {} permits to broker: {}", consumerId, numMessages,
+                                        writeFuture.cause().getMessage());
+                            } else {
+                                log.debug("Consumer {} sent {} permits to broker", consumerId, numMessages);
+                            }
+                        });
+            } else {
+                cnx.ctx().writeAndFlush(Commands.newFlow(consumerId, numMessages), cnx.ctx().voidPromise());
+            }
         }
     }
 
     @Override
     public void connectionFailed(PulsarClientException exception) {
         boolean nonRetriableError = !PulsarClientException.isRetriableError(exception);
-        boolean timeout = System.currentTimeMillis() > subscribeTimeout;
-        if ((nonRetriableError || timeout) && subscribeFuture.completeExceptionally(exception)) {
-            setState(State.Failed);
-            if (nonRetriableError) {
-                log.info("[{}] Consumer creation failed for consumer {} with unretriableError {}", topic, consumerId, exception);
-            } else {
-                log.info("[{}] Consumer creation failed for consumer {} after timeout", topic, consumerId);
+        boolean timeout = System.currentTimeMillis() > lookupDeadline;
+        if (nonRetriableError || timeout) {
+            exception.setPreviousExceptions(previousExceptions);
+            if (subscribeFuture.completeExceptionally(exception)) {
+                setState(State.Failed);
+                if (nonRetriableError) {
+                    log.info("[{}] Consumer creation failed for consumer {} with unretriableError {}", topic, consumerId, exception);
+                } else {
+                    log.info("[{}] Consumer creation failed for consumer {} after timeout", topic, consumerId);
+                }
+                closeConsumerTasks();
+                deregisterFromClientCnx();
+                client.cleanupConsumer(this);
             }
-            closeConsumerTasks();
-            deregisterFromClientCnx();
-            client.cleanupConsumer(this);
+        } else {
+            previousExceptions.add(exception);
         }
     }
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        CompletableFuture<Void> closeFuture = new CompletableFuture<>();
+
         if (getState() == State.Closing || getState() == State.Closed) {
             closeConsumerTasks();
-            return CompletableFuture.completedFuture(null);
+            failPendingReceive().whenComplete((r, t) -> closeFuture.complete(null));
+            return closeFuture;
         }
 
         if (!isConnected()) {
@@ -867,7 +922,8 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             closeConsumerTasks();
             deregisterFromClientCnx();
             client.cleanupConsumer(this);
-            return CompletableFuture.completedFuture(null);
+            failPendingReceive().whenComplete((r, t) -> closeFuture.complete(null));
+            return closeFuture;
         }
 
         stats.getStatTimeout().ifPresent(Timeout::cancel);
@@ -878,14 +934,14 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
         long requestId = client.newRequestId();
 
-        CompletableFuture<Void> closeFuture = new CompletableFuture<>();
         ClientCnx cnx = cnx();
         if (null == cnx) {
             cleanupAtClose(closeFuture, null);
         } else {
             ByteBuf cmd = Commands.newCloseConsumer(consumerId, requestId);
             cnx.sendRequestWithId(cmd, requestId).handle((v, exception) -> {
-                boolean ignoreException = !cnx.ctx().channel().isActive();
+                final ChannelHandlerContext ctx = cnx.ctx();
+                boolean ignoreException = ctx == null || !ctx.channel().isActive();
                 if (ignoreException && exception != null) {
                     log.debug("Exception ignored in closing consumer", exception);
                 }
@@ -901,15 +957,17 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         log.info("[{}] [{}] Closed consumer", topic, subscription);
         setState(State.Closed);
         closeConsumerTasks();
-        if (exception != null) {
-            closeFuture.completeExceptionally(exception);
-        } else {
-            closeFuture.complete(null);
-        }
         deregisterFromClientCnx();
         client.cleanupConsumer(this);
+
         // fail all pending-receive futures to notify application
-        failPendingReceive();
+        failPendingReceive().whenComplete((r, t) -> {
+            if (exception != null) {
+                closeFuture.completeExceptionally(exception);
+            } else {
+                closeFuture.complete(null);
+            }
+        });
     }
 
     private void closeConsumerTasks() {
@@ -924,24 +982,12 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         stats.getStatTimeout().ifPresent(Timeout::cancel);
     }
 
-    private void failPendingReceive() {
-        lock.readLock().lock();
-        try {
-            if (listenerExecutor != null && !listenerExecutor.isShutdown()) {
-                failPendingReceives(this.pendingReceives);
-                failPendingBatchReceives(this.pendingBatchReceives);
-            }
-        } finally {
-            lock.readLock().unlock();
-        }
-    }
-
     void activeConsumerChanged(boolean isActive) {
         if (consumerEventListener == null) {
             return;
         }
 
-        listenerExecutor.execute(() -> {
+        externalPinnedExecutor.execute(() -> {
             if (isActive) {
                 consumerEventListener.becameActive(this, partitionIndex);
             } else {
@@ -962,8 +1008,10 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             return;
         }
 
+        BrokerEntryMetadata brokerEntryMetadata;
         MessageMetadata msgMetadata;
         try {
+            brokerEntryMetadata = Commands.parseBrokerEntryMetadataIfExist(headersAndPayload);
             msgMetadata = Commands.parseMessageMetadata(headersAndPayload);
         } catch (Throwable t) {
             discardCorruptedMessage(messageId, cnx, ValidationError.ChecksumMismatch);
@@ -1026,37 +1074,41 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 return;
             }
 
-            final MessageImpl<T> message = new MessageImpl<>(topicName.toString(), msgId, msgMetadata,
-                    uncompressedPayload, createEncryptionContext(msgMetadata), cnx, schema, redeliveryCount);
+            final MessageImpl<T> message = MessageImpl.create(topicName.toString(), msgId, msgMetadata,
+                    uncompressedPayload, createEncryptionContext(msgMetadata), cnx, schema, redeliveryCount,
+                    poolMessages);
             uncompressedPayload.release();
+            message.setBrokerEntryMetadata(brokerEntryMetadata);
 
-            lock.readLock().lock();
-            try {
-                // Enqueue the message so that it can be retrieved when application calls receive()
-                // if the conf.getReceiverQueueSize() is 0 then discard message if no one is waiting for it.
-                // if asyncReceive is waiting then notify callback without adding to incomingMessages queue
-                if (deadLetterPolicy != null && possibleSendToDeadLetterTopicMessages != null && redeliveryCount >= deadLetterPolicy.getMaxRedeliverCount()) {
-                    possibleSendToDeadLetterTopicMessages.put((MessageIdImpl)message.getMessageId(), Collections.singletonList(message));
+            // Enqueue the message so that it can be retrieved when application calls receive()
+            // if the conf.getReceiverQueueSize() is 0 then discard message if no one is waiting for it.
+            // if asyncReceive is waiting then notify callback without adding to incomingMessages queue
+            internalPinnedExecutor.execute(() -> {
+                if (deadLetterPolicy != null && possibleSendToDeadLetterTopicMessages != null &&
+                        redeliveryCount >= deadLetterPolicy.getMaxRedeliverCount()) {
+                    possibleSendToDeadLetterTopicMessages.put((MessageIdImpl) message.getMessageId(),
+                            Collections.singletonList(message));
                 }
-                if (peekPendingReceive() != null) {
+                if (hasNextPendingReceive()) {
                     notifyPendingReceivedCallback(message, null);
-                } else if (enqueueMessageAndCheckBatchReceive(message)) {
-                    if (hasPendingBatchReceive()) {
-                        notifyPendingBatchReceivedCallBack();
-                    }
+                } else if (enqueueMessageAndCheckBatchReceive(message) && hasPendingBatchReceive()) {
+                    notifyPendingBatchReceivedCallBack();
                 }
-            } finally {
-                lock.readLock().unlock();
-            }
+            });
         } else {
             // handle batch message enqueuing; uncompressed payload has all messages in batch
-            receiveIndividualMessagesFromBatch(msgMetadata, redeliveryCount, ackSet, uncompressedPayload, messageId, cnx);
+            receiveIndividualMessagesFromBatch(brokerEntryMetadata, msgMetadata, redeliveryCount, ackSet, uncompressedPayload, messageId, cnx);
 
             uncompressedPayload.release();
         }
+        internalPinnedExecutor.execute(()
+                -> tryTriggerListener());
 
+    }
+
+    private void tryTriggerListener() {
         if (listener != null) {
-            triggerListener(numMessages);
+            triggerListener();
         }
     }
 
@@ -1069,9 +1121,9 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
         // Lazy task scheduling to expire incomplete chunk message
         if (!expireChunkMessageTaskScheduled && expireTimeOfIncompleteChunkedMessageMillis > 0) {
-            ((ScheduledExecutorService) listenerExecutor).scheduleAtFixedRate(() -> {
-                removeExpireIncompleteChunkedMessages();
-            }, expireTimeOfIncompleteChunkedMessageMillis, expireTimeOfIncompleteChunkedMessageMillis,
+            internalPinnedExecutor.scheduleAtFixedRate(() -> {
+                        removeExpireIncompleteChunkedMessages();
+                    }, expireTimeOfIncompleteChunkedMessageMillis, expireTimeOfIncompleteChunkedMessageMillis,
                     TimeUnit.MILLISECONDS);
             expireChunkMessageTaskScheduled = true;
         }
@@ -1134,7 +1186,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             log.debug("Chunked message completed chunkId {}, total-chunks {}, msgId {} sequenceId {}",
                     msgMetadata.getChunkId(), msgMetadata.getNumChunksFromMsg(), msgId, msgMetadata.getSequenceId());
         }
-        // remove buffer from the map, add chucked messageId to unack-message tracker, and reduce pending-chunked-message count
+        // remove buffer from the map, add chunked messageId to unack-message tracker, and reduce pending-chunked-message count
         chunkedMessagesMap.remove(msgMetadata.getUuid());
         unAckedChunkedMessageIdSequenceMap.put(msgId, chunkedMsgCtx.chunkedMessageIds);
         pendingChunkedMessageCount--;
@@ -1144,39 +1196,6 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         ByteBuf uncompressedPayload = uncompressPayloadIfNeeded(messageId, msgMetadata, compressedPayload, cnx, false);
         compressedPayload.release();
         return uncompressedPayload;
-    }
-
-    protected void triggerListener(int numMessages) {
-        // Trigger the notification on the message listener in a separate thread to avoid blocking the networking
-        // thread while the message processing happens
-        listenerExecutor.execute(() -> {
-            for (int i = 0; i < numMessages; i++) {
-                try {
-                    Message<T> msg = internalReceive(0, TimeUnit.MILLISECONDS);
-                    // complete the callback-loop in case queue is cleared up
-                    if (msg == null) {
-                        if (log.isDebugEnabled()) {
-                            log.debug("[{}] [{}] Message has been cleared from the queue", topic, subscription);
-                        }
-                        break;
-                    }
-                    try {
-                        if (log.isDebugEnabled()) {
-                            log.debug("[{}][{}] Calling message listener for message {}", topic, subscription,
-                                    msg.getMessageId());
-                        }
-                        listener.received(ConsumerImpl.this, msg);
-                    } catch (Throwable t) {
-                        log.error("[{}][{}] Message listener error in processing message: {}", topic, subscription,
-                                msg.getMessageId(), t);
-                    }
-
-                } catch (PulsarClientException e) {
-                    log.warn("[{}] [{}] Failed to dequeue the message for listener", topic, subscription, e);
-                    return;
-                }
-            }
-        });
     }
 
     /**
@@ -1190,19 +1209,19 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         }
 
         // fetch receivedCallback from queue
-        final CompletableFuture<Message<T>> receivedFuture = pollPendingReceive();
+        final CompletableFuture<Message<T>> receivedFuture = nextPendingReceive();
         if (receivedFuture == null) {
             return;
         }
 
         if (exception != null) {
-            listenerExecutor.execute(() -> receivedFuture.completeExceptionally(exception));
+            internalPinnedExecutor.execute(() -> receivedFuture.completeExceptionally(exception));
             return;
         }
 
         if (message == null) {
             IllegalStateException e = new IllegalStateException("received message can't be null");
-            listenerExecutor.execute(() -> receivedFuture.completeExceptionally(e));
+            internalPinnedExecutor.execute(() -> receivedFuture.completeExceptionally(e));
             return;
         }
 
@@ -1226,8 +1245,9 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         completePendingReceive(receivedFuture, interceptMessage);
     }
 
-    void receiveIndividualMessagesFromBatch(MessageMetadata msgMetadata, int redeliveryCount, List<Long> ackSet, ByteBuf uncompressedPayload,
-            MessageIdData messageId, ClientCnx cnx) {
+    void receiveIndividualMessagesFromBatch(BrokerEntryMetadata brokerEntryMetadata, MessageMetadata msgMetadata,
+                                            int redeliveryCount, List<Long> ackSet, ByteBuf uncompressedPayload,
+                                            MessageIdData messageId, ClientCnx cnx) {
         int batchSize = msgMetadata.getNumMessagesInBatch();
 
         // create ack tracker for entry aka batch
@@ -1284,25 +1304,21 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
                 BatchMessageIdImpl batchMessageIdImpl = new BatchMessageIdImpl(messageId.getLedgerId(),
                         messageId.getEntryId(), getPartitionIndex(), i, batchSize, acker);
-                final MessageImpl<T> message = new MessageImpl<>(topicName.toString(), batchMessageIdImpl,
+                final MessageImpl<T> message = MessageImpl.create(topicName.toString(), batchMessageIdImpl,
                         msgMetadata, singleMessageMetadata, singleMessagePayload,
-                        createEncryptionContext(msgMetadata), cnx, schema, redeliveryCount);
+                        createEncryptionContext(msgMetadata), cnx, schema, redeliveryCount, poolMessages);
+                message.setBrokerEntryMetadata(brokerEntryMetadata);
                 if (possibleToDeadLetter != null) {
                     possibleToDeadLetter.add(message);
                 }
-                lock.readLock().lock();
-                try {
-                    if (peekPendingReceive() != null) {
+                internalPinnedExecutor.execute(() -> {
+                    if (hasNextPendingReceive()) {
                         notifyPendingReceivedCallback(message, null);
-                    } else if (enqueueMessageAndCheckBatchReceive(message)) {
-                        if (hasPendingBatchReceive()) {
-                            notifyPendingBatchReceivedCallBack();
-                        }
+                    } else if (enqueueMessageAndCheckBatchReceive(message) && hasPendingBatchReceive()) {
+                        notifyPendingBatchReceivedCallBack();
                     }
-                } finally {
-                    lock.readLock().unlock();
-                }
-                singleMessagePayload.release();
+                    singleMessagePayload.release();
+                });
             }
             if (ackBitSet != null) {
                 ackBitSet.recycle();
@@ -1353,13 +1369,12 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
         if (msgCnx != currentCnx) {
             // The processed message did belong to the old queue that was cleared after reconnection.
-            return;
+        } else {
+            increaseAvailablePermits(currentCnx);
+            stats.updateNumMsgsReceived(msg);
+
+            trackMessage(msg);
         }
-
-        increaseAvailablePermits(currentCnx);
-        stats.updateNumMsgsReceived(msg);
-
-        trackMessage(msg);
         decreaseIncomingMessageSize(msg);
     }
 
@@ -1371,7 +1386,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     protected void trackMessage(MessageId messageId) {
         if (conf.getAckTimeoutMillis() > 0 && messageId instanceof MessageIdImpl) {
-            MessageIdImpl id = (MessageIdImpl)messageId;
+            MessageIdImpl id = (MessageIdImpl) messageId;
             if (id instanceof BatchMessageIdImpl) {
                 // do not add each item in batch message into tracker
                 id = new MessageIdImpl(id.getLedgerId(), id.getEntryId(), getPartitionIndex());
@@ -1449,16 +1464,22 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                     MessageId m = new MessageIdImpl(messageId.getLedgerId(), messageId.getEntryId(), partitionIndex);
                     log.error(
                             "[{}][{}][{}][{}] Message delivery failed since CryptoKeyReader interface is not implemented to consume encrypted message",
-                             topic, subscription, consumerName, m);
+                            topic, subscription, consumerName, m);
                     unAckedMessageTracker.add(m);
                     return null;
             }
         }
 
-        ByteBuf decryptedData = this.msgCrypto.decrypt(() -> msgMetadata, payload, conf.getCryptoKeyReader());
-        if (decryptedData != null) {
+
+        int maxDecryptedSize = msgCrypto.getMaxOutputSize(payload.readableBytes());
+        ByteBuf decryptedData = PulsarByteBufAllocator.DEFAULT.buffer(maxDecryptedSize);
+        ByteBuffer nioDecryptedData = decryptedData.nioBuffer(0, maxDecryptedSize);
+        if (msgCrypto.decrypt(() -> msgMetadata, payload.nioBuffer(), nioDecryptedData, conf.getCryptoKeyReader())) {
+            decryptedData.writerIndex(nioDecryptedData.limit());
             return decryptedData;
         }
+
+        decryptedData.release();
 
         switch (conf.getCryptoFailureAction()) {
             case CONSUME:
@@ -1475,7 +1496,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 MessageId m = new MessageIdImpl(messageId.getLedgerId(), messageId.getEntryId(), partitionIndex);
                 log.error(
                         "[{}][{}][{}][{}] Message delivery failed since unable to decrypt incoming message",
-                         topic, subscription, consumerName, m);
+                        topic, subscription, consumerName, m);
                 unAckedMessageTracker.add(m);
                 return null;
         }
@@ -1569,8 +1590,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             int currentSize = 0;
             synchronized (this) {
                 currentSize = incomingMessages.size();
-                incomingMessages.clear();
-                resetIncomingMessageSize();
+                clearIncomingMessages();
                 unAckedMessageTracker.clear();
             }
             cnx.ctx().writeAndFlush(Commands.newRedeliverUnacknowledgedMessages(consumerId), cnx.ctx().voidPromise());
@@ -1593,8 +1613,8 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     public int clearIncomingMessagesAndGetMessageNumber() {
         int messagesNumber = incomingMessages.size();
-        incomingMessages.clear();
-        resetIncomingMessageSize();
+        incomingMessages.forEach(Message::release);
+        clearIncomingMessages();
         unAckedMessageTracker.clear();
         return messagesNumber;
     }
@@ -1621,18 +1641,12 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                     .map(messageId -> (MessageIdImpl)messageId)
                     .collect(Collectors.toSet()), MAX_REDELIVER_UNACKNOWLEDGED);
             batches.forEach(ids -> {
-                List<MessageIdData> messageIdDatas = ids.stream()
-                        .filter(messageId -> !processPossibleToDLQ(messageId))
-                        .map(messageId -> {
-                            return new MessageIdData()
-                                    .setPartition(messageId.getPartitionIndex())
-                                    .setLedgerId(messageId.getLedgerId())
-                                    .setEntryId(messageId.getEntryId());
-                        }).collect(Collectors.toList());
-                if (!messageIdDatas.isEmpty()) {
-                    ByteBuf cmd = Commands.newRedeliverUnacknowledgedMessages(consumerId, messageIdDatas);
-                    cnx.ctx().writeAndFlush(cmd, cnx.ctx().voidPromise());
-                }
+                getRedeliveryMessageIdData(ids).thenAccept(messageIdData -> {
+                    if (!messageIdData.isEmpty()) {
+                        ByteBuf cmd = Commands.newRedeliverUnacknowledgedMessages(consumerId, messageIdData);
+                        cnx.ctx().writeAndFlush(cmd, cnx.ctx().voidPromise());
+                    }
+                });
             });
             if (messagesFromQueue > 0) {
                 increaseAvailablePermits(cnx, messagesFromQueue);
@@ -1656,48 +1670,92 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         notifyPendingBatchReceivedCallBack(op);
     }
 
-    private boolean processPossibleToDLQ(MessageIdImpl messageId) {
+    private CompletableFuture<List<MessageIdData>> getRedeliveryMessageIdData(List<MessageIdImpl> messageIds) {
+        if (messageIds == null || messageIds.isEmpty()) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
+        List<MessageIdData> data = new ArrayList<>(messageIds.size());
+        List<CompletableFuture<Boolean>> futures = new ArrayList<>(messageIds.size());
+        messageIds.forEach(messageId -> {
+            CompletableFuture<Boolean> future = processPossibleToDLQ(messageId);
+            futures.add(future);
+            future.thenAccept(sendToDLQ -> {
+                if (!sendToDLQ) {
+                    data.add(new MessageIdData()
+                            .setPartition(messageId.getPartitionIndex())
+                            .setLedgerId(messageId.getLedgerId())
+                            .setEntryId(messageId.getEntryId()));
+                }
+            });
+        });
+        return FutureUtil.waitForAll(futures).thenCompose(v -> CompletableFuture.completedFuture(data));
+    }
+
+    private CompletableFuture<Boolean> processPossibleToDLQ(MessageIdImpl messageId) {
         List<MessageImpl<T>> deadLetterMessages = null;
         if (possibleSendToDeadLetterTopicMessages != null) {
             if (messageId instanceof BatchMessageIdImpl) {
-                deadLetterMessages = possibleSendToDeadLetterTopicMessages.get(new MessageIdImpl(messageId.getLedgerId(), messageId.getEntryId(),
-                        getPartitionIndex()));
-            } else {
-                deadLetterMessages = possibleSendToDeadLetterTopicMessages.get(messageId);
+                messageId = new MessageIdImpl(messageId.getLedgerId(), messageId.getEntryId(),
+                        getPartitionIndex());
             }
+            deadLetterMessages = possibleSendToDeadLetterTopicMessages.get(messageId);
         }
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
         if (deadLetterMessages != null) {
-            if (deadLetterProducer == null) {
-                try {
-                    createProducerLock.writeLock().lock();
-                    if (deadLetterProducer == null) {
-                        deadLetterProducer = client.newProducer(schema)
-                                .topic(this.deadLetterPolicy.getDeadLetterTopic())
-                                .blockIfQueueFull(false)
-                                .create();
-                    }
-                } catch (Exception e) {
-                    log.error("Create dead letter producer exception with topic: {}", deadLetterPolicy.getDeadLetterTopic(), e);
-                } finally {
-                    createProducerLock.writeLock().unlock();
+            initDeadLetterProducerIfNeeded();
+            List<MessageImpl<T>> finalDeadLetterMessages = deadLetterMessages;
+            MessageIdImpl finalMessageId = messageId;
+            deadLetterProducer.thenAcceptAsync(producerDLQ -> {
+                for (MessageImpl<T> message : finalDeadLetterMessages) {
+                    String originMessageIdStr = getOriginMessageIdStr(message);
+                    String originTopicNameStr = getOriginTopicNameStr(message);
+                    producerDLQ.newMessage(Schema.AUTO_PRODUCE_BYTES(message.getReaderSchema().get()))
+                            .value(message.getData())
+                            .properties(getPropertiesMap(message, originMessageIdStr, originTopicNameStr))
+                            .sendAsync()
+                            .thenAccept(messageIdInDLQ -> {
+                                possibleSendToDeadLetterTopicMessages.remove(finalMessageId);
+                                acknowledgeAsync(finalMessageId).whenComplete((v, ex) -> {
+                                    if (ex != null) {
+                                        log.warn("[{}] [{}] [{}] Failed to acknowledge the message {} of the original topic but send to the DLQ successfully.",
+                                                topicName, subscription, consumerName, finalMessageId, ex);
+                                    } else {
+                                        result.complete(true);
+                                    }
+                                });
+                            }).exceptionally(ex -> {
+                                log.warn("[{}] [{}] [{}] Failed to send DLQ message to {} for message id {}",
+                                        topicName, subscription, consumerName, finalMessageId, ex);
+                                result.complete(false);
+                                return null;
+                    });
                 }
-            }
-            if (deadLetterProducer != null) {
-                try {
-                    for (MessageImpl<T> message : deadLetterMessages) {
-                        deadLetterProducer.newMessage()
-                                .value(message.getValue())
-                                .properties(message.getProperties())
-                                .send();
-                    }
-                    acknowledge(messageId);
-                    return true;
-                } catch (Exception e) {
-                    log.error("Send to dead letter topic exception with topic: {}, messageId: {}", deadLetterProducer.getTopic(), messageId, e);
+            }).exceptionally(ex -> {
+                log.error("Dead letter producer exception with topic: {}", deadLetterPolicy.getDeadLetterTopic(), ex);
+                deadLetterProducer = null;
+                result.complete(false);
+                return null;
+            });
+        } else {
+            result.complete(false);
+        }
+        return result;
+    }
+
+    private void initDeadLetterProducerIfNeeded() {
+        if (deadLetterProducer == null) {
+            createProducerLock.writeLock().lock();
+            try {
+                if (deadLetterProducer == null) {
+                    deadLetterProducer = client.newProducer(Schema.AUTO_PRODUCE_BYTES(schema))
+                            .topic(this.deadLetterPolicy.getDeadLetterTopic())
+                            .blockIfQueueFull(false)
+                            .createAsync();
                 }
+            } finally {
+                createProducerLock.writeLock().unlock();
             }
         }
-        return false;
     }
 
     @Override
@@ -1719,109 +1777,114 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     }
 
     @Override
-    public CompletableFuture<Void> seekAsync(long timestamp) {
+    public void seek(Function<String, Object> function) throws PulsarClientException {
+        try {
+            seekAsync(function).get();
+        } catch (Exception e) {
+            throw PulsarClientException.unwrap(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<Void> seekAsync(Function<String, Object> function) {
+        if (function == null) {
+            return FutureUtil.failedFuture(new PulsarClientException("Function must be set"));
+        }
+        Object seekPosition = function.apply(topic);
+        if (seekPosition == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        if (seekPosition instanceof MessageId) {
+            return seekAsync((MessageId) seekPosition);
+        } else if (seekPosition.getClass().getTypeName()
+                .equals(Long.class.getTypeName())) {
+            return seekAsync((long) seekPosition);
+        }
+        return FutureUtil.failedFuture(
+                new PulsarClientException("Only support seek by messageId or timestamp"));
+    }
+
+    private Optional<CompletableFuture<Void>> seekAsyncCheckState(String seekBy) {
         if (getState() == State.Closing || getState() == State.Closed) {
-            return FutureUtil
-                .failedFuture(new PulsarClientException.AlreadyClosedException(
-                    String.format("The consumer %s was already closed when seeking the subscription %s of the topic " +
-                        "%s to the timestamp %d", consumerName, subscription, topicName.toString(), timestamp)));
+            return Optional.of(FutureUtil
+                    .failedFuture(new PulsarClientException.AlreadyClosedException(
+                            String.format("The consumer %s was already closed when seeking the subscription %s of the"
+                                    + " topic %s to %s", consumerName, subscription, topicName.toString(), seekBy))));
         }
 
         if (!isConnected()) {
-            return FutureUtil.failedFuture(new PulsarClientException(
-                String.format("The client is not connected to the broker when seeking the subscription %s of the " +
-                    "topic %s to the timestamp %d", subscription, topicName.toString(), timestamp)));
+            return Optional.of(FutureUtil.failedFuture(new PulsarClientException(
+                    String.format("The client is not connected to the broker when seeking the subscription %s of the "
+                            + "topic %s to %s", subscription, topicName.toString(), seekBy))));
         }
 
-        final CompletableFuture<Void> seekFuture = new CompletableFuture<>();
+        return Optional.empty();
+    }
 
-        long requestId = client.newRequestId();
-        ByteBuf seek = Commands.newSeek(consumerId, requestId, timestamp);
+    private CompletableFuture<Void> seekAsyncInternal(long requestId, ByteBuf seek, MessageId seekId, String seekBy) {
+        final CompletableFuture<Void> seekFuture = new CompletableFuture<>();
         ClientCnx cnx = cnx();
 
-        log.info("[{}][{}] Seek subscription to publish time {}", topic, subscription, timestamp);
+        BatchMessageIdImpl originSeekMessageId = seekMessageId;
+        seekMessageId = new BatchMessageIdImpl((MessageIdImpl) seekId);
+        duringSeek.set(true);
+        log.info("[{}][{}] Seeking subscription to {}", topic, subscription, seekBy);
 
         cnx.sendRequestWithId(seek, requestId).thenRun(() -> {
-            log.info("[{}][{}] Successfully reset subscription to publish time {}", topic, subscription, timestamp);
+            log.info("[{}][{}] Successfully reset subscription to {}", topic, subscription, seekBy);
             acknowledgmentsGroupingTracker.flushAndClean();
 
-            seekMessageId = new BatchMessageIdImpl((MessageIdImpl) MessageId.earliest);
-            duringSeek.set(true);
             lastDequeuedMessageId = MessageId.earliest;
 
-            incomingMessages.clear();
-            resetIncomingMessageSize();
+            clearIncomingMessages();
             seekFuture.complete(null);
         }).exceptionally(e -> {
+            // re-set duringSeek and seekMessageId if seek failed
+            seekMessageId = originSeekMessageId;
+            duringSeek.set(false);
             log.error("[{}][{}] Failed to reset subscription: {}", topic, subscription, e.getCause().getMessage());
+
             seekFuture.completeExceptionally(
                 PulsarClientException.wrap(e.getCause(),
-                    String.format("Failed to seek the subscription %s of the topic %s to the timestamp %d",
-                        subscription, topicName.toString(), timestamp)));
+                    String.format("Failed to seek the subscription %s of the topic %s to %s",
+                        subscription, topicName.toString(), seekBy)));
             return null;
         });
         return seekFuture;
     }
 
     @Override
-    public CompletableFuture<Void> seekAsync(MessageId messageId) {
-        if (getState() == State.Closing || getState() == State.Closed) {
-            return FutureUtil
-                .failedFuture(new PulsarClientException.AlreadyClosedException(
-                    String.format("The consumer %s was already closed when seeking the subscription %s of the topic " +
-                            "%s to the message %s", consumerName, subscription, topicName.toString(),
-                        messageId.toString())));
-        }
-
-        if (!isConnected()) {
-            return FutureUtil.failedFuture(new PulsarClientException(
-                    String.format("The client is not connected to the broker when seeking the subscription %s of the " +
-                            "topic %s to the message %s", subscription, topicName.toString(), messageId.toString())));
-        }
-
-        final CompletableFuture<Void> seekFuture = new CompletableFuture<>();
-
-        long requestId = client.newRequestId();
-        ByteBuf seek = null;
-        if (messageId instanceof BatchMessageIdImpl) {
-            BatchMessageIdImpl msgId = (BatchMessageIdImpl) messageId;
-            // Initialize ack set
-            BitSetRecyclable ackSet = BitSetRecyclable.create();
-            ackSet.set(0, msgId.getBatchSize());
-            ackSet.clear(0, Math.max(msgId.getBatchIndex(), 0));
-            long[] ackSetArr = ackSet.toLongArray();
-            ackSet.recycle();
-
-            seek = Commands.newSeek(consumerId, requestId, msgId.getLedgerId(), msgId.getEntryId(), ackSetArr);
-        } else {
-            MessageIdImpl msgId = (MessageIdImpl) messageId;
-            seek = Commands.newSeek(consumerId, requestId, msgId.getLedgerId(), msgId.getEntryId(), new long[0]);
-        }
-
-        ClientCnx cnx = cnx();
-
-        log.info("[{}][{}] Seek subscription to message id {}", topic, subscription, messageId);
-
-        cnx.sendRequestWithId(seek, requestId).thenRun(() -> {
-            log.info("[{}][{}] Successfully reset subscription to message id {}", topic, subscription, messageId);
-            acknowledgmentsGroupingTracker.flushAndClean();
-
-            seekMessageId = new BatchMessageIdImpl((MessageIdImpl) messageId);
-            duringSeek.set(true);
-            lastDequeuedMessageId = MessageId.earliest;
-
-            incomingMessages.clear();
-            resetIncomingMessageSize();
-            seekFuture.complete(null);
-        }).exceptionally(e -> {
-            log.error("[{}][{}] Failed to reset subscription: {}", topic, subscription, e.getCause().getMessage());
-            seekFuture.completeExceptionally(
-                PulsarClientException.wrap(e.getCause(),
-                    String.format("Failed to seek the subscription %s of the topic %s to the message %s",
-                        subscription, topicName.toString(), messageId.toString())));
-            return null;
+    public CompletableFuture<Void> seekAsync(long timestamp) {
+        String seekBy = String.format("the timestamp %d", timestamp);
+        return seekAsyncCheckState(seekBy).orElseGet(() -> {
+            long requestId = client.newRequestId();
+            return seekAsyncInternal(requestId, Commands.newSeek(consumerId, requestId, timestamp),
+                MessageId.earliest, seekBy);
         });
-        return seekFuture;
+    }
+
+    @Override
+    public CompletableFuture<Void> seekAsync(MessageId messageId) {
+        String seekBy = String.format("the message %s", messageId.toString());
+        return seekAsyncCheckState(seekBy).orElseGet(() -> {
+            long requestId = client.newRequestId();
+            ByteBuf seek = null;
+            if (messageId instanceof BatchMessageIdImpl) {
+                BatchMessageIdImpl msgId = (BatchMessageIdImpl) messageId;
+                // Initialize ack set
+                BitSetRecyclable ackSet = BitSetRecyclable.create();
+                ackSet.set(0, msgId.getBatchSize());
+                ackSet.clear(0, Math.max(msgId.getBatchIndex(), 0));
+                long[] ackSetArr = ackSet.toLongArray();
+                ackSet.recycle();
+
+                seek = Commands.newSeek(consumerId, requestId, msgId.getLedgerId(), msgId.getEntryId(), ackSetArr);
+            } else {
+                MessageIdImpl msgId = (MessageIdImpl) messageId;
+                seek = Commands.newSeek(consumerId, requestId, msgId.getLedgerId(), msgId.getEntryId(), new long[0]);
+            }
+            return seekAsyncInternal(requestId, seek, messageId, seekBy);
+        });
     }
 
     public boolean hasMessageAvailable() throws PulsarClientException {
@@ -1839,40 +1902,58 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         if (lastDequeuedMessageId == MessageId.earliest) {
             // if we are starting from latest, we should seek to the actual last message first.
             // allow the last one to be read when read head inclusively.
-            if (startMessageId.getLedgerId() == Long.MAX_VALUE &&
-                    startMessageId.getEntryId() == Long.MAX_VALUE &&
-                    startMessageId.partitionIndex == -1) {
+            if (startMessageId.equals(MessageId.latest)) {
 
-                getLastMessageIdAsync()
-                        .thenCompose((msgId) -> seekAsync(msgId).thenApply((ignore) -> msgId))
-                        .whenComplete((msgId, e) -> {
-                            if (e != null) {
-                                log.error("[{}][{}] Failed getLastMessageId command", topic, subscription);
-                                booleanFuture.completeExceptionally(e.getCause());
-                                return;
-                            }
-                            MessageIdImpl messageId = MessageIdImpl.convertToMessageIdImpl(msgId);
-                            if (messageId == null || messageId.getEntryId() < 0) {
-                                booleanFuture.complete(false);
-                            } else {
-                                booleanFuture.complete(resetIncludeHead);
-                            }
-                        });
+                CompletableFuture<GetLastMessageIdResponse> future = internalGetLastMessageIdAsync();
+                // if the consumer is configured to read inclusive then we need to seek to the last message
+                if (resetIncludeHead) {
+                    future = future.thenCompose((lastMessageIdResponse) ->
+                            seekAsync(lastMessageIdResponse.lastMessageId)
+                                    .thenApply((ignore) -> lastMessageIdResponse));
+                }
+
+                future.thenAccept(response -> {
+                    MessageIdImpl lastMessageId = MessageIdImpl.convertToMessageIdImpl(response.lastMessageId);
+                    MessageIdImpl markDeletePosition = MessageIdImpl
+                            .convertToMessageIdImpl(response.markDeletePosition);
+
+                    if (markDeletePosition != null) {
+                        // we only care about comparing ledger ids and entry ids as mark delete position doesn't have other ids such as batch index
+                        int result = ComparisonChain.start()
+                                .compare(markDeletePosition.getLedgerId(), lastMessageId.getLedgerId())
+                                .compare(markDeletePosition.getEntryId(), lastMessageId.getEntryId())
+                                .result();
+                        if (lastMessageId.getEntryId() < 0) {
+                            completehasMessageAvailableWithValue(booleanFuture, false);
+                        } else {
+                            completehasMessageAvailableWithValue(booleanFuture,
+                                    resetIncludeHead ? result <= 0 : result < 0);
+                        }
+                    } else if (lastMessageId == null || lastMessageId.getEntryId() < 0) {
+                        completehasMessageAvailableWithValue(booleanFuture, false);
+                    } else {
+                        completehasMessageAvailableWithValue(booleanFuture, resetIncludeHead);
+                    }
+                }).exceptionally(ex -> {
+                    log.error("[{}][{}] Failed getLastMessageId command", topic, subscription, ex);
+                    booleanFuture.completeExceptionally(ex.getCause());
+                    return null;
+                });
 
                 return booleanFuture;
             }
 
             if (hasMoreMessages(lastMessageIdInBroker, startMessageId, resetIncludeHead)) {
-                booleanFuture.complete(true);
+                completehasMessageAvailableWithValue(booleanFuture, true);
                 return booleanFuture;
             }
 
             getLastMessageIdAsync().thenAccept(messageId -> {
                 lastMessageIdInBroker = messageId;
                 if (hasMoreMessages(lastMessageIdInBroker, startMessageId, resetIncludeHead)) {
-                    booleanFuture.complete(true);
+                    completehasMessageAvailableWithValue(booleanFuture, true);
                 } else {
-                    booleanFuture.complete(false);
+                    completehasMessageAvailableWithValue(booleanFuture, false);
                 }
             }).exceptionally(e -> {
                 log.error("[{}][{}] Failed getLastMessageId command", topic, subscription);
@@ -1883,16 +1964,16 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         } else {
             // read before, use lastDequeueMessage for comparison
             if (hasMoreMessages(lastMessageIdInBroker, lastDequeuedMessageId, false)) {
-                booleanFuture.complete(true);
+                completehasMessageAvailableWithValue(booleanFuture, true);
                 return booleanFuture;
             }
 
             getLastMessageIdAsync().thenAccept(messageId -> {
                 lastMessageIdInBroker = messageId;
                 if (hasMoreMessages(lastMessageIdInBroker, lastDequeuedMessageId, false)) {
-                    booleanFuture.complete(true);
+                    completehasMessageAvailableWithValue(booleanFuture, true);
                 } else {
-                    booleanFuture.complete(false);
+                    completehasMessageAvailableWithValue(booleanFuture, false);
                 }
             }).exceptionally(e -> {
                 log.error("[{}][{}] Failed getLastMessageId command", topic, subscription);
@@ -1904,22 +1985,42 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         return booleanFuture;
     }
 
+    private void completehasMessageAvailableWithValue(CompletableFuture<Boolean> future, boolean value) {
+        internalPinnedExecutor.execute(() -> {
+            future.complete(value);
+        });
+    }
+
     private boolean hasMoreMessages(MessageId lastMessageIdInBroker, MessageId messageId, boolean inclusive) {
         if (inclusive && lastMessageIdInBroker.compareTo(messageId) >= 0 &&
-                ((MessageIdImpl)lastMessageIdInBroker).getEntryId() != -1) {
+                ((MessageIdImpl) lastMessageIdInBroker).getEntryId() != -1) {
             return true;
         }
 
         if (!inclusive && lastMessageIdInBroker.compareTo(messageId) > 0 &&
-                ((MessageIdImpl)lastMessageIdInBroker).getEntryId() != -1) {
+                ((MessageIdImpl) lastMessageIdInBroker).getEntryId() != -1) {
             return true;
         }
 
         return false;
     }
 
+    private static final class GetLastMessageIdResponse {
+        final MessageId lastMessageId;
+        final MessageId markDeletePosition;
+
+        GetLastMessageIdResponse(MessageId lastMessageId, MessageId markDeletePosition) {
+            this.lastMessageId = lastMessageId;
+            this.markDeletePosition = markDeletePosition;
+        }
+    }
+
     @Override
     public CompletableFuture<MessageId> getLastMessageIdAsync() {
+        return internalGetLastMessageIdAsync().thenApply(r -> r.lastMessageId);
+    }
+
+    public CompletableFuture<GetLastMessageIdResponse> internalGetLastMessageIdAsync() {
         if (getState() == State.Closing || getState() == State.Closed) {
             return FutureUtil
                 .failedFuture(new PulsarClientException.AlreadyClosedException(
@@ -1934,7 +2035,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 .setMandatoryStop(0, TimeUnit.MILLISECONDS)
                 .create();
 
-        CompletableFuture<MessageId> getLastMessageIdFuture = new CompletableFuture<>();
+        CompletableFuture<GetLastMessageIdResponse> getLastMessageIdFuture = new CompletableFuture<>();
 
         internalGetLastMessageIdAsync(backoff, opTimeoutMs, getLastMessageIdFuture);
         return getLastMessageIdFuture;
@@ -1942,7 +2043,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     private void internalGetLastMessageIdAsync(final Backoff backoff,
                                                final AtomicLong remainingTime,
-                                               CompletableFuture<MessageId> future) {
+                                               CompletableFuture<GetLastMessageIdResponse> future) {
         ClientCnx cnx = cnx();
         if (isConnected() && cnx != null) {
             if (!Commands.peerSupportsGetLastMessageId(cnx.getRemoteEndpointProtocolVersion())) {
@@ -1951,22 +2052,30 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                         String.format("The command `GetLastMessageId` is not supported for the protocol version %d. " +
                                 "The consumer is %s, topic %s, subscription %s", cnx.getRemoteEndpointProtocolVersion(),
                             consumerName, topicName.toString(), subscription)));
+                return;
             }
 
             long requestId = client.newRequestId();
             ByteBuf getLastIdCmd = Commands.newGetLastMessageId(consumerId, requestId);
             log.info("[{}][{}] Get topic last message Id", topic, subscription);
 
-            cnx.sendGetLastMessageId(getLastIdCmd, requestId).thenAccept((result) -> {
-                log.info("[{}][{}] Successfully getLastMessageId {}:{}",
-                    topic, subscription, result.getLedgerId(), result.getEntryId());
-                if (result.getBatchIndex() < 0) {
-                    future.complete(new MessageIdImpl(result.getLedgerId(),
-                            result.getEntryId(), result.getPartition()));
-                } else {
-                    future.complete(new BatchMessageIdImpl(result.getLedgerId(),
-                            result.getEntryId(), result.getPartition(), result.getBatchIndex()));
+            cnx.sendGetLastMessageId(getLastIdCmd, requestId).thenAccept(cmd -> {
+                MessageIdData lastMessageId = cmd.getLastMessageId();
+                MessageIdImpl markDeletePosition = null;
+                if (cmd.hasConsumerMarkDeletePosition()) {
+                    markDeletePosition = new MessageIdImpl(cmd.getConsumerMarkDeletePosition().getLedgerId(),
+                            cmd.getConsumerMarkDeletePosition().getEntryId(), -1);
                 }
+                log.info("[{}][{}] Successfully getLastMessageId {}:{}",
+                    topic, subscription, lastMessageId.getLedgerId(), lastMessageId.getEntryId());
+
+                MessageId lastMsgId = lastMessageId.getBatchIndex() <= 0 ?
+                        new MessageIdImpl(lastMessageId.getLedgerId(),
+                                lastMessageId.getEntryId(), lastMessageId.getPartition())
+                        : new BatchMessageIdImpl(lastMessageId.getLedgerId(),
+                                lastMessageId.getEntryId(), lastMessageId.getPartition(), lastMessageId.getBatchIndex());
+
+                future.complete(new GetLastMessageIdResponse(lastMsgId, markDeletePosition));
             }).exceptionally(e -> {
                 log.error("[{}][{}] Failed getLastMessageId command", topic, subscription);
                 future.completeExceptionally(
@@ -1985,9 +2094,9 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 return;
             }
 
-            ((ScheduledExecutorService) listenerExecutor).schedule(() -> {
+            internalPinnedExecutor.schedule(() -> {
                 log.warn("[{}] [{}] Could not get connection while getLastMessageId -- Will try again in {} ms",
-                    topic, getHandlerName(), nextDelay);
+                        topic, getHandlerName(), nextDelay);
                 remainingTime.addAndGet(-nextDelay);
                 internalGetLastMessageIdAsync(backoff, remainingTime, future);
             }, nextDelay, TimeUnit.MILLISECONDS);
@@ -2062,6 +2171,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                     messageIds.add(id);
                     break;
                 }
+                message.release();
                 message = incomingMessages.poll();
             }
         }
@@ -2113,7 +2223,6 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         this.connectionHandler.connectionClosed(cnx);
     }
 
-    @VisibleForTesting
     public ClientCnx getClientCnx() {
         return this.connectionHandler.cnx();
     }
@@ -2123,7 +2232,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             this.connectionHandler.setClientCnx(clientCnx);
             clientCnx.registerConsumer(consumerId, this);
             if (conf.isAckReceiptEnabled() &&
-                    Commands.peerSupportsAckReceipt(clientCnx.getRemoteEndpointProtocolVersion())) {
+                    !Commands.peerSupportsAckReceipt(clientCnx.getRemoteEndpointProtocolVersion())) {
                 log.warn("Server don't support ack for receipt! " +
                         "ProtoVersion >=17 support! nowVersion : {}", clientCnx.getRemoteEndpointProtocolVersion());
             }

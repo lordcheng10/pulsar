@@ -32,6 +32,8 @@ import org.apache.pulsar.client.admin.Brokers;
 import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.api.Authentication;
 import org.apache.pulsar.common.conf.InternalConfigurationData;
+import org.apache.pulsar.common.naming.TopicVersion;
+import org.apache.pulsar.common.policies.data.BrokerInfo;
 import org.apache.pulsar.common.policies.data.NamespaceOwnershipStatus;
 import org.apache.pulsar.common.util.Codec;
 
@@ -66,6 +68,39 @@ public class BrokersImpl extends BaseResource implements Brokers {
                     @Override
                     public void completed(List<String> brokers) {
                         future.complete(brokers);
+                    }
+
+                    @Override
+                    public void failed(Throwable throwable) {
+                        future.completeExceptionally(getApiException(throwable.getCause()));
+                    }
+                });
+        return future;
+    }
+
+    @Override
+    public BrokerInfo getLeaderBroker() throws PulsarAdminException {
+        try {
+            return getLeaderBrokerAsync().get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<BrokerInfo> getLeaderBrokerAsync() {
+        WebTarget path = adminBrokers.path("leaderBroker");
+        final CompletableFuture<BrokerInfo> future = new CompletableFuture<>();
+        asyncGetRequest(path,
+                new InvocationCallback<BrokerInfo>() {
+                    @Override
+                    public void completed(BrokerInfo leaderBroker) {
+                        future.complete(leaderBroker);
                     }
 
                     @Override
@@ -318,9 +353,21 @@ public class BrokersImpl extends BaseResource implements Brokers {
     }
 
     @Override
+    @Deprecated
     public void healthcheck() throws PulsarAdminException {
+        healthcheck(TopicVersion.V1);
+    }
+
+    @Override
+    @Deprecated
+    public CompletableFuture<Void> healthcheckAsync() {
+        return healthcheckAsync(TopicVersion.V1);
+    }
+
+    @Override
+    public void healthcheck(TopicVersion topicVersion) throws PulsarAdminException {
         try {
-            healthcheckAsync().get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+            healthcheckAsync(topicVersion).get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw (PulsarAdminException) e.getCause();
         } catch (InterruptedException e) {
@@ -332,8 +379,11 @@ public class BrokersImpl extends BaseResource implements Brokers {
     }
 
     @Override
-    public CompletableFuture<Void> healthcheckAsync() {
+    public CompletableFuture<Void> healthcheckAsync(TopicVersion topicVersion) {
         WebTarget path = adminBrokers.path("health");
+        if (topicVersion != null) {
+            path = path.queryParam("topicVersion", topicVersion);
+        }
         final CompletableFuture<Void> future = new CompletableFuture<>();
         asyncGetRequest(path,
                 new InvocationCallback<String>() {
@@ -353,5 +403,32 @@ public class BrokersImpl extends BaseResource implements Brokers {
                     }
                 });
         return future;
+    }
+
+    @Override
+    public String getVersion() throws PulsarAdminException {
+        WebTarget path = adminBrokers.path("version");
+        try {
+            final CompletableFuture<String> future = new CompletableFuture<>();
+            asyncGetRequest(path, new InvocationCallback<String>() {
+                @Override
+                public void completed(String version) {
+                    future.complete(version);
+                }
+
+                @Override
+                public void failed(Throwable throwable) {
+                    future.completeExceptionally(getApiException(throwable.getCause()));
+                }
+            });
+            return future.get(this.readTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw (PulsarAdminException) e.getCause();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new PulsarAdminException(e);
+        } catch (TimeoutException e) {
+            throw new PulsarAdminException.TimeoutException(e);
+        }
     }
 }

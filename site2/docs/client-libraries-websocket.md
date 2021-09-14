@@ -67,6 +67,16 @@ Pulsar's WebSocket API offers three endpoints for [producing](#producer-endpoint
 
 All exchanges via the WebSocket API use JSON.
 
+### Authentication
+
+#### Browser javascript WebSocket client
+
+Use the query param `token` transport the authentication token.
+
+```http
+ws://broker-service-url:8080/path?token=token
+```
+
 ### Producer endpoint
 
 The producer endpoint requires you to specify a tenant, namespace, and topic in the URL:
@@ -89,6 +99,7 @@ Key | Type | Required? | Explanation
 `producerName` | string | no | Specify the name for the producer. Pulsar will enforce only one producer with same name can be publishing on a topic
 `initialSequenceId` | long | no | Set the baseline for the sequence ids for messages published by the producer.
 `hashingScheme` | string | no | [Hashing function](http://pulsar.apache.org/api/client/org/apache/pulsar/client/api/ProducerConfiguration.HashingScheme.html) to use when publishing on a partitioned topic: `JavaStringHash`, `Murmur3_32Hash`
+`token` | string | no | Authentication token, this is used for the browser javascript client
 
 
 #### Publishing a message
@@ -149,13 +160,15 @@ ws://broker-service-url:8080/ws/v2/consumer/persistent/:tenant/:namespace/:topic
 Key | Type | Required? | Explanation
 :---|:-----|:----------|:-----------
 `ackTimeoutMillis` | long | no | Set the timeout for unacked messages (default: 0)
-`subscriptionType` | string | no | [Subscription type](https://pulsar.apache.org/api/client/index.html?org/apache/pulsar/client/api/SubscriptionType.html): `Exclusive`, `Failover`, `Shared`
+`subscriptionType` | string | no | [Subscription type](https://pulsar.apache.org/api/client/index.html?org/apache/pulsar/client/api/SubscriptionType.html): `Exclusive`, `Failover`, `Shared`, `Key_Shared`
 `receiverQueueSize` | int | no | Size of the consumer receive queue (default: 1000)
 `consumerName` | string | no | Consumer name
 `priorityLevel` | int | no | Define a [priority](http://pulsar.apache.org/api/client/org/apache/pulsar/client/api/ConsumerConfiguration.html#setPriorityLevel-int-) for the consumer
 `maxRedeliverCount` | int | no | Define a [maxRedeliverCount](http://pulsar.apache.org/api/client/org/apache/pulsar/client/api/ConsumerBuilder.html#deadLetterPolicy-org.apache.pulsar.client.api.DeadLetterPolicy-) for the consumer (default: 0). Activates [Dead Letter Topic](https://github.com/apache/pulsar/wiki/PIP-22%3A-Pulsar-Dead-Letter-Topic) feature.
 `deadLetterTopic` | string | no | Define a [deadLetterTopic](http://pulsar.apache.org/api/client/org/apache/pulsar/client/api/ConsumerBuilder.html#deadLetterPolicy-org.apache.pulsar.client.api.DeadLetterPolicy-) for the consumer (default: {topic}-{subscription}-DLQ). Activates [Dead Letter Topic](https://github.com/apache/pulsar/wiki/PIP-22%3A-Pulsar-Dead-Letter-Topic) feature.
 `pullMode` | boolean | no | Enable pull mode (default: false). See "Flow Control" below.
+`negativeAckRedeliveryDelay` | int | no | When a message is negatively acknowledged, the delay time before the message is redelivered (in milliseconds). The default value is 60000.
+`token` | string | no | Authentication token, this is used for the browser javascript client
 
 NB: these parameter (except `pullMode`) apply to the internal consumer of the WebSocket service.
 So messages will be subject to the redelivery settings as soon as the get into the receive queue,
@@ -199,6 +212,18 @@ Key | Type | Required? | Explanation
 :---|:-----|:----------|:-----------
 `messageId`| string | yes | Message ID of the processed message
 
+#### Negatively acknowledging messages
+```json
+{
+  "type": "negativeAcknowledge",
+  "messageId": "CAAQAw=="
+}
+```
+
+Key | Type | Required? | Explanation
+:---|:-----|:----------|:-----------
+`messageId`| string | yes | Message ID of the processed message
+
 #### Flow control
 
 ##### Push Mode
@@ -227,6 +252,28 @@ Key | Type | Required? | Explanation
 
 NB: in this mode it's possible to acknowledge messages in a different connection.
 
+#### Check if reach end of topic
+
+Consumer can check if it has reached end of topic by sending `isEndOfTopic` request.
+
+**Request**
+```json
+{
+  "type": "isEndOfTopic"
+}
+```
+
+Key | Type | Required? | Explanation
+:---|:-----|:----------|:-----------
+`type`| string | yes | Type of command. Must be `isEndOfTopic`
+
+**Response**
+```json
+{
+   "endOfTopic": "true/false"
+ }
+```
+
 ### Reader endpoint
 
 The reader endpoint requires you to specify a tenant, namespace, and topic in the URL:
@@ -242,6 +289,7 @@ Key | Type | Required? | Explanation
 `readerName` | string | no | Reader name
 `receiverQueueSize` | int | no | Size of the consumer receive queue (default: 1000)
 `messageId` | int or enum | no | Message ID to start from, `earliest` or `latest` (default: `latest`)
+`token` | string | no | Authentication token, this is used for the browser javascript client
 
 ##### Receiving messages
 
@@ -281,6 +329,29 @@ If you don't send acknowledgements, Pulsar WebSocket service will stop sending m
 Key | Type | Required? | Explanation
 :---|:-----|:----------|:-----------
 `messageId`| string | yes | Message ID of the processed message
+
+#### Check if reach end of topic
+
+Consumer can check if it has reached end of topic by sending `isEndOfTopic` request.
+
+**Request**
+```json
+{
+  "type": "isEndOfTopic"
+}
+```
+
+Key | Type | Required? | Explanation
+:---|:-----|:----------|:-----------
+`type`| string | yes | Type of command. Must be `isEndOfTopic`
+
+**Response**
+```json
+{
+   "endOfTopic": "true/false"
+ }
+```
+
 
 
 ### Error codes
@@ -332,9 +403,15 @@ TOPIC = scheme + '://localhost:8080/ws/v2/producer/persistent/public/default/my-
 
 ws = websocket.create_connection(TOPIC)
 
+# encode message
+s = "Hello World"
+firstEncoded = s.encode("UTF-8")
+binaryEncoded = base64.b64encode(firstEncoded)
+payloadString = binaryEncoded.decode('UTF-8')
+
 # Send one message as JSON
 ws.send(json.dumps({
-    'payload' : base64.b64encode('Hello World'),
+    'payload' : payloadString,
     'properties': {
         'key1' : 'value1',
         'key2' : 'value2'
@@ -344,9 +421,9 @@ ws.send(json.dumps({
 
 response =  json.loads(ws.recv())
 if response['result'] == 'ok':
-    print 'Message published successfully'
+    print( 'Message published successfully')
 else:
-    print 'Failed to publish message:', response
+    print('Failed to publish message:', response)
 ws.close()
 ```
 
@@ -371,7 +448,7 @@ while True:
     msg = json.loads(ws.recv())
     if not msg: break
 
-    print "Received: {} - payload: {}".format(msg, base64.b64decode(msg['payload']))
+    print( "Received: {} - payload: {}".format(msg, base64.b64decode(msg['payload'])))
 
     # Acknowledge successful processing
     ws.send(json.dumps({'messageId' : msg['messageId']}))
@@ -399,7 +476,7 @@ while True:
     msg = json.loads(ws.recv())
     if not msg: break
 
-    print "Received: {} - payload: {}".format(msg, base64.b64decode(msg['payload']))
+    print ( "Received: {} - payload: {}".format(msg, base64.b64decode(msg['payload'])))
 
     # Acknowledge successful processing
     ws.send(json.dumps({'messageId' : msg['messageId']}))

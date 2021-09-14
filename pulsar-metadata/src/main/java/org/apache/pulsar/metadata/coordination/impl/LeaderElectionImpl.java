@@ -34,9 +34,10 @@ import java.util.function.Consumer;
 import lombok.extern.slf4j.Slf4j;
 
 import org.apache.bookkeeper.common.concurrent.FutureUtils;
-import org.apache.pulsar.client.api.PulsarClientException.AlreadyClosedException;
+import org.apache.pulsar.metadata.api.GetResult;
 import org.apache.pulsar.metadata.api.MetadataCache;
 import org.apache.pulsar.metadata.api.MetadataStoreException;
+import org.apache.pulsar.metadata.api.MetadataStoreException.AlreadyClosedException;
 import org.apache.pulsar.metadata.api.MetadataStoreException.BadVersionException;
 import org.apache.pulsar.metadata.api.Notification;
 import org.apache.pulsar.metadata.api.NotificationType;
@@ -44,11 +45,12 @@ import org.apache.pulsar.metadata.api.coordination.LeaderElection;
 import org.apache.pulsar.metadata.api.coordination.LeaderElectionState;
 import org.apache.pulsar.metadata.api.extended.CreateOption;
 import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
+import org.apache.pulsar.metadata.api.extended.SessionEvent;
 import org.apache.pulsar.metadata.cache.impl.JSONMetadataSerdeSimpleType;
-import org.apache.pulsar.metadata.cache.impl.MetadataSerde;
+import org.apache.pulsar.metadata.api.MetadataSerde;
 
 @Slf4j
-class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification> {
+class LeaderElectionImpl<T> implements LeaderElection<T> {
     private final String path;
     private final MetadataSerde<T> serde;
     private final MetadataStoreExtended store;
@@ -61,7 +63,7 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
 
     private final ScheduledExecutorService executor;
 
-    private static enum InternalState {
+    private enum InternalState {
         Init, ElectionInProgress, LeaderIsPresent, Closed
     }
 
@@ -80,7 +82,8 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
         this.stateChangesListener = stateChangesListener;
         this.executor = Executors.newScheduledThreadPool(0, new DefaultThreadFactory("leader-election-executor"));
 
-        store.registerListener(this);
+        store.registerListener(this::handlePathNotification);
+        store.registerSessionListener(this::handleSessionNotification);
     }
 
     @Override
@@ -96,24 +99,56 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
     private synchronized CompletableFuture<LeaderElectionState> elect() {
         // First check if there's already a leader elected
         internalState = InternalState.ElectionInProgress;
-        return cache.get(path).thenCompose(optLock -> {
+        return store.get(path).thenCompose(optLock -> {
             if (optLock.isPresent()) {
-                synchronized (LeaderElectionImpl.this) {
-                    internalState = InternalState.LeaderIsPresent;
-                    if (leaderElectionState != LeaderElectionState.Following) {
-                        leaderElectionState = LeaderElectionState.Following;
-                        try {
-                            stateChangesListener.accept(leaderElectionState);
-                        } catch (Throwable t) {
-                            log.warn("Exception in state change listener", t);
-                        }
-                    }
-                }
-                return CompletableFuture.completedFuture(leaderElectionState);
+                return handleExistingLeaderValue(optLock.get());
             } else {
                 return tryToBecomeLeader();
             }
         });
+    }
+
+    private synchronized CompletableFuture<LeaderElectionState> handleExistingLeaderValue(GetResult res) {
+        T existingValue;
+        try {
+            existingValue = serde.deserialize(res.getValue());
+        } catch (Throwable t) {
+            return FutureUtils.exception(t);
+        }
+
+        if (existingValue.equals(proposedValue.orElse(null))) {
+            // If the value is the same as our proposed value, it means this instance was the leader at some
+            // point before. The existing value can either be for this same session or for a previous one.
+            if (res.getStat().isCreatedBySelf()) {
+                // The value is still valid because it was created in the same session
+                changeState(LeaderElectionState.Leading);
+            } else {
+                // Since the value was created in a different session, it might be expiring. We need to delete it
+                // and try the election again.
+                return store.delete(path, Optional.of(res.getStat().getVersion()))
+                        .thenCompose(__ -> tryToBecomeLeader());
+            }
+        } else if (res.getStat().isCreatedBySelf()) {
+            // The existing value is different but was created from the same session
+            return store.delete(path, Optional.of(res.getStat().getVersion()))
+                    .thenCompose(__ -> tryToBecomeLeader());
+        }
+
+        // If the existing value is different, it means there's already another leader
+        changeState(LeaderElectionState.Following);
+        return CompletableFuture.completedFuture(LeaderElectionState.Following);
+    }
+
+    private synchronized void changeState(LeaderElectionState les) {
+        internalState = InternalState.LeaderIsPresent;
+        if (this.leaderElectionState != les) {
+            this.leaderElectionState = les;
+            try {
+                stateChangesListener.accept(leaderElectionState);
+            } catch (Throwable t) {
+                log.warn("Exception in state change listener", t);
+            }
+        }
     }
 
     private synchronized CompletableFuture<LeaderElectionState> tryToBecomeLeader() {
@@ -133,7 +168,7 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
                             cache.get(path)
                                     .thenRun(() -> {
                                         synchronized (LeaderElectionImpl.this) {
-                                            log.info("Acquired resource lock on {}", path);
+                                            log.info("Acquired leadership on {}", path);
                                             internalState = InternalState.LeaderIsPresent;
                                             if (leaderElectionState != LeaderElectionState.Leading) {
                                                 leaderElectionState = LeaderElectionState.Leading;
@@ -143,8 +178,8 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
                                                     log.warn("Exception in state change listener", t);
                                                 }
                                             }
+                                            result.complete(leaderElectionState);
                                         }
-                                        result.complete(leaderElectionState);
                                     }).exceptionally(ex -> {
                                         // We fail to do the get(), so clean up the leader election fail the whole
                                         // operation
@@ -171,6 +206,12 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
                     if (ex.getCause() instanceof BadVersionException) {
                         // There was a conflict between 2 participants trying to become leaders at same time. Retry
                         // to fetch info on new leader.
+
+                        // We force the invalidation of the cache entry. Since we received a BadVersion error, we
+                        // already know that the entry is out of date. If we don't invalidate, we'd be retrying the
+                        // leader election many times until we finally receive the notification that invalidates the
+                        // cache.
+                        cache.invalidate(path);
                         elect()
                             .thenAccept(lse -> result.complete(lse))
                             .exceptionally(ex2 -> {
@@ -227,8 +268,19 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
         return cache.getIfCached(path);
     }
 
-    @Override
-    public void accept(Notification notification) {
+    private synchronized void handleSessionNotification(SessionEvent event) {
+        if (event == SessionEvent.SessionReestablished) {
+            if (leaderElectionState == LeaderElectionState.Leading) {
+                log.info("Revalidating leadership for {}", path);
+            }
+
+            elect().thenAccept(les -> {
+                log.info("Resynced leadership for {} - State: {}", path, les);
+            });
+        }
+    }
+
+    private void handlePathNotification(Notification notification) {
         if (!path.equals(notification.getPath())) {
             // Ignore notifications we don't care about
             return;
@@ -243,7 +295,7 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
             if (notification.getType() == NotificationType.Deleted) {
                 if (leaderElectionState == LeaderElectionState.Leading) {
                     // We've lost the leadership, switch to follower mode
-                    log.info("Leader released for {}", path);
+                    log.warn("Leadership released for {}", path);
                 }
 
                 leaderElectionState = LeaderElectionState.NoLeader;
@@ -251,7 +303,7 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
                 if (proposedValue.isPresent()) {
                     elect()
                             .exceptionally(ex -> {
-                                log.warn("Leader election for path {} has failed", ex);
+                                log.warn("Leader election for path {} has failed", path, ex);
                                 synchronized (LeaderElectionImpl.this) {
                                     try {
                                         stateChangesListener.accept(leaderElectionState);
@@ -259,10 +311,12 @@ class LeaderElectionImpl<T> implements LeaderElection<T>, Consumer<Notification>
                                         log.warn("Exception in state change listener", t);
                                     }
 
-                                    executor.schedule(() -> {
-                                        log.info("Retrying Leader election for path {}");
-                                        elect();
-                                    }, LEADER_ELECTION_RETRY_DELAY_SECONDS, TimeUnit.SECONDS);
+                                    if (internalState != InternalState.Closed) {
+                                        executor.schedule(() -> {
+                                            log.info("Retrying Leader election for path {}", path);
+                                            elect();
+                                        }, LEADER_ELECTION_RETRY_DELAY_SECONDS, TimeUnit.SECONDS);
+                                    }
                                 }
                                 return null;
                             });
