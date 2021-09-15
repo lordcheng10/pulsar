@@ -187,11 +187,24 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
             }
             case PRODUCER:
+                //客户端的写，应该是首先进入到这里吧
+                /***
+                 * 在上面cmd解析了请求数据，这里是判断是否是producer请求
+                 */
                 checkArgument(cmd.hasProducer());
                 try {
+                    /**
+                     * 这里的interceptCommand是空方法
+                     * */
                     interceptCommand(cmd);
+                    /**
+                     * 这里真正处理producer请求
+                     * */
                     handleProducer(cmd.getProducer());
                 } catch (InterceptException e) {
+                    /**
+                     * 如果异常，这里就直接回error response了
+                     * */
                     ctx.writeAndFlush(Commands.newError(cmd.getProducer().getRequestId(),
                             getServerError(e.getErrorCode()), e.getMessage()));
                 }

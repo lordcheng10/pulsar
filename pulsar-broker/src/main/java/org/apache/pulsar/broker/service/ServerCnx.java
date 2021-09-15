@@ -1101,24 +1101,40 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             )).build();
     }
 
+    /**
+     * 从cmdProducer上看 ，该对象并未携带数据，看来handleProducer方法更像是注册producer
+     * */
     @Override
     protected void handleProducer(final CommandProducer cmdProducer) {
+        /**
+         * 首先检查下连接状态
+         * */
         checkArgument(state == State.Connected);
         final long producerId = cmdProducer.getProducerId();
         final long requestId = cmdProducer.getRequestId();
-        // Use producer name provided by client if present
+        /**
+         * producerName是干啥的
+         * */
+        // Use producer name provided by client if present:使用客户端提供的生产者名称（如果存在）
         final String producerName = cmdProducer.hasProducerName() ? cmdProducer.getProducerName()
                 : service.generateUniqueProducerName();
         final long epoch = cmdProducer.getEpoch();
         final boolean userProvidedProducerName = cmdProducer.isUserProvidedProducerName();
         final boolean isEncrypted = cmdProducer.isEncrypted();
+        /**
+         * 这个应该是客户端传过来的key=value
+         * */
         final Map<String, String> metadata = CommandUtils.metadataFromCommand(cmdProducer);
         final SchemaData schema = cmdProducer.hasSchema() ? getSchema(cmdProducer.getSchema()) : null;
-
+        /**
+         * producer的生产模式：Shared、Exclusive、WaitForExclusive
+         * */
         final ProducerAccessMode producerAccessMode = cmdProducer.getProducerAccessMode();
         final Optional<Long> topicEpoch = cmdProducer.hasTopicEpoch()
                 ? Optional.of(cmdProducer.getTopicEpoch()) : Optional.empty();
-
+        /**
+         * 解析topic名
+         * */
         TopicName topicName = validateTopicName(cmdProducer.getTopic(), requestId, cmdProducer);
         if (topicName == null) {
             return;
@@ -1137,16 +1153,25 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         );
         isAuthorizedFuture.thenApply(isAuthorized -> {
                     if (isAuthorized) {
+                        /**
+                         * 有权限的话进行，正常处理
+                         * */
                         if (log.isDebugEnabled()) {
                             log.debug("[{}] Client is authorized to Produce with role {}",
                                     remoteAddress, getPrincipal());
                         }
+                        /**
+                         * 如果不存在相同producerId的，那么就把producerFuture放入producers中，并返回null；否则不放进去，直接返回存在的value值；
+                         * */
                         CompletableFuture<Producer> producerFuture = new CompletableFuture<>();
                         CompletableFuture<Producer> existingProducerFuture = producers.putIfAbsent(producerId,
                                 producerFuture);
 
                         if (existingProducerFuture != null) {
                             if (existingProducerFuture.isDone() && !existingProducerFuture.isCompletedExceptionally()) {
+                                /**
+                                 *这里有问题吧？如果该producerId对应的之前的producer请求存在，那么看这个请求是否完成，如果已经完成，并且没有异常，那么这里就直接回response了，那当前的请求怎么办呢？直接扔掉吗?
+                                 * */
                                 Producer producer = existingProducerFuture.getNow(null);
                                 log.info("[{}] Producer with the same id is already created:"
                                          + " producerId={}, producer={}", remoteAddress, producerId, producer);
@@ -1155,6 +1180,13 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
                                 return null;
                             } else {
+                                /**
+                                 * 走到这里要么是没完成，要么是有异常，不管哪种，这里都要回response。
+                                 * 有异常回是正常的，因为流程已经结束了；
+                                 * 没有异常，但是没完成也回response，意思是不处理这个请求了？如果此时该请求正在处理，怎么办？中止掉？
+                                 * 异常的话就直接回error response；
+                                 *
+                                 * */
                                 // There was an early request to create a producer with
                                 // same producerId. This can happen when
                                 // client
@@ -1179,9 +1211,19 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             }
                         }
 
+                        /**
+                         * 下面这里就是没有积压相同producerId请求的时候，的处理流程：
+                         * */
+
                         log.info("[{}][{}] Creating producer. producerId={}", remoteAddress, topicName, producerId);
 
+                        /**
+                         * 这里可能会创建topic，如果开启了自动创建的话
+                         * */
                         service.getOrCreateTopic(topicName.toString()).thenAccept((Topic topic) -> {
+                            /**
+                             * 这里进行quota检测
+                             * */
                             // Before creating producer, check if backlog quota exceeded
                             // on topic for size based limit and time based limit
                             for (BacklogQuota.BacklogQuotaType backlogQuotaType :
@@ -1206,8 +1248,12 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 }
                             }
 
+                            // 检查生产者是否会发布加密消息
                             // Check whether the producer will publish encrypted messages or not
                             if ((topic.isEncryptionRequired() || encryptionRequireOnProducer) && !isEncrypted) {
+                                /**
+                                 * 要求加密，但你不加密，那么就回error response
+                                 * */
                                 String msg = String.format("Encryption is required in %s", topicName);
                                 log.warn("[{}] {}", remoteAddress, msg);
                                 commandSender.sendErrorResponse(requestId, ServerError.MetadataError, msg);
@@ -1215,10 +1261,20 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 return;
                             }
 
+                            /**
+                             * 这个是关闭netty的一个特性，来减少延迟
+                             * */
                             disableTcpNoDelayIfNeeded(topicName.toString(), producerName);
 
+                            /**
+                             * 这里把producer中带的schema添加进去，为什么要添加schema，shcema的作用是什么
+                             * */
                             CompletableFuture<SchemaVersion> schemaVersionFuture = tryAddSchema(topic, schema);
 
+
+                            /**
+                             *  schema如果获取有问题，那么直接回error response
+                             * */
                             schemaVersionFuture.exceptionally(exception -> {
                                 String message = exception.getMessage();
                                 if (exception.getCause() != null) {
@@ -1232,20 +1288,31 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             });
 
                             schemaVersionFuture.thenAccept(schemaVersion -> {
+                                /**
+                                 * 构建producer，这里就用到了获取到的schema版本
+                                 * */
                                 CompletableFuture<Void> producerQueuedFuture = new CompletableFuture<>();
                                 Producer producer = new Producer(topic, ServerCnx.this, producerId, producerName,
                                         getPrincipal(), isEncrypted, metadata, schemaVersion, epoch,
                                         userProvidedProducerName, producerAccessMode, topicEpoch);
 
+                                /**
+                                 * 向topic添加生产者，为啥要添加，记录这个的作用是什么
+                                 * */
                                 topic.addProducer(producer, producerQueuedFuture).thenAccept(newTopicEpoch -> {
                                     if (isActive()) {
-                                        if (producerFuture.complete(producer)) {
+                                        //首先要是活跃的，才行
+                                        if (producerFuture.complete(producer)) { //这个逻辑到底要干嘛？ 这个producerFuture对象只是一个空对象呀 这个complete方法只有第一次调用才会返回true，后面都返回false，一次来判断这个future的异步操作是否完成
+                                            //如果完成了，就直接回response
                                             log.info("[{}] Created new producer: {}", remoteAddress, producer);
                                             commandSender.sendProducerSuccessResponse(requestId, producerName,
                                                     producer.getLastSequenceId(), producer.getSchemaVersion(),
                                                     newTopicEpoch, true /* producer is ready now */);
                                             return;
                                         } else {
+                                            /**
+                                             * 如果是false，那么就不是第一次调用了，说明该future之前就完成了的，对于这种producer，需要关闭异步处理
+                                             * */
                                             // The producer's future was completed before by
                                             // a close command
                                             producer.closeNow(true);
@@ -1254,6 +1321,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                                     remoteAddress, producer);
                                         }
                                         } else {
+                                        //如果连接被关闭了，那么这里就把producer关闭，然后回error response
                                             producer.closeNow(true);
                                         log.info("[{}] Cleared producer created after connection was closed: {}",
                                                 remoteAddress, producer);
@@ -1261,9 +1329,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                                 new IllegalStateException(
                                                         "Producer created after connection was closed"));
                                         }
-
+                                        //最后移掉这个producer
                                         producers.remove(producerId, producerFuture);
                                 }).exceptionally(ex -> {
+                                    //如果有异常，就发error response
                                     log.error("[{}] Failed to add producer to topic {}: producerId={}, {}",
                                               remoteAddress, topicName, producerId, ex.getMessage());
 
