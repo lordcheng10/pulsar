@@ -156,6 +156,7 @@ public class Producer {
         return false;
     }
 
+    //这个方法相对于下面的方法，少了第一步，检查sequence id范围；
     public void publishMessage(long producerId, long sequenceId, ByteBuf headersAndPayload, long batchSize,
             boolean isChunked) {
         if (checkAndStartPublish(producerId, sequenceId, headersAndPayload, batchSize)) {
@@ -163,8 +164,10 @@ public class Producer {
         }
     }
 
+    //这个方法就是把消息数据写到bookkeeper
     public void publishMessage(long producerId, long lowestSequenceId, long highestSequenceId,
             ByteBuf headersAndPayload, long batchSize, boolean isChunked) {
+        //1.校验sequence id范围，这里的id，是从send里面取出来的，我理解有点像producer 请求中的最大和最小offset,这个id似乎是msgIdGeneratorUpdater全局递增的，在服务端生成的
         if (lowestSequenceId > highestSequenceId) {
             cnx.execute(() -> {
                 cnx.getCommandSender().sendSendError(producerId, highestSequenceId, ServerError.MetadataError,
@@ -173,12 +176,16 @@ public class Producer {
             });
             return;
         }
+
+        //2.如果sequence id合法，那么就检查
         if (checkAndStartPublish(producerId, highestSequenceId, headersAndPayload, batchSize)) {
+            //3.这里开始真正写数据到bk
             publishMessageToTopic(headersAndPayload, lowestSequenceId, highestSequenceId, batchSize, isChunked);
         }
     }
 
     public boolean checkAndStartPublish(long producerId, long sequenceId, ByteBuf headersAndPayload, long batchSize) {
+        //1.检查该producer是否关闭
         if (isClosed) {
             cnx.execute(() -> {
                 cnx.getCommandSender().sendSendError(producerId, sequenceId, ServerError.PersistenceError,
@@ -188,6 +195,7 @@ public class Producer {
             return false;
         }
 
+        //2.crc校验
         if (!verifyChecksum(headersAndPayload)) {
             cnx.execute(() -> {
                 cnx.getCommandSender().sendSendError(producerId, sequenceId, ServerError.ChecksumError,
@@ -197,6 +205,7 @@ public class Producer {
             return false;
         }
 
+        //3.检查是否数据加密
         if (topic.isEncryptionRequired()) {
 
             headersAndPayload.markReaderIndex();
@@ -215,6 +224,7 @@ public class Producer {
             }
         }
 
+        //4.开始发布，名字应该取得不对，看起来这个方法像是统计，size
         startPublishOperation((int) batchSize, headersAndPayload.readableBytes());
         return true;
     }
@@ -226,6 +236,7 @@ public class Producer {
                         isChunked, System.nanoTime()));
     }
 
+    //这个方法就是真正把数据写到bookkeeper
     private void publishMessageToTopic(ByteBuf headersAndPayload, long lowestSequenceId, long highestSequenceId,
                                        long batchSize, boolean isChunked) {
         topic.publishMessage(headersAndPayload,

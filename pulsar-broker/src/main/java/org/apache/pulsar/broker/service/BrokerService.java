@@ -2644,6 +2644,7 @@ public class BrokerService implements Closeable {
         return brokerEntryMetadataInterceptors;
     }
 
+    // brokerEntryMetadataInterceptors中是entry meta拦截器，可以在写入每条entry前，添加对应的etnry metadata信息
     public boolean isBrokerEntryMetadataEnabled() {
         return !brokerEntryMetadataInterceptors.isEmpty();
     }

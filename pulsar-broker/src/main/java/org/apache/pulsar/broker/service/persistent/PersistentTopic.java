@@ -403,14 +403,18 @@ public class PersistentTopic extends AbstractTopic
         }
     }
 
+    //持久化topic的写入bk流程
     @Override
     public void publishMessage(ByteBuf headersAndPayload, PublishContext publishContext) {
+        //1.pending的写操作累加1
         pendingWriteOps.incrementAndGet();
+        //2. 是否fenced，这个是什么含义？应该是bookkeeper数据在恢复吧，此时就不让写入吧
         if (isFenced) {
             publishContext.completed(new TopicFencedException("fenced"), -1, -1);
             decrementPendingWriteOpsAndCheck();
             return;
         }
+        //3.是否超过最大message大小，这里的消息应该是对应kafka的一个请求size吧
         if (isExceedMaximumMessageSize(headersAndPayload.readableBytes())) {
             publishContext.completed(new NotAllowedException("Exceed maximum message size")
                     , -1, -1);
@@ -418,13 +422,16 @@ public class PersistentTopic extends AbstractTopic
             return;
         }
 
+        //4.判断是否是重复数据，跟进id来判断是否是重复数据，有可能一条消息发了两次，这个是为了保证事务和幂等
         MessageDeduplication.MessageDupStatus status =
                 messageDeduplication.isDuplicate(publishContext, headersAndPayload);
         switch (status) {
             case NotDup:
+                //真实添加entry
                 asyncAddEntry(headersAndPayload, publishContext);
                 break;
             case Dup:
+                //如果重复了，那么久不写入bk了，增加统计的metric
                 // Immediately acknowledge duplicated message
                 publishContext.completed(null, -1, -1);
                 decrementPendingWriteOpsAndCheck();
@@ -436,11 +443,15 @@ public class PersistentTopic extends AbstractTopic
         }
     }
 
+    //异步添加条目
     private void asyncAddEntry(ByteBuf headersAndPayload, PublishContext publishContext) {
+        //1.判断broker是否开启了entry metadata
         if (brokerService.isBrokerEntryMetadataEnabled()) {
+            //2.开启了的话就会传入消息数,推断是因为要构建entry meta要用
             ledger.asyncAddEntry(headersAndPayload,
                     (int) publishContext.getNumberOfMessages(), this, publishContext);
         } else {
+            //3.没开启的话，就不传入
             ledger.asyncAddEntry(headersAndPayload, this, publishContext);
         }
     }

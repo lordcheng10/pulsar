@@ -211,13 +211,18 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
 
             case SEND: {
+                //检查参数
                 checkArgument(cmd.hasSend());
                 try {
+                    //没有任何操作
                     interceptCommand(cmd);
+                    //header数据拿出来，buffer是msg数据
                     // Store a buffer marking the content + headers
                     ByteBuf headersAndPayload = buffer.markReaderIndex();
+                    //handleSend才是最终处理方法
                     handleSend(cmd.getSend(), headersAndPayload);
                 } catch (InterceptException e) {
+                    //异常就error response
                     ctx.writeAndFlush(Commands.newSendError(cmd.getSend().getProducerId(),
                             cmd.getSend().getSequenceId(), getServerError(e.getErrorCode()), e.getMessage()));
                 }

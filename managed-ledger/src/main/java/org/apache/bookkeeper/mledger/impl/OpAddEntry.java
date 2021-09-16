@@ -118,13 +118,15 @@ public class OpAddEntry extends SafeRunnable implements AddCallback, CloseCallba
     }
 
     public void initiate() {
+        //1.判断和更新状态
         if (STATE_UPDATER.compareAndSet(OpAddEntry.this, State.OPEN, State.INITIATED)) {
-
+            //2.获取数据
             ByteBuf duplicateBuffer = data.retainedDuplicate();
 
             // internally asyncAddEntry() will take the ownership of the buffer and release it at the end
             addOpCount = ManagedLedgerImpl.ADD_OP_COUNT_UPDATER.incrementAndGet(ml);
             lastInitTime = System.nanoTime();
+            //3.写数据
             ledger.asyncAddEntry(duplicateBuffer, this, addOpCount);
         } else {
             log.warn("[{}] initiate with unexpected state {}, expect OPEN state.", ml.getName(), state);

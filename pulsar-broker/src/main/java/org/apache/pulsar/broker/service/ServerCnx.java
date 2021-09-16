@@ -1395,21 +1395,25 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleSend(CommandSend send, ByteBuf headersAndPayload) {
+        //1. 检查连接状态
         checkArgument(state == State.Connected);
-
+        //2.看producer是否完成
         CompletableFuture<Producer> producerFuture = producers.get(send.getProducerId());
-
+        //3.如果该send请求对应的producer已经完成那么直接返回
         if (producerFuture == null || !producerFuture.isDone() || producerFuture.isCompletedExceptionally()) {
             log.warn("[{}] Producer had already been closed: {}", remoteAddress, send.getProducerId());
             return;
         }
-
+        //4.立即构建完成producer
         Producer producer = producerFuture.getNow(null);
+        //5.这里就输出一下debug日志
         if (log.isDebugEnabled()) {
             printSendCommandDebug(send, headersAndPayload);
         }
 
+        //6.判断是对应的什么类型的topic，那么问题来了，persistentTopic和nonPersistent有什么区别
         if (producer.isNonPersistentTopic()) {
+            //7.如果是非持久的topic，那么这里需要看是否有超过pending的最大消息数，如果超过，那么久丢弃该send，并metric计数
             // avoid processing non-persist message if reached max concurrent-message limit
             if (nonPersistentPendingMessages > maxNonPersistentPendingMessages) {
                 final long producerId = send.getProducerId();
@@ -1424,21 +1428,23 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 nonPersistentPendingMessages++;
             }
         }
-
+        //8.开启send操作,这个方法名字有点误导人，其实他要做的就是判断是否限速，是，就限速
         startSendOperation(producer, headersAndPayload.readableBytes(), send.getNumMessages());
 
+        //9.这个看起来和事务有关
         if (send.hasTxnidMostBits() && send.hasTxnidLeastBits()) {
             TxnID txnID = new TxnID(send.getTxnidMostBits(), send.getTxnidLeastBits());
             producer.publishTxnMessage(txnID, producer.getProducerId(), send.getSequenceId(),
                     send.getHighestSequenceId(), headersAndPayload, send.getNumMessages(), send.isIsChunk());
             return;
         }
-
+        //10.持久化这个消息,应该是写bookkeeper,这里的sequenceId是什么
         // Persist the message
         if (send.hasHighestSequenceId() && send.getSequenceId() <= send.getHighestSequenceId()) {
             producer.publishMessage(send.getProducerId(), send.getSequenceId(), send.getHighestSequenceId(),
                     headersAndPayload, send.getNumMessages(), send.isIsChunk());
         } else {
+            //这个和上一个方法的区别在于，这个方法不对sequence id进行检查
             producer.publishMessage(send.getProducerId(), send.getSequenceId(), headersAndPayload,
                     send.getNumMessages(), send.isIsChunk());
         }
@@ -2386,6 +2392,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     public void startSendOperation(Producer producer, int msgSize, int numMessages) {
         boolean isPublishRateExceeded = false;
+        //1.判断是否开启了topic维度的写限速
         if (preciseTopicPublishRateLimitingEnable) {
             boolean isPreciseTopicPublishRateExceeded =
                     producer.getTopic().isTopicPublishRateExceeded(numMessages, msgSize);
@@ -2406,6 +2413,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             isPublishRateExceeded = producer.getTopic().isPublishRateExceeded();
         }
 
+        //2.如果开启了限速，或者正在pending的request等于最大的请求阈值，那么会取消自动从connect中读数据
         if (++pendingSendRequest == maxPendingSendRequests || isPublishRateExceeded) {
             // When the quota of pending send requests is reached, stop reading from socket to cause backpressure on
             // client connection, possibly shared between multiple producers
@@ -2413,7 +2421,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             autoReadDisabledRateLimiting = isPublishRateExceeded;
             throttledConnections.inc();
         }
-
+        //3.如果单个thread正在pending的bytes超过了阈值，那么久暂停这个线程从所有的connect去读数据
         if (pendingBytesPerThread.get().addAndGet(msgSize) >= maxPendingBytesPerThread
                 && !autoReadDisabledPublishBufferLimiting
                 && maxPendingBytesPerThread > 0) {
