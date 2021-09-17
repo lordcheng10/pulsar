@@ -239,9 +239,12 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
 
             case SUBSCRIBE:
+                //1.校验rpc类型
                 checkArgument(cmd.hasSubscribe());
                 try {
+                    // 2.没有操作
                     interceptCommand(cmd);
+                    //3. 处理订阅请求
                     handleSubscribe(cmd.getSubscribe());
                 } catch (InterceptException e) {
                     ctx.writeAndFlush(Commands.newError(cmd.getSubscribe().getRequestId(),

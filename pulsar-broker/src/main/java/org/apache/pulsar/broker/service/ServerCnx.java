@@ -884,7 +884,9 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleSubscribe(final CommandSubscribe subscribe) {
+        //1.检查连接状态
         checkArgument(state == State.Connected);
+        //2.request id
         final long requestId = subscribe.getRequestId();
         final long consumerId = subscribe.getConsumerId();
         TopicName topicName = validateTopicName(subscribe.getTopic(), requestId, subscribe);
@@ -905,6 +907,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             return;
         }
 
+        //3.取出订阅名 订阅类型  消费者名字，isDurable是什么，获取startMessageId
         final String subscriptionName = subscribe.getSubscription();
         final SubType subType = subscribe.getSubType();
         final String consumerName = subscribe.hasConsumerName() ? subscribe.getConsumerName() : "";
@@ -913,6 +916,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 subscribe.getStartMessageId().getLedgerId(), subscribe.getStartMessageId().getEntryId(),
                 subscribe.getStartMessageId().getPartition(), subscribe.getStartMessageId().getBatchIndex())
                 : null;
+        //4. 获取优先级
         final int priorityLevel = subscribe.hasPriorityLevel() ? subscribe.getPriorityLevel() : 0;
         final boolean readCompacted = subscribe.hasReadCompacted() && subscribe.isReadCompacted();
         final Map<String, String> metadata = CommandUtils.metadataFromCommand(subscribe);
@@ -952,6 +956,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 CompletableFuture<Consumer> existingConsumerFuture = consumers.putIfAbsent(consumerId,
                         consumerFuture);
 
+
+                //5.判断该consumerId是否被注册过，如果被注册过并且已完成、未有异常，那么直接返回成功
                 if (existingConsumerFuture != null) {
                     if (existingConsumerFuture.isDone() && !existingConsumerFuture.isCompletedExceptionally()) {
                         Consumer consumer = existingConsumerFuture.getNow(null);
@@ -981,6 +987,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     }
                 }
 
+                //6.创建topic
                 boolean createTopicIfDoesNotExist = forceTopicCreation
                         && service.isAllowAutoTopicCreation(topicName.toString());
 
@@ -1005,6 +1012,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                                         "Subscription does not exist"));
                             }
 
+                            //7. 如果存在schema，那么添加schema，再订阅，否则直接订阅；我发现订阅和数据持久化都封装在Topic类中
                             if (schema != null) {
                                 return topic.addSchemaIfIdleOrCheckCompatible(schema)
                                         .thenCompose(v -> topic.subscribe(

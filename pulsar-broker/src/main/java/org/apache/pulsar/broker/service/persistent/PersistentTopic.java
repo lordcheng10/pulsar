@@ -659,6 +659,9 @@ public class PersistentTopic extends AbstractTopic
         messageDeduplication.producerRemoved(producer.getProducerName());
     }
 
+    /**
+     * 订阅topic
+     * */
     @Override
     public CompletableFuture<Consumer> subscribe(final TransportCnx cnx, String subscriptionName, long consumerId,
                                                  SubType subType, int priorityLevel, String consumerName,
@@ -668,6 +671,7 @@ public class PersistentTopic extends AbstractTopic
                                                  long startMessageRollbackDurationSec,
                                                  boolean replicatedSubscriptionStateArg,
                                                  KeySharedMeta keySharedMeta) {
+        //1.readCompacted条件下，只允许灾备和排他性消费
         if (readCompacted && !(subType == SubType.Failover || subType == SubType.Exclusive)) {
             return FutureUtil.failedFuture(new NotAllowedException(
                     "readCompacted only allowed on failover or exclusive subscriptions"));
