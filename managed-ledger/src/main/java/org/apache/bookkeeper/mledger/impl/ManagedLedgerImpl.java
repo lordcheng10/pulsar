@@ -704,29 +704,24 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         executor.executeOrdered(name, safeRun(() -> internalAsyncAddEntry(addOperation)));
     }
 
-    /**
-     * 异步添加entry
-     * */
     @Override
     public void asyncAddEntry(ByteBuf buffer, int numberOfMessages, AddEntryCallback callback, Object ctx) {
         if (log.isDebugEnabled()) {
             log.debug("[{}] asyncAddEntry size={} state={}", name, buffer.readableBytes(), state);
         }
 
-        //1.创建一个OpAddEntry对象，这个类封装了一些bookeeper操作
         OpAddEntry addOperation = OpAddEntry.create(this, buffer, numberOfMessages, callback, ctx);
 
-        //2.这里就把addOperation对象放到有序线程池里去执行了，这个线程池是bookkeeper自己实现的，最终的写入逻辑就在internalAsyncAddEntry这个里
         // Jump to specific thread to avoid contention from writers writing from different threads
         executor.executeOrdered(name, safeRun(() -> internalAsyncAddEntry(addOperation)));
     }
 
     private synchronized void internalAsyncAddEntry(OpAddEntry addOperation) {
-        //1.统计pendding的entry
+        if (!beforeAddEntry(addOperation)) {
+            return;
+        }
         pendingAddEntries.add(addOperation);
-        //2.获取更新状态
         final State state = STATE_UPDATER.get(this);
-        //3.根据不同状态做不同操作
         if (state == State.Fenced) {
             addOperation.failed(new ManagedLedgerFencedException());
             return;
@@ -741,7 +736,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             addOperation.failed(new ManagedLedgerAlreadyClosedException("Waiting to recover from failure"));
             return;
         }
-        //4.如果正在关闭，或者是正常创建一个Ledger，那么这里需要等待去操作，当然会设置一个超时时间
+
         if (state == State.ClosingLedger || state == State.CreatingLedger) {
             // We don't have a ready ledger to write into
             // We are waiting for a new ledger to be created
@@ -758,7 +753,6 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 }
             }
         } else if (state == State.ClosedLedger) {
-            //5.如果Ledger关闭了，那么就异步创建一个Ledger.
             // No ledger and no pending operations. Create a new ledger
             log.info("[{}] Creating a new ledger", name);
             if (STATE_UPDATER.compareAndSet(this, State.ClosedLedger, State.CreatingLedger)) {
@@ -767,14 +761,11 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 asyncCreateLedger(bookKeeper, config, digestType, this, Collections.emptyMap());
             }
         } else {
-            //6. 检查Leader是否是开启的
             checkArgument(state == State.LedgerOpened, "ledger=%s is not opened", state);
 
-            //7.写到最后䘝Ledger
             // Write into lastLedger
             addOperation.setLedger(currentLedger);
 
-            //8.统计当前的LedgerSize
             ++currentLedgerEntries;
             currentLedgerSize += addOperation.data.readableBytes();
 
@@ -783,7 +774,6 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                         currentLedgerEntries);
             }
 
-            //9.判断当前Leader是否是满的，满了就close
             if (currentLedgerIsFull()) {
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] Closing current ledger lh={}", name, currentLedger.getId());
@@ -792,12 +782,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 addOperation.setCloseWhenDone(true);
                 STATE_UPDATER.set(this, State.ClosingLedger);
             }
-            //10.这里就是前面说的拦截器，每次添加entry的时候，如果配置了都会调用
-            // interceptor entry before add to bookie
-            if (beforeAddEntry(addOperation)) {
-                //11.这里才是实际写到bk
-                addOperation.initiate();
-            }
+            addOperation.initiate();
         }
     }
 
@@ -1528,9 +1513,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                     ReferenceCountUtil.release(existsOp.data);
                 }
                 existsOp.setLedger(currentLedger);
-                if (beforeAddEntry(existsOp)) {
-                    pendingAddEntries.add(existsOp);
-                }
+                pendingAddEntries.add(existsOp);
             }
         } while (existsOp != null && --pendingSize > 0);
 
@@ -2345,6 +2328,12 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     void internalTrimLedgers(boolean isTruncate, CompletableFuture<?> promise) {
+        if (!factory.isMetadataServiceAvailable()) {
+            // Defer trimming of ledger if we cannot connect to metadata service
+            promise.complete(null);
+            return;
+        }
+
         // Ensure only one trimming operation is active
         if (!trimmerMutex.tryLock()) {
             scheduleDeferredTrimming(isTruncate, promise);
@@ -3403,6 +3392,11 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     private boolean currentLedgerIsFull() {
+        if (!factory.isMetadataServiceAvailable()) {
+            // We don't want to trigger metadata operations if we already know that we're currently disconnected
+            return false;
+        }
+
         boolean spaceQuotaReached = (currentLedgerEntries >= config.getMaxEntriesPerLedger()
                 || currentLedgerSize >= (config.getMaxSizePerLedgerMb() * MegaByte));
 

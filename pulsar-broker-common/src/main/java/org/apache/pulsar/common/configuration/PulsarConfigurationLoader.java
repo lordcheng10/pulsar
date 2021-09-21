@@ -25,6 +25,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.Map;
@@ -96,10 +97,11 @@ public class PulsarConfigurationLoader {
         checkNotNull(properties);
         T configuration = null;
         try {
-            configuration = (T) clazz.newInstance();
+            configuration = (T) clazz.getDeclaredConstructor().newInstance();
             configuration.setProperties(properties);
             update((Map) properties, configuration);
-        } catch (InstantiationException | IllegalAccessException e) {
+        } catch (InstantiationException | IllegalAccessException
+                | NoSuchMethodException | InvocationTargetException e) {
             throw new IllegalArgumentException("Failed to instantiate " + clazz.getName(), e);
         }
         return configuration;
@@ -179,7 +181,8 @@ public class PulsarConfigurationLoader {
      */
     public static ServiceConfiguration convertFrom(PulsarConfiguration conf, boolean ignoreNonExistMember) throws RuntimeException {
         try {
-            final ServiceConfiguration convertedConf = ServiceConfiguration.class.newInstance();
+            final ServiceConfiguration convertedConf = ServiceConfiguration.class
+                    .getDeclaredConstructor().newInstance();
             Field[] confFields = conf.getClass().getDeclaredFields();
             Arrays.stream(confFields).forEach(confField -> {
                 try {
@@ -198,9 +201,8 @@ public class PulsarConfigurationLoader {
                 }
             });
             return convertedConf;
-        } catch (InstantiationException e) {
-            throw new RuntimeException("Exception caused while converting configuration: " + e.getMessage());
-        } catch (IllegalAccessException e) {
+        } catch (InstantiationException | IllegalAccessException
+                | InvocationTargetException | NoSuchMethodException e) {
             throw new RuntimeException("Exception caused while converting configuration: " + e.getMessage());
         }
     }
