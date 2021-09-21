@@ -80,6 +80,11 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
     protected final ConsumerInterceptors<T> interceptors;
     protected final BatchReceivePolicy batchReceivePolicy;
     protected final ConcurrentLinkedQueue<OpBatchReceive<T>> pendingBatchReceives;
+    //这个变量，翻译上来讲是：正在加入的消息size更新变量。那么问题来了：
+    //1.这个变量有什么作用？2.这里用到的AtomicLongFieldUpdater类有什么作用？3.正加入的消息是指什么意思？
+    // (AtomicLongFieldUpdater可以对指定"类的 'volatile long'类型的成员"进行原子更新(换句话说，单纯只是用volatile修饰不能保证原子性)。它是基于反射原理实现的。
+    // 参考：https://blog.csdn.net/wangxiaotongfan/article/details/51798969)
+    //所以这个变量实际对应的是incomingMessagesSize这个变量，他在改变incomingMessagesSize这个变量的值；
     private static final AtomicLongFieldUpdater<ConsumerBase> INCOMING_MESSAGES_SIZE_UPDATER = AtomicLongFieldUpdater
             .newUpdater(ConsumerBase.class, "incomingMessagesSize");
     protected volatile long incomingMessagesSize = 0;
@@ -142,13 +147,19 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
         }
     }
 
+    /**
+     * 这里才是客户端获取消息要调用的接口
+     * */
     @Override
     public Message<T> receive() throws PulsarClientException {
+        //1.先看有无设置listener
         if (listener != null) {
             throw new PulsarClientException.InvalidConfigurationException(
                     "Cannot use receive() when a listener has been set");
         }
+        //2.检查消费者此刻的状态
         verifyConsumerState();
+        //3.通过调用internalReceive来获取消息
         return internalReceive();
     }
 
@@ -726,13 +737,23 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
         return true;
     }
 
+    //这个方法从字面上看，意思是：入队消息检查批量接收
+    //那么具体这个方法是干嘛的呢？为什么要有这个方法呢？
     protected boolean enqueueMessageAndCheckBatchReceive(Message<T> message) {
+        //1.获取message size
         int messageSize = message.size();
+        //2.判断是否能入队(canEnqueueMessage方法直接返回了true)并且放入队列成功(offer方法，如果没有多余队列空间，无法放入时，会返回false)
         if (canEnqueueMessage(message) && incomingMessages.offer(message)) {
+            //3.这种情况下我们会，更新INCOMING_MESSAGES_SIZE_UPDATER变量值
+            //这里说的incomingMessages queue，有这个队列变量吗
+            //在我们将消息放入 incomingMessages 队列后，我们不能再接触消息实例，因为对于池化消息，这个实例可能已经被释放和回收.
             // After we have enqueued the messages on `incomingMessages` queue, we cannot touch the message instance
             // anymore, since for pooled messages, this instance was possibly already been released and recycled.
             INCOMING_MESSAGES_SIZE_UPDATER.addAndGet(this, messageSize);
         }
+        //4.调用hasEnoughMessagesForBatchReceive方法，从这个方法名字来看，似乎这个方法的作用是：检查是否有足够的消息来供batch接收（或者说填满一个batch），
+        //如果是这样理解的话，接收到消息后，还需要组装成batch？为啥呢？我只听过组装成batch发送的(比如producer)，没听说接收后还得组装成batch。除非，这个方法调用不是客户端，
+        // 而是服务端，服务端从bookkeeper读取消息后，组装成batch发送给客户端
         return hasEnoughMessagesForBatchReceive();
     }
 

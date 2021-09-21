@@ -405,15 +405,24 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         return unsubscribeFuture;
     }
 
+    /**
+     * internalReceive：内部接收
+     * 这个方法命名得有点怪，为啥叫内部呢，是因为该方法是通过recevie方法来调用的吗 不暴露给用户调用，所以就叫做内部接收方法:receive
+     * */
     @Override
     protected Message<T> internalReceive() throws PulsarClientException {
         Message<T> message;
         try {
+            //1.从队列incomingMessages中获取消息
             message = incomingMessages.take();
+            //2.处理消息
             messageProcessed(message);
+            //3.调用方法beforeConsume：如果有注册拦截器，那么用拦截器来处理下消息再返回，否则直接返回；
             return beforeConsume(message);
         } catch (InterruptedException e) {
+            //4.如果有异常，那么metric记录异常次数
             stats.incrementNumReceiveFailed();
+            //5.抛异常
             throw PulsarClientException.unwrap(e);
         }
     }
@@ -766,6 +775,9 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             resetBackoff();
 
             boolean firstTimeConnect = subscribeFuture.complete(this);
+            /**
+             * 如果消费者未分区或重新连接并已分区，则我们发送流命令以接收消息。
+             * */
             // if the consumer is not partitioned or is re-connected and is partitioned, we send the flow
             // command to receive messages.
             if (!(firstTimeConnect && hasParentConsumer) && conf.getReceiverQueueSize() != 0) {
@@ -996,6 +1008,9 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         });
     }
 
+    /**
+     * 客户端获取消息逻辑好像就在这里?不是，实际这个是服务端调用的
+     * */
     void messageReceived(MessageIdData messageId, int redeliveryCount, List<Long> ackSet, ByteBuf headersAndPayload, ClientCnx cnx) {
         if (log.isDebugEnabled()) {
             log.debug("[{}][{}] Received message: {}/{}", topic, subscription, messageId.getLedgerId(),
@@ -1357,24 +1372,33 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     }
 
     /**
+     * 记录应用程序处理了一条消息的事件,定期发送 Flow 命令通知代理可以推送更多消息.
+     * 从这个注释翻译可以看出Flow命令似乎只是告诉服务端可以推送多少消息过来.
      * Record the event that one message has been processed by the application.
      *
      * Periodically, it sends a Flow command to notify the broker that it can push more messages
      */
     @Override
     protected synchronized void messageProcessed(Message<?> msg) {
+        //1.获取当前客户端的上下文对象ClientCnx，ClientCnx这个类具体有什么作用？看了下似乎是专门提供处理各种response的方法的；
         ClientCnx currentCnx = cnx();
+        //2.从msg中获取它对应的client上下文，这个应该是在客户端处理接收到的response的时候，加进去的
         ClientCnx msgCnx = ((MessageImpl<?>) msg).getCnx();
         lastDequeuedMessageId = msg.getMessageId();
 
         if (msgCnx != currentCnx) {
+            //3.如果接受到的这条消息对应的clent上下文，不是当前的这个，那么久什么都不处理？看注释，似乎重连后会出现这种情况；
             // The processed message did belong to the old queue that was cleared after reconnection.
         } else {
+            //4.增加可以接受的permit数，增加1
             increaseAvailablePermits(currentCnx);
+            //5.更新接受的消息数metric
             stats.updateNumMsgsReceived(msg);
-
+            //6.track（跟踪）Message(消息)
             trackMessage(msg);
         }
+        //7.减少正在传入的消息大小,这个方法用了INCOMING_MESSAGES_SIZE_UPDATER变量来统计正在加入的消息size，这个变量的作用是啥呢？似乎是判断是否接收到了足够的消息
+        //正在接收的消息是什么意思？是刚从response解析出来，但还没来得及处理的？
         decreaseIncomingMessageSize(msg);
     }
 
@@ -1384,18 +1408,30 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         }
     }
 
+    /**
+     * 追踪消息.
+     * 1.怎么追踪，追踪逻辑是什么？
+     * */
     protected void trackMessage(MessageId messageId) {
+        //1.如果配置了ack timeout时间 并且 messageId对象是MessageIdImpl实现类，那么久进行追踪消息
         if (conf.getAckTimeoutMillis() > 0 && messageId instanceof MessageIdImpl) {
+            //2.强制转化messageId
             MessageIdImpl id = (MessageIdImpl) messageId;
+            //3.判断该id是是不是BatchMessageIdImpl类对象，那么问题来了BatchMessageIdImpl和MessageIdImpl有什么区别? 答案：BatchMessageIdImpl extends MessageIdImpl implements MessageId
             if (id instanceof BatchMessageIdImpl) {
+                //不要将批处理消息中的每个entry添加到跟踪器中
                 // do not add each item in batch message into tracker
                 id = new MessageIdImpl(id.getLedgerId(), id.getEntryId(), getPartitionIndex());
             }
+            //4.判断是否有父消费者，这里父消费者是什么意思？
             if (hasParentConsumer) {
                 //TODO: check parent consumer here
+                //5.如果有父消费者，就从未ack消息的追踪器中移除，为什么要移除呢？是因为父消费者，做了追踪吗？父消费者是什么意思
+                //我们不应再跟踪此消息，TopicsConsumer 将从现在开始注意
                 // we should no longer track this message, TopicsConsumer will take care from now onwards
                 unAckedMessageTracker.remove(id);
             } else {
+                //6.如果没有父消费者，就加入未ack的消息追踪器中
                 unAckedMessageTracker.add(id);
             }
         }
@@ -1405,10 +1441,26 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
         increaseAvailablePermits(currentCnx, 1);
     }
 
+
+    /**
+     * 增加可接受的消息数.我理解是consumer有一个可以接受的最大消息数，客户端会告诉服务端 ，推送多少条消息过来，这个可以接受的消息数就是message permit。
+     *
+     * 这里可以接受的最大消息数，一开始就是通过一个queue size来配置的：receiverQueueSize，看起来就是我理解的那样,客户端会有一个queue队列，这个来控制可以发送的消息数；
+     *
+     * 那么问题来了这个AVAILABLE_PERMITS_UPDATER又是干啥的？currentCnx又是干啥的？receiverQueueRefillThreshold是干啥的？
+     * 首先从receiverQueueRefillThreshold的命名来看：接收队列再填充阈值，这个是一个final类型，也就是说只能赋值一次，他的初始值是队列size的一半；
+     *
+     * 看起来这个逻辑一开始就会告知broker端，我们可以接受的消息数；
+     *
+     * 还有个问题就是AVAILABLE_PERMITS_UPDATER这个变量怎么只有加没有减少呢？
+     *
+     * 看起来课可以发送的消息数不小于队列size的一半，那么久会发送flow请求；否则就把可以获取的消息数设置为0；
+     *
+     * */
     protected void increaseAvailablePermits(ClientCnx currentCnx, int delta) {
         int available = AVAILABLE_PERMITS_UPDATER.addAndGet(this, delta);
 
-        while (available >= receiverQueueRefillThreshold && !paused) {
+        while (available >= receiverQueueRefillThreshold && !paused) {//这里会不会有线程安全问题？这个判断条件，走到这一步的时候AVAILABLE_PERMITS_UPDATER对应的值会不会已经变了
             if (AVAILABLE_PERMITS_UPDATER.compareAndSet(this, available, 0)) {
                 sendFlowPermitsToBroker(currentCnx, available);
                 break;

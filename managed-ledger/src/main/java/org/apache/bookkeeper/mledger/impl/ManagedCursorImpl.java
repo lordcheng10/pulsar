@@ -2189,6 +2189,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         final Result result = new Result();
         final CountDownLatch latch = new CountDownLatch(1);
+        //1.异步关闭
         asyncClose(new AsyncCallbacks.CloseCallback() {
             @Override
             public void closeComplete(Object ctx) {
@@ -2206,6 +2207,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             }
         }, null);
 
+        //2.等着异步关闭完成，相当于这个close方法是用异步关闭方法来实现的同步关闭方法
         if (!latch.await(ManagedLedgerImpl.AsyncOperationTimeoutSeconds, TimeUnit.SECONDS)) {
             throw new ManagedLedgerException("Timeout during close operation");
         }
@@ -2227,8 +2229,9 @@ public class ManagedCursorImpl implements ManagedCursor {
      */
     void persistPositionWhenClosing(PositionImpl position, Map<String, Long> properties,
             final AsyncCallbacks.CloseCallback callback, final Object ctx) {
-
+        //1.判断是否应该持久化未ack的数据到Ledger
         if (shouldPersistUnackRangesToLedger()) {
+            //2.要持久化，那么久传入当前正常写的Ledger
             persistPositionToLedger(cursorLedger, new MarkDeleteEntry(position, properties, null, null),
                     new VoidCallback() {
                         @Override
@@ -2257,6 +2260,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                         }
                     });
         } else {
+            //3.不需要持久的话
             persistPositionMetaStore(-1, position, properties, new MetaStoreCallback<Void>() {
                 @Override
                 public void operationComplete(Void result, Stat stat) {
@@ -2352,13 +2356,16 @@ public class ManagedCursorImpl implements ManagedCursor {
 
     @Override
     public void asyncClose(final AsyncCallbacks.CloseCallback callback, final Object ctx) {
+        //1.之前的状态
         State oldState = STATE_UPDATER.getAndSet(this, State.Closing);
         if (oldState == State.Closed || oldState == State.Closing) {
             log.info("[{}] [{}] State is already closed", ledger.getName(), name);
             callback.closeComplete(ctx);
             return;
         }
+        //2.当关闭的时候要持久化位置
         persistPositionWhenClosing(lastMarkDeleteEntry.newPosition, lastMarkDeleteEntry.properties, callback, ctx);
+        //3.更改状态
         STATE_UPDATER.set(this, State.Closed);
     }
 
@@ -2586,6 +2593,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     }
 
     void persistPositionToLedger(final LedgerHandle lh, MarkDeleteEntry mdEntry, final VoidCallback callback) {
+        //1.
         PositionImpl position = mdEntry.newPosition;
         PositionInfo pi = PositionInfo.newBuilder().setLedgerId(position.getLedgerId())
                 .setEntryId(position.getEntryId())
@@ -2724,17 +2732,25 @@ public class ManagedCursorImpl implements ManagedCursor {
         }
     }
 
+    /**
+     * asyncCloseCursorLedger:异步 关闭 游标 分类帐;
+     * */
     void asyncCloseCursorLedger(final AsyncCallbacks.CloseCallback callback, final Object ctx) {
+        //1.获取当前的Ledger
         LedgerHandle lh = cursorLedger;
+        //2.更新metric
         ledger.mbean.startCursorLedgerCloseOp();
         log.info("[{}] [{}] Closing metadata ledger {}", ledger.getName(), name, lh.getId());
+        //3.异步关闭LedgerHandle
         lh.asyncClose(new CloseCallback() {
             @Override
             public void closeComplete(int rc, LedgerHandle lh, Object ctx) {
                 ledger.mbean.endCursorLedgerCloseOp();
                 if (rc == BKException.Code.OK) {
+                    //4.正常关闭的话，就调用下callback
                     callback.closeComplete(ctx);
                 } else {
+                    //5.异常的话，就调用failed callback
                     callback.closeFailed(createManagedLedgerException(rc), ctx);
                 }
             }

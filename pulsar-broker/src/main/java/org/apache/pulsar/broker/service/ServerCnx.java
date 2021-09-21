@@ -1495,14 +1495,24 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         }
     }
 
+    /**
+     * handleFlow 首先为什么要这样命名？ handle Flow：处理流
+     * */
     @Override
     protected void handleFlow(CommandFlow flow) {
+        //1.检查连接状态，我发现这个连接状态没次都会检查，意思是可能随时在处理的时候连接断开吗
         checkArgument(state == State.Connected);
+        //2.debug日志，这里permits是什么意思？英文意思是许可证，那在代码里又代表什么含义呢？每个consumerId似乎都有一个messagePermits值，看起来像是quota的意思，应该是类似，不然这个命名就应该叫quota了
         if (log.isDebugEnabled()) {
             log.debug("[{}] Received flow from consumer {} permits: {}", remoteAddress, flow.getConsumerId(),
                     flow.getMessagePermits());
         }
 
+        /**
+         *  3.根据consumerId得到conusumer future，这里为什么要异步计算呢？我理解是因为在发送flow rpc之前，会发送subscribe订阅请求，
+         *  但处理订阅需要一些耗时，所以就搞成异步的，然后就立马response了，客户端此时就会立马发送flow请求，但如果此时该consumer还没注册完的话，这边getNow就有可能返回null，然后就完事了？不会response？直接等超时吗？
+         *  直接等超时，感觉不太好吧？
+         */
         CompletableFuture<Consumer> consumerFuture = consumers.get(flow.getConsumerId());
 
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {

@@ -177,7 +177,9 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
 
             case FLOW:
+                //1.检查rpc类型
                 checkArgument(cmd.hasFlow());
+                //2.处理flow请求
                 handleFlow(cmd.getFlow());
                 break;
 
