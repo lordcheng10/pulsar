@@ -244,6 +244,7 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
         }
     }
 
+    //名字解析：从consumer中去获取消息；
     private void receiveMessageFromConsumer(ConsumerImpl<T> consumer) {
         consumer.receiveAsync().thenAccept(message -> {
             if (log.isDebugEnabled()) {
@@ -345,12 +346,15 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
     protected Message<T> internalReceive(int timeout, TimeUnit unit) throws PulsarClientException {
         Message<T> message;
         try {
+            //1.从队列里面异步获取消息
             message = incomingMessages.poll(timeout, unit);
+            //2.处理消息metric统计
             if (message != null) {
                 decreaseIncomingMessageSize(message);
                 checkArgument(message instanceof TopicMessageImpl);
                 unAckedMessageTracker.add(message.getMessageId());
             }
+            //3.唤醒暂停pause的consumer,这里的consumer有点像kafka里面producer中的sender线程，有可能这个线程获取到消息后放入队列的时候阻塞了，这里取出消息就要唤醒
             resumeReceivingFromPausedConsumersIfNeeded();
             return message;
         } catch (Exception e) {

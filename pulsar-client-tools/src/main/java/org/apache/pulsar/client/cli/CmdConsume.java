@@ -280,9 +280,12 @@ public class CmdConsume {
 
         String topic = this.mainOptions.get(0);
 
+        //1.根据url来分了两种情况，以ws开头的url到底是什么情况？
         if(this.serviceURL.startsWith("ws")) {
+            //2. 从consumeFromWebSocket取名可以看出，是从web socket去消费
             return consumeFromWebSocket(topic);
         }else {
+            //3.正常的消费
             return consume(topic);
         }
     }
@@ -292,6 +295,7 @@ public class CmdConsume {
         int returnCode = 0;
 
         try {
+            //1.构建consume对象
             ConsumerBuilder<?> builder;
             PulsarClient client = clientBuilder.build();
             Schema<?> schema = poolMessages ? Schema.BYTEBUFFER : Schema.BYTES;
@@ -325,15 +329,18 @@ public class CmdConsume {
             if (isNotBlank(this.encKeyValue)) {
                 builder.defaultCryptoKeyReader(this.encKeyValue);
             }
-
+            //这里返回的实际是MultiTopicsConsumerImpl类对象
             Consumer<?> consumer = builder.subscribe();
+            //2.拉取消息
             RateLimiter limiter = (this.consumeRate > 0) ? RateLimiter.create(this.consumeRate) : null;
             while (this.numMessagesToConsume == 0 || numMessagesConsumed < this.numMessagesToConsume) {
                 if (limiter != null) {
                     limiter.acquire();
                 }
 
+                //异步接受消息
                 Message<?> msg = consumer.receive(5, TimeUnit.SECONDS);
+                //处理消息并发送ack确认
                 if (msg == null) {
                     LOG.debug("No message to consume after waiting for 5 seconds.");
                 } else {
@@ -352,6 +359,7 @@ public class CmdConsume {
                     }
                 }
             }
+            //3.关闭client
             client.close();
         } catch (Exception e) {
             LOG.error("Error while consuming messages");

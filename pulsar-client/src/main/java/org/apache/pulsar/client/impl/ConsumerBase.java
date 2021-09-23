@@ -180,8 +180,9 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
             throw new PulsarClientException.InvalidConfigurationException(
                     "Cannot use receive() when a listener has been set");
         }
-
+        //1.校验消费状态
         verifyConsumerState();
+        //2.异步获取消息
         return internalReceive(timeout, unit);
     }
 
