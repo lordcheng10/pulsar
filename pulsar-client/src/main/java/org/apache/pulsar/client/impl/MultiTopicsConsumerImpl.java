@@ -244,6 +244,7 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
         }
     }
 
+    //首先从名字上来看，receiveMessageFromConsumer：从consumer来接受消息(这里有个现象，就是服务端也有调用这个，为什么服务端也会调用这个方法呢)
     private void receiveMessageFromConsumer(ConsumerImpl<T> consumer) {
         consumer.receiveAsync().thenAccept(message -> {
             if (log.isDebugEnabled()) {
