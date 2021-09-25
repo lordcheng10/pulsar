@@ -526,21 +526,27 @@ public class Consumer {
     }
 
     public void flowPermits(int additionalNumberOfMessages) {
+        //1.检查参数
         checkArgument(additionalNumberOfMessages > 0);
 
+        //2.当未ack的消息达到上限后，block阻塞consumer
         // block shared consumer when unacked-messages reaches limit
         if (shouldBlockConsumerOnUnackMsgs() && unackedMessages >= maxUnackedMessages) {
             blockedConsumerOnUnackedMsgs = true;
         }
         int oldPermits;
         if (!blockedConsumerOnUnackedMsgs) {
+            //3.不阻塞的话，下面这样
             oldPermits = MESSAGE_PERMITS_UPDATER.getAndAdd(this, additionalNumberOfMessages);
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "
                         + "for consumer {}", topicName, subscription, additionalNumberOfMessages, consumerId);
             }
+            //实际的flow处理就在这里
             subscription.consumerFlow(this, additionalNumberOfMessages);
         } else {
+            //4.阻塞的话，就更新下PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER变量就好;
+            //那么问题来了PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER这个变量干嘛的呀
             oldPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndAdd(this, additionalNumberOfMessages);
         }
 

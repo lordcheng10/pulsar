@@ -324,22 +324,25 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
         if (null == consumer) {
             return;
         }
-
+        //1.判断consumer可获得的许可有多少，这玩意到底是啥，我记得好像是客户端队列buffer size，这个是为了告诉服务端，我可以接收多少
         if (consumer.getAvailablePermits() > 0) {
+            //2.计算读取结果:读取的消息数和size
             Pair<Integer, Long> calculateResult = calculateToRead(consumer);
             int messagesToRead = calculateResult.getLeft();
             long bytesToRead = calculateResult.getRight();
-
+            //3.如果计算出要读取的消息数和size为-1的话，那么久直接返回
             if (-1 == messagesToRead || bytesToRead == -1) {
                 // Skip read as topic/dispatcher has exceed the dispatch rate.
                 return;
             }
-
+            //4.这里为啥写schedule定期读
             // Schedule read
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Schedule read of {} messages", name, consumer, messagesToRead);
             }
+            //5.havePendingRead这个变量就在这里设置为true然后就不管了？这个变量干嘛呀
             havePendingRead = true;
+            //6.readCompacted是什么意思
             if (consumer.readCompacted()) {
                 topic.getCompactedTopic().asyncReadEntriesOrWait(cursor, messagesToRead, isFirstRead,
                         this, consumer);

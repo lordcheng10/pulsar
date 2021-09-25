@@ -2456,17 +2456,21 @@ public class PersistentTopic extends AbstractTopic
         return brokerService.getBacklogQuotaManager().getBacklogQuota(topicName, backlogQuotaType);
     }
 
+    //如果quota超过阈值，就阻塞producer创建
     /**
      *
      * @return quota exceeded status for blocking producer creation
      */
     @Override
     public boolean isBacklogQuotaExceeded(String producerName, BacklogQuota.BacklogQuotaType backlogQuotaType) {
+        //1.获取对应的quota阈值
         BacklogQuota backlogQuota = getBacklogQuota(backlogQuotaType);
 
+        //2.如果存在对应quota，就进行判断
         if (backlogQuota != null) {
+            //2.1 获取backlog quota的保留策略
             BacklogQuota.RetentionPolicy retentionPolicy = backlogQuota.getPolicy();
-
+            //2.2 只针对producer_request_hold和producer_exception两种类型，
             if ((retentionPolicy == BacklogQuota.RetentionPolicy.producer_request_hold
                     || retentionPolicy == BacklogQuota.RetentionPolicy.producer_exception)) {
                 if (backlogQuotaType == BacklogQuota.BacklogQuotaType.destination_storage && isSizeBacklogExceeded()
@@ -2478,6 +2482,7 @@ public class PersistentTopic extends AbstractTopic
                 return false;
             }
         }
+        //3.如果没有配置对应quota，那么就直接返回false
         return false;
     }
 

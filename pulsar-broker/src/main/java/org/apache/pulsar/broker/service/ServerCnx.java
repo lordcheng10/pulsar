@@ -1098,29 +1098,41 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             )).build();
     }
 
+    //这里的cmdproducer对象，就类似于kafka里的producerRequest对象
     @Override
     protected void handleProducer(final CommandProducer cmdProducer) {
+        //1.检查连接状态
         checkArgument(state == State.Connected);
+        //2.解析出producerId和requestId，这两个有什么区别？一个是标记客户端producer维度的，一个是标记请求维度，后者粒度更细
         final long producerId = cmdProducer.getProducerId();
         final long requestId = cmdProducer.getRequestId();
+        //使用客户端提供的生产者名称（如果存在）,否则就自动生成
         // Use producer name provided by client if present
         final String producerName = cmdProducer.hasProducerName() ? cmdProducer.getProducerName()
                 : service.generateUniqueProducerName();
+        //producer的epoch版本号
         final long epoch = cmdProducer.getEpoch();
+        //3.判断是不是用户给定的producer名字，为啥要管这个呢
         final boolean userProvidedProducerName = cmdProducer.isUserProvidedProducerName();
+        //4.判断是否加密
         final boolean isEncrypted = cmdProducer.isEncrypted();
+        //5.获取metadata,这个很明显是从客户端传入的数据中解析出来的metadata，会是什么呢？按理说，不是一般都是服务端给客户端metadata吗 这里获取的应该是客户端set的property属性吧
         final Map<String, String> metadata = CommandUtils.metadataFromCommand(cmdProducer);
+        //6.获取schema
         final SchemaData schema = cmdProducer.hasSchema() ? getSchema(cmdProducer.getSchema()) : null;
 
+        //7.获取producer的访问模式
         final ProducerAccessMode producerAccessMode = cmdProducer.getProducerAccessMode();
+        //8.获取producer的topic epoch版本号,这个拿来干啥呀
         final Optional<Long> topicEpoch = cmdProducer.hasTopicEpoch()
                 ? Optional.of(cmdProducer.getTopicEpoch()) : Optional.empty();
 
+        //9.获取topic名
         TopicName topicName = validateTopicName(cmdProducer.getTopic(), requestId, cmdProducer);
         if (topicName == null) {
             return;
         }
-
+        //10.这里好像是在检查proxy是否有效
         if (invalidOriginalPrincipal(originalPrincipal)) {
             final String msg = "Valid Proxy Client role should be provided while creating producer ";
             log.warn("[{}] {} with role {} and proxyClientAuthRole {} on topic {}", remoteAddress, msg, authRole,
@@ -1128,22 +1140,27 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             commandSender.sendErrorResponse(requestId, ServerError.AuthorizationError, msg);
             return;
         }
-
+        //11.检查是否有写权限
         CompletableFuture<Boolean> isAuthorizedFuture = isTopicOperationAllowed(
             topicName, TopicOperation.PRODUCE
         );
+        //12.如果有权限，那么怎么处理
         isAuthorizedFuture.thenApply(isAuthorized -> {
                     if (isAuthorized) {
+                        //12.1 判断debug是否开启
                         if (log.isDebugEnabled()) {
                             log.debug("[{}] Client is authorized to Produce with role {}",
                                     remoteAddress, getPrincipal());
                         }
+                        //12.2 注册producer
                         CompletableFuture<Producer> producerFuture = new CompletableFuture<>();
                         CompletableFuture<Producer> existingProducerFuture = producers.putIfAbsent(producerId,
                                 producerFuture);
 
+                        //12.3 看producer是否已经存在，并检查其状态
                         if (existingProducerFuture != null) {
                             if (existingProducerFuture.isDone() && !existingProducerFuture.isCompletedExceptionally()) {
+                                //12.4 如果存在，并且已经完成，还没有异常，那么久直接返回注册成功
                                 Producer producer = existingProducerFuture.getNow(null);
                                 log.info("[{}] Producer with the same id is already created:"
                                          + " producerId={}, producer={}", remoteAddress, producerId, producer);
@@ -1152,6 +1169,9 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
                                 return null;
                             } else {
+                                //12.5 否则就是还没完成，或者有异常，那么久直接返回注册失败（这里可以看到producer是按照producerId来进行，注册的，如果producerId是用户指定，有可能指定到相同的producerId，这样会不会有什么问题）
+                                //从注释可以看出，当客户端超时时间小于服务端超时时间的时候，才可能出现发送producer注册请求过来，结果之前的producer注册请求还未完成的情况；
+                                // (这种情况感觉可以避免呀，服务端超时时间和客户端超时时间可不可以取一个最小值，来作为该连接的超时时间呢？这样不就没有这种情况发生了吗)
                                 // There was an early request to create a producer with
                                 // same producerId. This can happen when
                                 // client
@@ -1161,8 +1181,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 // either complete or fails.
                                 ServerError error = null;
                                 if (!existingProducerFuture.isDone()) {
+                                    //12.6 存在，但未完成，就告诉客户端服务端没有ready（所谓的服务端没有ready实际是之前注册的producer客户端没有ready好，然后客户端可以后面再启动试试，也许就注册好了，注意这里并未移除该roducer，因为想等之前的注册动作完成）
                                     error = ServerError.ServiceNotReady;
                                 } else {
+                                    //12.7 否则就是已经完成了，但又异常
                                     error = getErrorCode(existingProducerFuture);
                                     // remove producer with producerId as it's already completed with exception
                                     producers.remove(producerId, existingProducerFuture);
@@ -1176,14 +1198,19 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             }
                         }
 
+                        //12.8 如果之前并未注册该producer，那么就要重新开始注册
                         log.info("[{}][{}] Creating producer. producerId={}", remoteAddress, topicName, producerId);
-
+                        //12.9 首先获取或者创建该topic
                         service.getOrCreateTopic(topicName.toString()).thenAccept((Topic topic) -> {
+                            //12.10 如果topic创建成功了，就创建producer,在创建之前检查backlog quota是否超过了该topic给定的阈值，检查是否超过了对应的size阈值或time阈值
+                            //为什么我注册一个producer，还需要检查topic的backlog quota，这个不是consumer消费的lag吗，难道consumer消费lag太大了，producer都不让注册不让写了？
                             // Before creating producer, check if backlog quota exceeded
                             // on topic for size based limit and time based limit
                             for (BacklogQuota.BacklogQuotaType backlogQuotaType :
                                     BacklogQuota.BacklogQuotaType.values()) {
+                                //12.11 便利每一个backlog quota类型，检查是否超过阈值
                                 if (topic.isBacklogQuotaExceeded(producerName, backlogQuotaType)) {
+                                    //12.12 如果超过了对应quota，那么久发送error response给客户端，并移除该producer
                                     IllegalStateException illegalStateException = new IllegalStateException(
                                             "Cannot create producer on topic with backlog quota exceeded");
                                     BacklogQuota.RetentionPolicy retentionPolicy = topic
@@ -1202,7 +1229,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                     return;
                                 }
                             }
-
+                            //12.13 检查是否有加密
                             // Check whether the producer will publish encrypted messages or not
                             if ((topic.isEncryptionRequired() || encryptionRequireOnProducer) && !isEncrypted) {
                                 String msg = String.format("Encryption is required in %s", topicName);
@@ -1211,9 +1238,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 producers.remove(producerId, producerFuture);
                                 return;
                             }
-
+                            //12.14 如果producerId是以pulsar.repl开头的话，就设置netty的TCP no delay
                             disableTcpNoDelayIfNeeded(topicName.toString(), producerName);
 
+                            //12.15 异步获取和添加schema version
                             CompletableFuture<SchemaVersion> schemaVersionFuture = tryAddSchema(topic, schema);
 
                             schemaVersionFuture.exceptionally(exception -> {
@@ -1228,13 +1256,16 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 return null;
                             });
 
+                            //12.16 检查是否获取schema版本成功
                             schemaVersionFuture.thenAccept(schemaVersion -> {
+                                //12.16.1 获取producer
                                 CompletableFuture<Void> producerQueuedFuture = new CompletableFuture<>();
                                 Producer producer = new Producer(topic, ServerCnx.this, producerId, producerName,
                                         getPrincipal(), isEncrypted, metadata, schemaVersion, epoch,
                                         userProvidedProducerName, producerAccessMode, topicEpoch);
-
+                                //12.16.2 添加producer
                                 topic.addProducer(producer, producerQueuedFuture).thenAccept(newTopicEpoch -> {
+                                    //12.16.3 成功就正常回复response，失败的话，就关闭producer，并且从producers中移除
                                     if (isActive()) {
                                         if (producerFuture.complete(producer)) {
                                             log.info("[{}] Created new producer: {}", remoteAddress, producer);
@@ -1284,6 +1315,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 });
                             });
                         }).exceptionally(exception -> {
+                            //12.17 如果producer注册失败或者创建topic事变，那么这里回error response，并从producers中移除该producer
                             Throwable cause = exception.getCause();
 
                             if (cause instanceof NoSuchElementException) {
@@ -1309,12 +1341,14 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             return null;
                         });
                     } else {
+                        //13.如果没有权限，就告诉客户端
                         String msg = "Client is not authorized to Produce";
                         log.warn("[{}] {} with role {}", remoteAddress, msg, getPrincipal());
                         ctx.writeAndFlush(Commands.newError(requestId, ServerError.AuthorizationError, msg));
                     }
                     return null;
         }).exceptionally(ex -> {
+            //14.如果权限校验异常，就返回鉴权错误
             logAuthException(remoteAddress, "producer", getPrincipal(), Optional.of(topicName), ex);
             commandSender.sendErrorResponse(requestId, ServerError.AuthorizationError, ex.getMessage());
             return null;
@@ -1414,16 +1448,20 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleFlow(CommandFlow flow) {
+        //1.检查连接状态
         checkArgument(state == State.Connected);
+        //2.判断日志级别
         if (log.isDebugEnabled()) {
             log.debug("[{}] Received flow from consumer {} permits: {}", remoteAddress, flow.getConsumerId(),
                     flow.getMessagePermits());
         }
-
+        //3.获取consumer
         CompletableFuture<Consumer> consumerFuture = consumers.get(flow.getConsumerId());
 
+        //4.查看consumer是否注册完毕
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
             Consumer consumer = consumerFuture.getNow(null);
+            int ret = consumer.getAvailablePermits();
             if (consumer != null) {
                 consumer.flowPermits(flow.getMessagePermits());
             } else {

@@ -112,6 +112,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
             }
             messageReceived();
 
+            System.out.println(cmd.getType());
             switch (cmd.getType()) {
             case PARTITIONED_METADATA:
                 checkArgument(cmd.hasPartitionMetadata());
@@ -187,11 +188,15 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
             }
             case PRODUCER:
+                //1.依然是检查rpc类型
                 checkArgument(cmd.hasProducer());
                 try {
+                    //2.拦截器
                     interceptCommand(cmd);
+                    //3.实际的producer处理逻辑
                     handleProducer(cmd.getProducer());
                 } catch (InterceptException e) {
+                    //4.异常的时候回response
                     ctx.writeAndFlush(Commands.newError(cmd.getProducer().getRequestId(),
                             getServerError(e.getErrorCode()), e.getMessage()));
                 }
