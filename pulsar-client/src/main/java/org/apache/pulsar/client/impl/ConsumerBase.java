@@ -209,6 +209,7 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
         return !pendingReceives.isEmpty();
     }
 
+    //看起来这个方法有点像是未ack的消息，等待转发到consumer上;
     protected CompletableFuture<Message<T>> nextPendingReceive() {
         CompletableFuture<Message<T>> receivedFuture;
         while (true) {

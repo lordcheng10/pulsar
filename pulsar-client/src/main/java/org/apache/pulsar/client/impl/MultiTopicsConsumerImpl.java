@@ -246,11 +246,14 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
 
     //首先从名字上来看，receiveMessageFromConsumer：从consumer来接受消息(这里有个现象，就是服务端也有调用这个，为什么服务端也会调用这个方法呢)
     private void receiveMessageFromConsumer(ConsumerImpl<T> consumer) {
+        //1.异步接受消息
         consumer.receiveAsync().thenAccept(message -> {
+            //1.1 debug是否开启
             if (log.isDebugEnabled()) {
                 log.debug("[{}] [{}] Receive message from sub consumer:{}",
                     topic, subscription, consumer.getTopic());
             }
+            //2.处理消息，并放入队列，触发监听器和异步回调方法
             // Process the message, add to the queue and trigger listener or async callback
             messageReceived(consumer, message);
 
@@ -283,15 +286,18 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
     }
 
     private void messageReceived(ConsumerImpl<T> consumer, Message<T> message) {
+        //1.检查message类型
         checkArgument(message instanceof MessageImpl);
+        //2.构建TopicMessageImpl对象
         TopicMessageImpl<T> topicMessage = new TopicMessageImpl<>(consumer.getTopic(),
                 consumer.getTopicNameWithoutPartition(), message, consumer);
-
+        //3.判断是否开启了debug日志
         if (log.isDebugEnabled()) {
             log.debug("[{}][{}] Received message from topics-consumer {}",
                     topic, subscription, message.getMessageId());
         }
 
+        //3.nextPendingReceive是什么
         // if asyncReceive is waiting : return message to callback without adding to incomingMessages queue
         CompletableFuture<Message<T>> receivedFuture = nextPendingReceive();
         if (receivedFuture != null) {
