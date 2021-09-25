@@ -111,7 +111,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 log.debug("[{}] Received cmd {}", ctx.channel().remoteAddress(), cmd.getType());
             }
             messageReceived();
-
+            System.out.println(cmd.getType());
             switch (cmd.getType()) {
             case PARTITIONED_METADATA:
                 checkArgument(cmd.hasPartitionMetadata());
