@@ -131,6 +131,7 @@ public class PulsarChannelInitializer extends ChannelInitializer<SocketChannel> 
         // auto-read.
         ch.pipeline().addLast("flowController", new FlowControlHandler());
         ServerCnx cnx = newServerCnx(pulsar);
+        //handle处理方法注册
         ch.pipeline().addLast("handler", cnx);
 
         connections.put(ch.remoteAddress(), cnx);
