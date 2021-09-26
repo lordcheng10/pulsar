@@ -843,6 +843,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        //1.获取当前状态
         final State currentState = getAndUpdateState(state -> {
             if (state == State.Closed) {
                 return state;
@@ -850,26 +851,28 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             return State.Closing;
         });
 
+        //2.如果已经关闭或者正在关闭，直接完成
         if (currentState == State.Closed || currentState == State.Closing) {
             return CompletableFuture.completedFuture(null);
         }
 
+        //3.设置超时时间
         Timeout timeout = sendTimeout;
         if (timeout != null) {
             timeout.cancel();
             sendTimeout = null;
         }
-
+        //4.取消batch timer 定时任务
         ScheduledFuture<?> batchTimerTask = this.batchTimerTask;
         if (batchTimerTask != null) {
             batchTimerTask.cancel(false);
             this.batchTimerTask = null;
         }
-
+        //5.取消自动生成key任务
         if (keyGeneratorTask != null && !keyGeneratorTask.isCancelled()) {
             keyGeneratorTask.cancel(false);
         }
-
+        //6.取消状态超时
         stats.cancelStatsTimeout();
 
         ClientCnx cnx = cnx();
@@ -884,6 +887,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             return CompletableFuture.completedFuture(null);
         }
 
+        //7.发送关闭producer请求；
         long requestId = client.newRequestId();
         ByteBuf cmd = Commands.newCloseProducer(producerId, requestId);
 

@@ -6,9 +6,6 @@ import org.apache.pulsar.client.api.PulsarClientException;
 
 public class ProducerTest {
 
-    public String getGreeting() {
-        return "Hello World!";
-    }
 
     public static void main(String[] args) throws InterruptedException {
         try {
@@ -16,7 +13,7 @@ public class ProducerTest {
 
             Producer<byte[]> producer = client.newProducer().producerName("chenlin-producer1").topic("test1").create();
 
-            producer.sendAsync("wocaonimaxx123".getBytes());
+            producer.sendAsync("qqqqqqqqq".getBytes());
             client.close();
         } catch (PulsarClientException e) {
             e.printStackTrace();

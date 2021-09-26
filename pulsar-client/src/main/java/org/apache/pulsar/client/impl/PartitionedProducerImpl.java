@@ -221,19 +221,25 @@ public class PartitionedProducerImpl<T> extends ProducerBase<T> {
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        //1.检查状态
         if (getState() == State.Closing || getState() == State.Closed) {
             return CompletableFuture.completedFuture(null);
         }
+        //2.设置正在关闭状态
         setState(State.Closing);
-
+        //3.取消超时
         if (partitionsAutoUpdateTimeout != null) {
             partitionsAutoUpdateTimeout.cancel();
             partitionsAutoUpdateTimeout = null;
         }
 
+        //4.关闭失败future
         AtomicReference<Throwable> closeFail = new AtomicReference<Throwable>();
+        //5.完成future
         AtomicInteger completed = new AtomicInteger(topicMetadata.numPartitions());
+        //6.关闭future
         CompletableFuture<Void> closeFuture = new CompletableFuture<>();
+        //7.关闭多个producer
         for (Producer<T> producer : producers) {
             if (producer != null) {
                 producer.closeAsync().handle((closed, ex) -> {
