@@ -146,6 +146,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     private ScheduledFuture<?> batchTimerTask;
 
     private Optional<Long> topicEpoch = Optional.empty();
+    //名字解释：previous(以前的)Exceptions(异常)
+    //TODO-Q2：CopyOnWriteArrayList是干嘛的？
+    //TODO-A2: ①字面意思：在写的时候copy一份ArrayList数组;②每次在遍历操作的时候，都是拷贝了一份出来进行遍历的，所以在读的时候，对数组进行写操作或者删除修改都是没有影响的；③适用于读多写少的情况;参考:https://www.jianshu.com/p/cd7a73e6bd78
     private final List<Throwable> previousExceptions = new CopyOnWriteArrayList<Throwable>();
 
     @SuppressWarnings("rawtypes")
@@ -857,6 +860,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             return CompletableFuture.completedFuture(null);
         }
         //3.Timeout类是什么呀?取消时间轮 HashedWheelTimeout，这个是netty实现的时间轮类: https://albenw.github.io/posts/ec8df8c/
+        //sendTimeout作用是什么
         Timeout timeout = sendTimeout;
         if (timeout != null) {
             timeout.cancel();
@@ -1361,6 +1365,8 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
 
     @Override
     public void connectionOpened(final ClientCnx cnx) {
+        //1.首先清理掉之前的异常，奇怪为什么要把这些异常信息记录下来，打开连接，不应该是开始吗 怎么还会有异常信息，那只能说明，重连也会通过这个方法；
+        //TODO-Q1:previousExceptions到底是干啥的
         previousExceptions.clear();
 
         // we set the cnx reference before registering the producer on the cnx, so if the cnx breaks before creating the
@@ -1530,6 +1536,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                         setState(State.Failed);
                         producerCreatedFuture.completeExceptionally(cause);
                         client.cleanupProducer(this);
+                        //为什么在重新打开连接的时候，这里需要对这个变量进行赋值,而且是这么奇怪的赋值
                         Timeout timeout = sendTimeout;
                         if (timeout != null) {
                             timeout.cancel();
@@ -1546,7 +1553,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         boolean nonRetriableError = !PulsarClientException.isRetriableError(exception);
         boolean timeout = System.currentTimeMillis() > lookupDeadline;
         if (nonRetriableError || timeout) {
+            //当遇到的不是retry类型异常的时候，就直接通过CompleteFuture返回客户端，并且带上之前的一系列异常
             exception.setPreviousExceptions(previousExceptions);
+            //producerCreatedFuture还是异步的，在连接失败的时候，为什么要调用producerCreatedFuture.complete来完成producerCreatedFuture，不应该是先发连接请求的吗，在发producer create创建请求吗
             if (producerCreatedFuture.completeExceptionally(exception)) {
                 if (nonRetriableError) {
                     log.info("[{}] Producer creation failed for producer {} with unretriableError = {}", topic, producerId, exception);
@@ -1557,6 +1566,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 client.cleanupProducer(this);
             }
         } else {
+            //是retry类型的异常就放入list中就可以了，等待再次重试；
             previousExceptions.add(exception);
         }
     }
