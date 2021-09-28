@@ -48,6 +48,7 @@ public abstract class ProducerBase<T> extends HandlerState implements Producer<T
     protected ProducerBase(PulsarClientImpl client, String topic, ProducerConfigurationData conf,
             CompletableFuture<Producer<T>> producerCreatedFuture, Schema<T> schema, ProducerInterceptors interceptors) {
         super(client, topic);
+        //当new 一个producer的时候，就会走到producerCreatedFuture这个方法
         this.producerCreatedFuture = producerCreatedFuture;
         this.conf = conf;
         this.schema = schema;
