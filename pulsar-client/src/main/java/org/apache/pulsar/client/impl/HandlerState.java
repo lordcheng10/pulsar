@@ -70,6 +70,7 @@ abstract class HandlerState {
 
     abstract String getHandlerName();
 
+    //这里的UnaryOperator是什么类?function类，有入参和出参，且类型都一样
     protected State getAndUpdateState(final UnaryOperator<State> updater) {
         return STATE_UPDATER.getAndUpdate(this, updater);
     }

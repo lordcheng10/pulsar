@@ -843,6 +843,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        //1.获取当前状态，然后再更新成closing状态
         final State currentState = getAndUpdateState(state -> {
             if (state == State.Closed) {
                 return state;
@@ -850,28 +851,31 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             return State.Closing;
         });
 
+        //2.如果是关闭状态或者正在关闭状态，直接返回，表示异步完成
         if (currentState == State.Closed || currentState == State.Closing) {
+            //2.1 CompletableFuture.completedFuture(null)这个方法会返回一个已经完成了的，但没有返回值的future对象，外部调用isDone的话会直接返回true，调用get的话，会返回null
             return CompletableFuture.completedFuture(null);
         }
-
+        //3.Timeout类是什么呀?取消时间轮 HashedWheelTimeout，这个是netty实现的时间轮类: https://albenw.github.io/posts/ec8df8c/
         Timeout timeout = sendTimeout;
         if (timeout != null) {
             timeout.cancel();
             sendTimeout = null;
         }
 
+        //4.取消定时发送
         ScheduledFuture<?> batchTimerTask = this.batchTimerTask;
         if (batchTimerTask != null) {
             batchTimerTask.cancel(false);
             this.batchTimerTask = null;
         }
-
+        //5.key生成器取消
         if (keyGeneratorTask != null && !keyGeneratorTask.isCancelled()) {
             keyGeneratorTask.cancel(false);
         }
-
+        //6.看起来是取消metric
         stats.cancelStatsTimeout();
-
+        //7.这里会把pengding的message清理掉然后关闭
         ClientCnx cnx = cnx();
         if (cnx == null || currentState != State.Ready) {
             log.info("[{}] [{}] Closed Producer (not connected)", topic, producerName);
@@ -884,6 +888,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             return CompletableFuture.completedFuture(null);
         }
 
+        //8.发送producer close请求
         long requestId = client.newRequestId();
         ByteBuf cmd = Commands.newCloseProducer(producerId, requestId);
 
