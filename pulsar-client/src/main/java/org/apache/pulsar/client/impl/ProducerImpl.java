@@ -97,7 +97,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
 
     // Variable is used through the atomic updater
     private volatile long msgIdGenerator;
-
+    //TODO-Q6:pendingMessages的作用是啥？OpSendMsgQueue类作用是啥?
+    //TODO-Q7:pendingMessages和batchMessageContainer有什么区别?
+    //TODO-A7:①似乎batchMessageContainer是在buffer中，从未发送的消息；pendingMessages是指已经发送过，但还未收到response的消息；
     private final OpSendMsgQueue pendingMessages;
     private final Optional<Semaphore> semaphore;
     private volatile Timeout sendTimeout = null;
@@ -108,7 +110,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             .newUpdater(ProducerImpl.class, "producerDeadline");
     @SuppressWarnings("unused")
     private volatile long producerDeadline = 0; // gets set on first successful connection
-
+    //TODO-Q4:batchMessageContainer的作用是什么?
     private final BatchMessageContainerBase batchMessageContainer;
     private CompletableFuture<MessageId> lastSendFuture = CompletableFuture.completedFuture(null);
 
@@ -746,6 +748,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             return true;
         case Closing:
         case Closed:
+            //TODO-Q5: AlreadyClosedException什么时候会抛出这个异常？
             callback.sendComplete(new PulsarClientException.AlreadyClosedException("Producer already closed", sequenceId));
             return false;
         case ProducerFenced:
@@ -1556,7 +1559,8 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             //当遇到的不是retry类型异常的时候，就直接通过CompleteFuture返回客户端，并且带上之前的一系列异常
             exception.setPreviousExceptions(previousExceptions);
             //producerCreatedFuture还是异步的，在连接失败的时候，为什么要调用producerCreatedFuture.complete来完成producerCreatedFuture，不应该是先发连接请求的吗，在发producer create创建请求吗
-            //TODO-Q3:producerCreatedFuture是什么？
+            //TODO-Q3:producerCreatedFuture对应的异步操作有哪些？
+            //TODO-A3:创建producer对象
             if (producerCreatedFuture.completeExceptionally(exception)) {
                 if (nonRetriableError) {
                     log.info("[{}] Producer creation failed for producer {} with unretriableError = {}", topic, producerId, exception);
@@ -1765,6 +1769,9 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         semaphore.ifPresent(s -> s.release(numMessagesInBatch));
     }
 
+    // TODO—Q8: flush完成也不能保证数据完全到达服务端？
+    // TODO-A8：从https://lists.apache.org/thread.html/r8bfcb7ab28612d94d441ff5eadd996413346f0780b6f7b3484aaf7dc%40%3Cdev.pulsar.apache.org%3E讨论上看是这样的，flush并不能保证数据已经发送成功
+    //TODO-Q9: producer发布消息，需要等待ACK？ACK不是consumer的吗难道要等待consumer确认才认为是发布成功了？是怎么定义发布成功的？ 如果是要等待consumer ack，才算发布成功，那么即便等待异步完成，也不能保证发布成功呀
     @Override
     public CompletableFuture<Void> flushAsync() {
         CompletableFuture<MessageId> lastSendFuture;
