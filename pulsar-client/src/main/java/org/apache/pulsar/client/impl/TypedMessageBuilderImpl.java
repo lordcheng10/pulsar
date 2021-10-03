@@ -145,17 +145,21 @@ public class TypedMessageBuilderImpl<T> implements TypedMessageBuilder<T> {
 
     @Override
     public TypedMessageBuilder<T> value(T value) {
+        //1.如果给定的value值为null，那么msgMetadata标记为空value
         if (value == null) {
             msgMetadata.setNullValue(true);
             return this;
         }
+        //2.如果value是KeyValue类型，并且对应的schema也是keyValue类型
         if (value instanceof org.apache.pulsar.common.schema.KeyValue
                 && schema.getSchemaInfo() != null && schema.getSchemaInfo().getType() == SchemaType.KEY_VALUE) {
             KeyValueSchemaImpl kvSchema = (KeyValueSchemaImpl) schema;
             org.apache.pulsar.common.schema.KeyValue kv = (org.apache.pulsar.common.schema.KeyValue) value;
+            //2.1 KeyValueEncodingType.SEPARATED类型：Key 存储为消息键，而 value 存储为消息有效负载。
             if (kvSchema.getKeyValueEncodingType() == KeyValueEncodingType.SEPARATED) {
                 // set key as the message key
                 if (kv.getKey() != null) {
+                    //这里用key的schema来编码
                     msgMetadata.setPartitionKey(
                             Base64.getEncoder().encodeToString(kvSchema.getKeySchema().encode(kv.getKey())));
                     msgMetadata.setPartitionKeyB64Encoded(true);
@@ -165,6 +169,7 @@ public class TypedMessageBuilderImpl<T> implements TypedMessageBuilder<T> {
 
                 // set value as the payload
                 if (kv.getValue() != null) {
+                    //2.2 这里用对应的schema来编码
                     this.content = ByteBuffer.wrap(kvSchema.getValueSchema().encode(kv.getValue()));
                 } else {
                     this.msgMetadata.setNullValue(true);
@@ -172,6 +177,7 @@ public class TypedMessageBuilderImpl<T> implements TypedMessageBuilder<T> {
                 return this;
             }
         }
+        //默认的schema是chema.BYTES
         this.content = ByteBuffer.wrap(schema.encode(value));
         return this;
     }

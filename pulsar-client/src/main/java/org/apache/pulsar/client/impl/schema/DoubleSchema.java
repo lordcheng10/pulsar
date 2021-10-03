@@ -65,6 +65,7 @@ public class DoubleSchema extends AbstractSchema<Double> {
         } else {
             long bits = Double.doubleToLongBits(message);
             return new byte[] {
+                 //1.java的一个byte是8位，这里通过强制转化为byte来截断出8位，所以最后构建的byte数组，每个元素都是一个8位的byte
                 (byte) (bits >>> 56),
                 (byte) (bits >>> 48),
                 (byte) (bits >>> 40),

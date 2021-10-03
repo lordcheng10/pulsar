@@ -181,9 +181,11 @@ public class BinaryProtoLookupService implements LookupService {
 
         CompletableFuture<PartitionedTopicMetadata> partitionFuture = new CompletableFuture<PartitionedTopicMetadata>();
 
+        //1.getConnection发送connect请求；
         client.getCnxPool().getConnection(socketAddress).thenAccept(clientCnx -> {
             long requestId = client.newRequestId();
             ByteBuf request = Commands.newPartitionMetadataRequest(topicName.toString(), requestId);
+            //2.发metadata请求
             clientCnx.newLookup(request, requestId).whenComplete((r, t) -> {
                 if (t != null) {
                     log.warn("[{}] failed to get Partitioned metadata : {}", topicName.toString(),

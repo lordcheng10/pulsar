@@ -293,6 +293,7 @@ public class PulsarClientImpl implements PulsarClient {
         }
 
         if (schema instanceof AutoProduceBytesSchema) {
+            //如果开启自动获取producerschema，那么就会发送getSchema请求
             AutoProduceBytesSchema autoProduceBytesSchema = (AutoProduceBytesSchema) schema;
             if (autoProduceBytesSchema.schemaInitialized()) {
                 return createProducerAsync(topic, conf, schema, interceptors);
@@ -300,13 +301,16 @@ public class PulsarClientImpl implements PulsarClient {
             return lookup.getSchema(TopicName.get(conf.getTopicName()))
                     .thenCompose(schemaInfoOptional -> {
                         if (schemaInfoOptional.isPresent()) {
+                            //如果获取到schema就set进去
                             autoProduceBytesSchema.setSchema(Schema.getSchema(schemaInfoOptional.get()));
                         } else {
+                            //否则还是用默认的bytes schema
                             autoProduceBytesSchema.setSchema(Schema.BYTES);
                         }
                         return createProducerAsync(topic, conf, schema, interceptors);
                     });
         } else {
+            //否则就用默认的bytes schema
             return createProducerAsync(topic, conf, schema, interceptors);
         }
 

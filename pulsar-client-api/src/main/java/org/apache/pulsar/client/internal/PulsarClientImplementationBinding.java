@@ -48,6 +48,11 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
+ * 这个接口有两个功能：①是专门用来实例化其他类对象的；②提供一些schema方法；
+ * 第一个功能，可以让你不直接依赖类的实例化对象；
+ * 此外这个接口的实现类的实例化，也是在DefaultImplementation中进行创建的。
+ * */
+/**
  * Helper class for class instantiations and it also contains methods to work with schemas.
  * This interface allows you to not depend on the Implementation classes directly.
  * The actual implementation of this class is loaded from {@link DefaultImplementation}.

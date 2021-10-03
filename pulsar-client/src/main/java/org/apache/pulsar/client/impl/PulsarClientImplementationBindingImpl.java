@@ -83,6 +83,9 @@ import org.apache.pulsar.common.schema.SchemaInfoWithVersion;
 import org.apache.pulsar.common.schema.SchemaType;
 
 /**
+ *  这个类有两个功能：①是专门用来实例化其他类对象的；②提供一些schema方法；
+ * **/
+/**
  * Helper class for class instantiations and it also contains methods to work with schemas.
  */
 @SuppressWarnings("unchecked")
