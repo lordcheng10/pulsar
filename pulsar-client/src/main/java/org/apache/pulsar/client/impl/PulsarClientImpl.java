@@ -321,7 +321,7 @@ public class PulsarClientImpl implements PulsarClient {
                                                                    Schema<T> schema,
                                                                    ProducerInterceptors interceptors) {
         CompletableFuture<Producer<T>> producerCreatedFuture = new CompletableFuture<>();
-
+        //3.发送PARTITIONED_METADATA请求，收到PARTITIONED_METADATA_RESPONSE
         getPartitionedTopicMetadata(topic).thenAccept(metadata -> {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Received topic metadata. partitions: {}", topic, metadata.partitions);

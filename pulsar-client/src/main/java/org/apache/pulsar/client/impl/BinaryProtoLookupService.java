@@ -221,11 +221,12 @@ public class BinaryProtoLookupService implements LookupService {
     public CompletableFuture<Optional<SchemaInfo>> getSchema(TopicName topicName, byte[] version) {
         InetSocketAddress socketAddress = serviceNameResolver.resolveHost();
         CompletableFuture<Optional<SchemaInfo>> schemaFuture = new CompletableFuture<>();
-
+        //1.发送CONNECT请求，收到CONNECTED回复；
         client.getCnxPool().getConnection(socketAddress).thenAccept(clientCnx -> {
             long requestId = client.newRequestId();
             ByteBuf request = Commands.newGetSchema(requestId, topicName.toString(),
                 Optional.ofNullable(BytesSchemaVersion.of(version)));
+            //2. 发送GET_SCHEMA请求，收到GET_SCHEMA_RESPONSE
             clientCnx.sendGetSchema(request, requestId).whenComplete((r, t) -> {
                 if (t != null) {
                     log.warn("[{}] failed to get schema : {}", topicName.toString(),
