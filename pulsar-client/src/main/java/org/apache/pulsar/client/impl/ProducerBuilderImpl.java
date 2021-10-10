@@ -103,6 +103,7 @@ public class ProducerBuilderImpl<T> implements ProducerBuilder<T> {
         }
 
         try {
+            //设置消息的partitioner策略
             setMessageRoutingMode();
         } catch(PulsarClientException pce) {
             return FutureUtil.failedFuture(pce);
@@ -322,6 +323,7 @@ public class ProducerBuilderImpl<T> implements ProducerBuilder<T> {
         return this;
     }
 
+    //这里主要是做两件事：①当messageRoutingMode没有设置的时候，需要根据配置设置下；②当messageRoutingMode设置了，那么就需要检查下配置是否正确；
     private void setMessageRoutingMode() throws PulsarClientException {
         if(conf.getMessageRoutingMode() == null && conf.getCustomMessageRouter() == null) {
             messageRoutingMode(MessageRoutingMode.RoundRobinPartition);

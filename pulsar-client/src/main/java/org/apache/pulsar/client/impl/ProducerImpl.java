@@ -99,6 +99,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
     private volatile long msgIdGenerator;
 
     private final OpSendMsgQueue pendingMessages;
+    //semaphore是型号量
     private final Optional<Semaphore> semaphore;
     private volatile Timeout sendTimeout = null;
     private final long lookupDeadline;
@@ -385,6 +386,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         return compressedPayload;
     }
 
+    //这里才是producer发送的逻辑
     public void sendAsync(Message<?> message, SendCallback callback) {
         //1.检查message类型
         checkArgument(message instanceof MessageImpl);
@@ -392,12 +394,16 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         if (!isValidProducerState(callback, message.getSequenceId())) {
             return;
         }
-
+        //强制转化message类型
         MessageImpl<?> msg = (MessageImpl<?>) message;
+        //获取MessageMetadata
         MessageMetadata msgMetadata = msg.getMessageBuilder();
+        //得到message buffer数据
         ByteBuf payload = msg.getDataBuffer();
+        //读取buffer中的数据，看压缩前的数据size
+        //这里有个问题了，数据格式到底是怎么样的呢
         int uncompressedSize = payload.readableBytes();
-
+        //检查是否可以入队，如果不能入队，那么直接返回
         if (!canEnqueueRequest(callback, message.getSequenceId(), uncompressedSize)) {
             return;
         }
@@ -414,6 +420,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             // validate msg-size (For batching this will be check at the batch completion size)
             int compressedSize = compressedPayload.readableBytes();
             if (compressedSize > ClientCnx.getMaxMessageSize() && !this.conf.isChunkingEnabled()) {
+                //如果没有开启chunk，并且消息大小又超过了单条消息的最大大小，那么就告诉客户端，并返回
                 compressedPayload.release();
                 String compressedStr = (!isBatchMessagingEnabled() && conf.getCompressionType() != CompressionType.NONE)
                                            ? "Compressed"
@@ -426,7 +433,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
             }
         }
 
-        if (!msg.isReplicated() && msgMetadata.hasProducerName()) {
+        if (!msg.isReplicated() && msgMetadata.hasProducerName()) {//检查该消息是否是复制的mirror消息，如果不是，那么久不应该有producerName，如果有的话，那么返回异常的future
             PulsarClientException.InvalidMessageException invalidMessageException =
                 new PulsarClientException.InvalidMessageException(
                     format("The producer %s of the topic %s can not reuse the same message", producerName, topic), msg.getSequenceId());
@@ -463,6 +470,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 }
                 String uuid = totalChunks > 1 ? String.format("%s-%d", producerName, sequenceId) : null;
                 for (int chunkId = 0; chunkId < totalChunks; chunkId++) {
+                    //真正的发送逻辑在这里
                     serializeAndSendMessage(msg, payload, sequenceId, uuid, chunkId, totalChunks,
                             readStartIndex, ClientCnx.getMaxMessageSize(), compressedPayload, compressed,
                             compressedPayload.readableBytes(), uncompressedSize, callback);
@@ -761,17 +769,22 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
 
     private boolean canEnqueueRequest(SendCallback callback, long sequenceId, int payloadSize) {
         try {
+            //首先看看用户是否配置了，当队列满了后阻塞的配置，如果配置了，就得等着内存释放
+            //这里用MemoryLimitController来控制内存
             if (conf.isBlockIfQueueFull()) {
                 if (semaphore.isPresent()) {
                     semaphore.get().acquire();
                 }
                 client.getMemoryLimitController().reserveMemory(payloadSize);
             } else {
+                //否则的话就通过callback来告诉客户端
+                //1.send queue是否是满的
                 if (!semaphore.map(Semaphore::tryAcquire).orElse(true)) {
                     callback.sendComplete(new PulsarClientException.ProducerQueueIsFullError("Producer send queue is full", sequenceId));
                     return false;
                 }
 
+                //2.判断内存是否满了
                 if (!client.getMemoryLimitController().tryReserveMemory(payloadSize)) {
                     semaphore.ifPresent(Semaphore::release);
                     callback.sendComplete(new PulsarClientException.MemoryBufferIsFullError("Client memory buffer is full", sequenceId));

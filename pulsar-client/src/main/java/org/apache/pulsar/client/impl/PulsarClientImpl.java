@@ -295,9 +295,11 @@ public class PulsarClientImpl implements PulsarClient {
         if (schema instanceof AutoProduceBytesSchema) {
             //如果开启自动获取producerschema，那么就会发送getSchema请求
             AutoProduceBytesSchema autoProduceBytesSchema = (AutoProduceBytesSchema) schema;
+            //如果已经初始化了schema，那么久直接创建
             if (autoProduceBytesSchema.schemaInitialized()) {
                 return createProducerAsync(topic, conf, schema, interceptors);
             }
+            //否则的话，就发送getSchema请求去获取
             return lookup.getSchema(TopicName.get(conf.getTopicName()))
                     .thenCompose(schemaInfoOptional -> {
                         if (schemaInfoOptional.isPresent()) {
@@ -322,6 +324,7 @@ public class PulsarClientImpl implements PulsarClient {
                                                                    ProducerInterceptors interceptors) {
         CompletableFuture<Producer<T>> producerCreatedFuture = new CompletableFuture<>();
         //3.发送PARTITIONED_METADATA请求，收到PARTITIONED_METADATA_RESPONSE
+        //那么这里就有个问题了，pulsar的metadata是怎么存储的，或者说broker之间是如何同步metadata的，难道每次请求metadata都是broker从zk读了之后返回给客户端的吗（即便加了cache，如果集群全部重启，第一次读会不会对zk压力比较大）
         getPartitionedTopicMetadata(topic).thenAccept(metadata -> {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Received topic metadata. partitions: {}", topic, metadata.partitions);
