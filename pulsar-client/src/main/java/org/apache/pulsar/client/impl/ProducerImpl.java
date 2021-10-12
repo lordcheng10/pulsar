@@ -443,10 +443,13 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         }
 
         if (!populateMessageSchema(msg, callback)) {
+            //如果填充schema失败，那么久释放buffer，然后直接返回
+            //看起来上面的方法，只是在setSchemaState，设置message的schema状态
             compressedPayload.release();
             return;
         }
 
+        //如果开启了batch，那么这里totalchunk只会是1，否则就会用实际消息数据size除以单条消息大小来计算
         // send in chunks
         int totalChunks = canAddToBatch(msg) ? 1
                 : Math.max(1, compressedPayload.readableBytes()) / ClientCnx.getMaxMessageSize()
@@ -588,6 +591,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         }
     }
 
+    //填充消息schema
     private boolean populateMessageSchema(MessageImpl msg, SendCallback callback) {
         MessageMetadata msgMetadataBuilder = msg.getMessageBuilder();
         if (msg.getSchemaInternal() == schema) {
