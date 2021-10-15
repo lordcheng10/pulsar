@@ -414,6 +414,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         // Batch will be compressed when closed
         // If a message has a delayed delivery time, we'll always send it individually
         //如果该消息要延迟发送或者没有开启batch message的，那么需要单独发，不会进行batch操作，因此这里需要直接检查消息大小,，如果要延迟发送的话，为了精准延迟时间，那么只能一条条发，所以不能batch
+        //也就是说这里把两种情况进行了检查消息大小：①没开启batch的情况；②开启了batch但设置了延迟发送的情况；对于剩余的情况：③开启了batch并且没有设置延迟发送的情况 没有检查消息大小；(那么这个情况肯定会在后面batch完成的时候进行检查batch大小)
         if (!isBatchMessagingEnabled() || msgMetadata.hasDeliverAtTime()) {
             //这里的目的就是为了检查单条消息大小,如果有压缩，那么久算压缩后的大小
             compressedPayload = applyCompression(payload);
@@ -435,12 +436,16 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 PulsarClientException.InvalidMessageException invalidMessageException = new PulsarClientException.InvalidMessageException(
                     format("The producer %s of the topic %s sends a %s message with %d bytes that exceeds %d bytes",
                         producerName, topic, compressedStr, compressedSize, ClientCnx.getMaxMessageSize()));
+                //这里调用回调函数，并释放掉内存等资源
                 completeCallbackAndReleaseSemaphore(uncompressedSize, callback, invalidMessageException);
                 return;
             }
         }
 
-        if (!msg.isReplicated() && msgMetadata.hasProducerName()) {//检查该消息是否是复制的mirror消息，如果不是，那么久不应该有producerName，如果有的话，那么返回异常的future
+        //检查该消息是否是复制的mirror消息，如果不是，那么久不应该有producerName，如果有的话，那么返回异常的future
+        //那么什么情况下回出现，不是复制的消息，但还有producerName呢？比如我自己随便消费一条，然后直接原封不动的把这条消息发送出去，
+        // 这个时候的msg对象就包含有producerName把，然后就报错。这样做的目的是为了追踪每条消息是谁写的，如果你把消费到的别人的message对象就直接发，而且还没有标记replica，那么别人就会误以为是该producer写的，但实际是你这个producer写的
+        if (!msg.isReplicated() && msgMetadata.hasProducerName()) {
             PulsarClientException.InvalidMessageException invalidMessageException =
                 new PulsarClientException.InvalidMessageException(
                     format("The producer %s of the topic %s can not reuse the same message", producerName, topic), msg.getSequenceId());
@@ -726,6 +731,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         }
     }
 
+    //什么情况下可以放入batch：①该消息schema已经ready；②开启了batch；③没有设置延迟发送；
     private boolean canAddToBatch(MessageImpl<?> msg) {
         return msg.getSchemaState() == MessageImpl.SchemaState.Ready
                 && isBatchMessagingEnabled() && !msg.getMessageBuilder().hasDeliverAtTime();
