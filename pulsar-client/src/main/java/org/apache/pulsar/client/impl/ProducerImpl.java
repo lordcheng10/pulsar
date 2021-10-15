@@ -413,15 +413,22 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         boolean compressed = false;
         // Batch will be compressed when closed
         // If a message has a delayed delivery time, we'll always send it individually
+        //如果该消息要延迟发送或者没有开启batch message的，那么需要单独发，不会进行batch操作，因此这里需要直接检查消息大小,，如果要延迟发送的话，为了精准延迟时间，那么只能一条条发，所以不能batch
         if (!isBatchMessagingEnabled() || msgMetadata.hasDeliverAtTime()) {
+            //这里的目的就是为了检查单条消息大小,如果有压缩，那么久算压缩后的大小
             compressedPayload = applyCompression(payload);
             compressed = true;
 
+            //如果开启了batch发送的，那么在batch完成发送的时候，需要检查batch完成时的大小是否超过单条size大小
             // validate msg-size (For batching this will be check at the batch completion size)
             int compressedSize = compressedPayload.readableBytes();
             if (compressedSize > ClientCnx.getMaxMessageSize() && !this.conf.isChunkingEnabled()) {
                 //如果没有开启chunk，并且消息大小又超过了单条消息的最大大小，那么就告诉客户端，并返回
+                //超过了就直接把buffer数据释放掉，这里的buffer是用的netty的
                 compressedPayload.release();
+                //获取是否开启了压缩，这里如果是开启了batch，就算没压缩？不合理吧，肯定不合理，比如：isBatchMessagingEnabled()=true ，msgMetadata.hasDeliverAtTime()=true，
+                // 此时conf.getCompressionType() !=  CompressionType.NONE,那么此时compressedSize是算的压缩后的size，但这里compressedStr表示没有压缩，显然不合理
+                //TODO-patch：取消!isBatchMessagingEnabled() 条件
                 String compressedStr = (!isBatchMessagingEnabled() && conf.getCompressionType() != CompressionType.NONE)
                                            ? "Compressed"
                                            : "";
