@@ -13,6 +13,11 @@ public class ConsumerTest {
     }
 
     public static void main(String[] args) {
+        try{
+
+        }catch (Exception e){
+
+        }
         try (PulsarClient client = PulsarClient.builder().serviceUrl("pulsar://127.0.0.1:6650").build()) {
             Consumer consumer = client.newConsumer()
                     .topic("test1")

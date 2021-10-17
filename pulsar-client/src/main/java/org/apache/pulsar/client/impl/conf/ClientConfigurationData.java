@@ -268,6 +268,7 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     )
     private Set<String> tlsProtocols = Sets.newTreeSet();
 
+    //这个的默认值我觉得不应该是0
     @ApiModelProperty(
             name = "memoryLimitBytes",
             value = "Limit of client memory usage (in byte)."

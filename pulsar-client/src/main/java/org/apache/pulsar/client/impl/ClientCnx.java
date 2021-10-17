@@ -440,6 +440,7 @@ public class ClientCnx extends PulsarHandler {
         if (log.isDebugEnabled()) {
             log.debug("{} Received a message from the server: {}", ctx.channel(), cmdMessage);
         }
+        //服务端会告诉客户端，是哪个consumer的response，然后客户端会找到对应的consumer，然后来进行处理消息
         ConsumerImpl<?> consumer = consumers.get(cmdMessage.getConsumerId());
         if (consumer != null) {
             List<Long> ackSets = Collections.emptyList();

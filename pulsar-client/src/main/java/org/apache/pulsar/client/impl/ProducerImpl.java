@@ -462,12 +462,14 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         }
 
         //如果开启了batch，那么这里totalchunk只会是1，否则就会用实际消息数据size除以单条消息大小来计算
+        //计算出有多少个chunk块
         // send in chunks
         int totalChunks = canAddToBatch(msg) ? 1
                 : Math.max(1, compressedPayload.readableBytes()) / ClientCnx.getMaxMessageSize()
                         + (Math.max(1, compressedPayload.readableBytes()) % ClientCnx.getMaxMessageSize() == 0 ? 0 : 1);
         // chunked message also sent individually so, try to acquire send-permits
         for (int i = 0; i < (totalChunks - 1); i++) {
+            //检查内存是否够用：这里payloadSize怎么全部设置未0啊
             if (!canEnqueueRequest(callback, message.getSequenceId(), 0 /* The memory was already reserved */)) {
                 return;
             }
@@ -475,14 +477,19 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
 
         try {
             synchronized (this) {
+                //这个是在chunk分割的时候，记录下每次分割的开始位置
                 int readStartIndex = 0;
+                //消息序号，在客户端发送的时候，可以给定一个初始化的序号
                 long sequenceId;
                 if (!msgMetadata.hasSequenceId()) {
+                    //如果没有给定序号，那么这里就自动生成一个
                     sequenceId = msgIdGeneratorUpdater.getAndIncrement(this);
                     msgMetadata.setSequenceId(sequenceId);
                 } else {
+                    //否则就从msgMeta里面直接获取
                     sequenceId = msgMetadata.getSequenceId();
                 }
+
                 String uuid = totalChunks > 1 ? String.format("%s-%d", producerName, sequenceId) : null;
                 for (int chunkId = 0; chunkId < totalChunks; chunkId++) {
                     //真正的发送逻辑在这里
@@ -500,101 +507,157 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         }
     }
 
+    //看起来分割大消息是在这里分割的
+    /**
+     * 首先看一下，该方法各个变量的含义：
+     * 1. msg 是对应的消息；
+     * 2. payload是对应的buffer数据
+     * 3. sequenceId每条消息都对应一条id，broker是通过sequence_id判断消息是否重复，出现重复的原因可能是网络超时，发送或ack失败导致。
+     * 4. uuid是干嘛的
+     * 5. chunkId每个chunk块的编号
+     * 6. totalChunks总的chunk数
+     * 7. readStartIndex开始读的位置
+     * 8. chunkMaxSizeInByteschunk单条消息最大大小
+     * 9. compressedPayload压缩后的数据buffer
+     * 10. compressed是否有压缩(这个为true，并不能代表配置中开启了压缩)
+     * 11. compressedPayloadSize压缩后的size
+     * 12. uncompressedSize未压缩的size
+     * 13. callback回调方法
+     * */
     private void serializeAndSendMessage(MessageImpl<?> msg, ByteBuf payload,
             long sequenceId, String uuid, int chunkId, int totalChunks, int readStartIndex, int chunkMaxSizeInBytes, ByteBuf compressedPayload,
             boolean compressed, int compressedPayloadSize,
             int uncompressedSize, SendCallback callback) throws IOException, InterruptedException {
+        //压缩后的数据
         ByteBuf chunkPayload = compressedPayload;
+        //消息元数据
         MessageMetadata msgMetadata = msg.getMessageBuilder();
+        //总chunk数看看是否大于1，因为只有大于1了，才是进行了chunk分割的
+        //另外再看看该topic是否是持久化topic，因为chunk只针对持久化topic
         if (totalChunks > 1 && TopicName.get(topic).isPersistent()) {
+            //在这里进行了buffer拆分
             chunkPayload = compressedPayload.slice(readStartIndex,
                     Math.min(chunkMaxSizeInBytes, chunkPayload.readableBytes() - readStartIndex));
             // don't retain last chunk payload and builder as it will be not needed for next chunk-iteration and it will
             // be released once this chunk-message is sent
             if (chunkId != totalChunks - 1) {
+                //只要不是最后一个chunk块，那么都把该chunk块引用计数加1，推测是在chunk发送成功后，在callback里realse释放掉，也就是减1
+                //那对于最后一块，既然没有增加计数，在收到后也就不需要减少计数了
                 chunkPayload.retain();
             }
+            //设置uuid,uuid只是针对chunk块消息设置，非chunk块是不需要的，uuid的作用完全不清楚和chunkId的区别是啥呀
+            //如果单独收到一个chunk数据消息，我们可以通过uuid来直到该chunk块属于那个客户端发送的哪一条消息，因为uuid是由producerName+messageId组成，
+            // 然后再根据chunkId就可以知道该chunkk块是第几块
             if (uuid != null) {
                 msgMetadata.setUuid(uuid);
             }
+            //设置chunkId、总的chunk数、以及整条消息总的size
             msgMetadata.setChunkId(chunkId)
                 .setNumChunksFromMsg(totalChunks)
                 .setTotalChunkMsgSize(compressedPayloadSize);
         }
+        //看下是否有发布时间（也就是event time），没有的话就设置当前时间座位发布时间
+        //那么问题来了，什么情况下msg里面会有发布时间呢
         if (!msgMetadata.hasPublishTime()) {
+            //设置发布时间
             msgMetadata.setPublishTime(client.getClientClock().millis());
-
+            //检查消息是否有producer name，如果有的话，这里就要抛异常了，因为没有发布时间，却又producer name，就是由问题的
             checkArgument(!msgMetadata.hasProducerName());
 
             msgMetadata.setProducerName(producerName);
 
+            //看是否有压缩类型，设置压缩类型
             if (conf.getCompressionType() != CompressionType.NONE) {
                 msgMetadata
                         .setCompression(CompressionCodecProvider.convertToWireProtocol(conf.getCompressionType()));
             }
+            //设置消息在未压缩时候的size
             msgMetadata.setUncompressedSize(uncompressedSize);
         }
 
+        //如果可以放入batch并且不是chunk块
         if (canAddToBatch(msg) && totalChunks <= 1) {
+            //首先看下该消息是否可以放入当前的batch中，这里的batch实际就是一个batchMessageContainer对象
+            //判断是否有空间，从两个方面：①消息数；②batch size
             if (canAddToCurrentBatch(msg)) {
                 // should trigger complete the batch message, new message will add to a new batch and new batch
                 // sequence id use the new message, so that broker can handle the message duplication
                 if (sequenceId <= lastSequenceIdPushed) {
                     isLastSequenceIdPotentialDuplicated = true;
                     if (sequenceId <= lastSequenceIdPublished) {
+                        //消息一定重复了
                         log.warn("Message with sequence id {} is definitely a duplicate", sequenceId);
                     } else {
+                        //消息可能重复
                         log.info("Message with sequence id {} might be a duplicate but cannot be determined at this time.",
                             sequenceId);
                     }
+                    //如果都有可能重复了，那么久直接发送了，不再等batch的full条件了
                     doBatchSendAndAdd(msg, callback, payload);
                 } else {
                     // Should flush the last potential duplicated since can't combine potential duplicated messages
                     // and non-duplicated messages into a batch.
                     if (isLastSequenceIdPotentialDuplicated) {
+                        //如果上一次有出现数据重复的情况，那么后面至少都还得再立即发一次.不知道这是为什么
                         doBatchSendAndAdd(msg, callback, payload);
                     } else {
+                        //
                         // handle boundary cases where message being added would exceed
                         // batch size and/or max message size
+                        //放了之后返回该batch是否满了
                         boolean isBatchFull = batchMessageContainer.add(msg, callback);
+                        //报错好上次send的future
                         lastSendFuture = callback.getFuture();
+                        //释放该buffer
                         payload.release();
                         if (isBatchFull) {
+                            //如果满了，就send
                             batchMessageAndSend();
                         }
                     }
                     isLastSequenceIdPotentialDuplicated = false;
                 }
             } else {
+                //如果不能再往该batch发送了，那么这里就直接发送
                 doBatchSendAndAdd(msg, callback, payload);
             }
         } else {
+            //compressed只是代表在此之前是否调用过applyCompression方法，而不是真的代表压缩过数据
             // in this case compression has not been applied by the caller
             // but we have to compress the payload if compression is configured
             if (!compressed) {
                 chunkPayload = applyCompression(chunkPayload);
             }
+            //如果开启了加密配置，这里回进行数据加密
             ByteBuf encryptedPayload = encryptMessage(msgMetadata, chunkPayload);
 
+            //这里统计下消息数
             // When publishing during replication, we need to set the correct number of message in batch
             // This is only used in tracking the publish rate stats
             int numMessages = msg.getMessageBuilder().hasNumMessagesInBatch()
                     ? msg.getMessageBuilder().getNumMessagesInBatch()
                     : 1;
+
+            //OpSendMsg是干嘛的
             final OpSendMsg op;
+            //首先看下schema状态，如果schema准备好了，那么这里创建OpSendMsg时候，会传入cmd，否则就传入null来构建OpSendMsg
             if (msg.getSchemaState() == MessageImpl.SchemaState.Ready) {
                 ByteBufPair cmd = sendMessage(producerId, sequenceId, numMessages, msgMetadata, encryptedPayload);
                 op = OpSendMsg.create(msg, cmd, sequenceId, callback);
             } else {
                 op = OpSendMsg.create(msg, null, sequenceId, callback);
                 final MessageMetadata finalMsgMetadata = msgMetadata;
+                //如果schema还没准备好，那么就等schema准备好了之后，才开始发送消息
                 op.rePopulate = () -> {
                     op.cmd = sendMessage(producerId, sequenceId, numMessages, finalMsgMetadata, encryptedPayload);
                 };
             }
+            //设置OpSendMsg的总消息数
             op.setNumMessagesInBatch(numMessages);
+            //设置batch size大小
             op.setBatchSizeByte(encryptedPayload.readableBytes());
             if (totalChunks > 1) {
+                //如果有chunk那么久记录下chunkId
                 op.totalChunks = totalChunks;
                 op.chunkId = chunkId;
             }
@@ -784,11 +847,13 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
         }
     }
 
+    //这里判断是否可以放入队列，实际是看是否有可用内存，当内存不够用时，有两种策略：①阻塞；②通过call back告知用户；
     private boolean canEnqueueRequest(SendCallback callback, long sequenceId, int payloadSize) {
         try {
             //首先看看用户是否配置了，当队列满了后阻塞的配置，如果配置了，就得等着内存释放
             //这里用MemoryLimitController来控制内存
             if (conf.isBlockIfQueueFull()) {
+                //如果用户设置的是队列满，就阻塞等待，那么这里回等待内存释放
                 if (semaphore.isPresent()) {
                     semaphore.get().acquire();
                 }

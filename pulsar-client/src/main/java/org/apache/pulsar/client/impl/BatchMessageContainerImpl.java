@@ -66,9 +66,11 @@ class BatchMessageContainerImpl extends AbstractBatchMessageContainer {
         }
 
         if (++numMessagesInBatch == 1) {
+            //如果是第一次放消息,那么需要额外处理：①首先把第一条消息的sequenceId作为该container的id
             // some properties are common amongst the different messages in the batch, hence we just pick it up from
             // the first message
             messageMetadata.setSequenceId(msg.getSequenceId());
+            //最小的sequenceId
             lowestSequenceId = Commands.initBatchMessageMetadata(messageMetadata, msg.getMessageBuilder());
             this.firstCallback = callback;
             batchedMessageMetadataAndPayload = PulsarByteBufAllocator.DEFAULT
