@@ -729,7 +729,9 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
 
     protected boolean enqueueMessageAndCheckBatchReceive(Message<T> message) {
         int messageSize = message.size();
+        //canEnqueueMessage默认就是返回true，然后就放入incomingMessages队列中,这个队列看起来是没有设置大小限制的(Integer.MAX)，所以调用offer基本是会成功的，那如果不成功呢，这里没有任何处理
         if (canEnqueueMessage(message) && incomingMessages.offer(message)) {
+            // 在我们将 `incomingMessages` 队列中的消息入队后，我们不能再接触消息实例，因为对于池化消息，这个实例可能已经被释放和回收。
             // After we have enqueued the messages on `incomingMessages` queue, we cannot touch the message instance
             // anymore, since for pooled messages, this instance was possibly already been released and recycled.
             INCOMING_MESSAGES_SIZE_UPDATER.addAndGet(this, messageSize);

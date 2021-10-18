@@ -1002,12 +1002,14 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                     messageId.getEntryId());
         }
 
+        //如果checksum检查失败，那么直接丢弃该消息
         if (!verifyChecksum(headersAndPayload, messageId)) {
             // discard message with checksum error
             discardCorruptedMessage(messageId, cnx, ValidationError.ChecksumMismatch);
             return;
         }
 
+        //解析出msgMetadata和brokerEntryMetadata
         BrokerEntryMetadata brokerEntryMetadata;
         MessageMetadata msgMetadata;
         try {
@@ -1018,10 +1020,12 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             return;
         }
 
+        //获取消息数和chunk数
         final int numMessages = msgMetadata.getNumMessagesInBatch();
         final int numChunks = msgMetadata.hasNumChunksFromMsg() ? msgMetadata.getNumChunksFromMsg() : 0;
         final boolean isChunkedMessage = numChunks > 1 && conf.getSubscriptionType() != SubscriptionType.Shared;
 
+        //判断该消息是否是重复的
         MessageIdImpl msgId = new MessageIdImpl(messageId.getLedgerId(), messageId.getEntryId(), getPartitionIndex());
         if (acknowledgmentsGroupingTracker.isDuplicate(msgId)) {
             if (log.isDebugEnabled()) {
@@ -1033,8 +1037,9 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             return;
         }
 
+        //是否加密的数据，这里需要解密
         ByteBuf decryptedPayload = decryptPayloadIfNeeded(messageId, msgMetadata, headersAndPayload, cnx);
-
+        //判断消息是否可以解密
         boolean isMessageUndecryptable = isMessageUndecryptable(msgMetadata);
 
         if (decryptedPayload == null) {
@@ -1042,6 +1047,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             return;
         }
 
+        //没被压缩
         // uncompress decryptedPayload and release decryptedPayload-ByteBuf
         ByteBuf uncompressedPayload = (isMessageUndecryptable || isChunkedMessage) ? decryptedPayload.retain()
                 : uncompressPayloadIfNeeded(messageId, msgMetadata, decryptedPayload, cnx, true);
@@ -1051,19 +1057,23 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             return;
         }
 
+
         // if message is not decryptable then it can't be parsed as a batch-message. so, add EncyrptionCtx to message
         // and return undecrypted payload
-        if (isMessageUndecryptable || (numMessages == 1 && !msgMetadata.hasNumMessagesInBatch())) {
-
+        if (isMessageUndecryptable || (numMessages == 1 && !msgMetadata.hasNumMessagesInBatch())) { //chunk一定是满足这个条件的？所以chunk的组装逻辑只能在这里
+            //首先判断是否是chunk消息
             // right now, chunked messages are only supported by non-shared subscription
             if (isChunkedMessage) {
+                //看起来组合chunk块数据是在这里
                 uncompressedPayload = processMessageChunk(uncompressedPayload, msgMetadata, msgId, messageId, cnx);
+                //如果返回的是null，很有可能是还没等到所有trunk到齐，那么就直接返回
                 if (uncompressedPayload == null) {
                     return;
                 }
             }
-
+            //否则就处理组合后的数据块
             if (isSameEntry(messageId) && isPriorEntryIndex(messageId.getEntryId())) {
+                //如果是同一个entry，那么久看当前这条消息的entryId是否小于该consumer的start id，如果小于，那么就忽略掉该数据消息
                 // We need to discard entries that were prior to startMessageId
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] [{}] Ignoring message from before the startMessageId: {}", subscription,
@@ -1074,6 +1084,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                 return;
             }
 
+            //创建消息，把组装好的buffer封装成消息
             final MessageImpl<T> message = MessageImpl.create(topicName.toString(), msgId, msgMetadata,
                     uncompressedPayload, createEncryptionContext(msgMetadata), cnx, schema, redeliveryCount,
                     poolMessages);
@@ -1086,12 +1097,14 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             internalPinnedExecutor.execute(() -> {
                 if (deadLetterPolicy != null && possibleSendToDeadLetterTopicMessages != null &&
                         redeliveryCount >= deadLetterPolicy.getMaxRedeliverCount()) {
+                    //看看是否开启了死信队列，如果开启了就往该队列放
                     possibleSendToDeadLetterTopicMessages.put((MessageIdImpl) message.getMessageId(),
                             Collections.singletonList(message));
                 }
+                //判断应用程序是否又在等待接受，如果有的话就唤醒挂起的接受
                 if (hasNextPendingReceive()) {
                     notifyPendingReceivedCallback(message, null);
-                } else if (enqueueMessageAndCheckBatchReceive(message) && hasPendingBatchReceive()) {
+                } else if (enqueueMessageAndCheckBatchReceive(message) && hasPendingBatchReceive()) {//否则这里就放入队列中
                     notifyPendingBatchReceivedCallBack();
                 }
             });
@@ -1118,7 +1131,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     private ByteBuf processMessageChunk(ByteBuf compressedPayload, MessageMetadata msgMetadata, MessageIdImpl msgId,
             MessageIdData messageId, ClientCnx cnx) {
-
+        //延迟任务调度使不完整的块消息过期,这里的定期移除逻辑只是触发一次，后面就定期调度了.因为触发后，expireChunkMessageTaskScheduled就设置未true了
         // Lazy task scheduling to expire incomplete chunk message
         if (!expireChunkMessageTaskScheduled && expireTimeOfIncompleteChunkedMessageMillis > 0) {
             internalPinnedExecutor.scheduleAtFixedRate(() -> {
@@ -1127,21 +1140,28 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
                     TimeUnit.MILLISECONDS);
             expireChunkMessageTaskScheduled = true;
         }
-
+        // 如果chunkId等于0，那么说明是第一块？
         if (msgMetadata.getChunkId() == 0) {
             ByteBuf chunkedMsgBuffer = Unpooled.directBuffer(msgMetadata.getTotalChunkMsgSize(),
                     msgMetadata.getTotalChunkMsgSize());
             int totalChunks = msgMetadata.getNumChunksFromMsg();
+            //不存在该UUID，那么就构建对应的value值，放进去，否则如果存在就直接返回存在的值，新值不放进去，直接丢弃了
             chunkedMessagesMap.computeIfAbsent(msgMetadata.getUuid(),
                     (key) -> ChunkedMessageCtx.get(totalChunks, chunkedMsgBuffer));
+            //挂起的chunk数+1
             pendingChunkedMessageCount++;
             if (maxPendingChunkedMessage > 0 && pendingChunkedMessageCount > maxPendingChunkedMessage) {
+                //如果挂起的chunkmessage数超过阈值，那么久直接移除最老的
                 removeOldestPendingChunkedMessage();
             }
+            //按照顺序放入挂起的chunk队列
             pendingChunkedMessageUuidQueue.add(msgMetadata.getUuid());
         }
 
+        //获取该大消息对应的ctx
         ChunkedMessageCtx chunkedMsgCtx = chunkedMessagesMap.get(msgMetadata.getUuid());
+        //如果块乱序，则丢弃消息
+        //这里是不是有问题？msgMetadata.getChunkId() >= msgMetadata.getTotalChunkMsgSize()，不应该和msgMetadata.getNumChunksFromMsg比较吗
         // discard message if chunk is out-of-order
         if (chunkedMsgCtx == null || chunkedMsgCtx.chunkedMsgBuffer == null
                 || msgMetadata.getChunkId() != (chunkedMsgCtx.lastChunkedMessageId + 1)
@@ -1150,15 +1170,20 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             log.info("Received unexpected chunk messageId {}, last-chunk-id{}, chunkId = {}, total-chunks {}", msgId,
                     (chunkedMsgCtx != null ? chunkedMsgCtx.lastChunkedMessageId : null), msgMetadata.getChunkId(),
                     msgMetadata.getTotalChunkMsgSize());
+            //如果chunkedMsgCtx不为null，那么就释放掉buffer
             if (chunkedMsgCtx != null) {
                 if (chunkedMsgCtx.chunkedMsgBuffer != null) {
                     ReferenceCountUtil.safeRelease(chunkedMsgCtx.chunkedMsgBuffer);
                 }
                 chunkedMsgCtx.recycle();
             }
+            //移除uuid
             chunkedMessagesMap.remove(msgMetadata.getUuid());
+            //compressedPayload释放buffer
             compressedPayload.release();
+            //增加可接受的消息数1
             increaseAvailablePermits(cnx);
+            //如果已经过期了，那么久发送ack，否则就追踪该消息
             if (expireTimeOfIncompleteChunkedMessageMillis > 0
                     && System.currentTimeMillis() > (msgMetadata.getPublishTime()
                             + expireTimeOfIncompleteChunkedMessageMillis)) {
@@ -1168,12 +1193,16 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             }
             return null;
         }
-
+        //放入数组中缓存等待
         chunkedMsgCtx.chunkedMessageIds[msgMetadata.getChunkId()] = msgId;
+        // 附加分块的有效负载并更新 lastChunkedMessage-id
+        //这里就在组装了
         // append the chunked payload and update lastChunkedMessage-id
         chunkedMsgCtx.chunkedMsgBuffer.writeBytes(compressedPayload);
+        //更新上一次的chunkId
         chunkedMsgCtx.lastChunkedMessageId = msgMetadata.getChunkId();
 
+        // 如果还没有收到最终块，则释放有效载荷并返回
         // if final chunk is not received yet then release payload and return
         if (msgMetadata.getChunkId() != (msgMetadata.getNumChunksFromMsg() - 1)) {
             compressedPayload.release();
@@ -1181,11 +1210,13 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
             return null;
         }
 
+        //否则就是最后一个块被收到了
         // last chunk received: so, stitch chunked-messages and clear up chunkedMsgBuffer
         if (log.isDebugEnabled()) {
             log.debug("Chunked message completed chunkId {}, total-chunks {}, msgId {} sequenceId {}",
                     msgMetadata.getChunkId(), msgMetadata.getNumChunksFromMsg(), msgId, msgMetadata.getSequenceId());
         }
+        // 从地图中删除缓冲区，将分块的 messageId 添加到 unack-message 跟踪器，并减少待处理的分块消息计数
         // remove buffer from the map, add chunked messageId to unack-message tracker, and reduce pending-chunked-message count
         chunkedMessagesMap.remove(msgMetadata.getUuid());
         unAckedChunkedMessageIdSequenceMap.put(msgId, chunkedMsgCtx.chunkedMessageIds);
@@ -1204,6 +1235,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
      * @param message
      */
     void notifyPendingReceivedCallback(final Message<T> message, Exception exception) {
+        //如果挂起的receive没有就直接返回
         if (pendingReceives.isEmpty()) {
             return;
         }
@@ -1248,8 +1280,10 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
     void receiveIndividualMessagesFromBatch(BrokerEntryMetadata brokerEntryMetadata, MessageMetadata msgMetadata,
                                             int redeliveryCount, List<Long> ackSet, ByteBuf uncompressedPayload,
                                             MessageIdData messageId, ClientCnx cnx) {
+        //获取batch中的消息数(这里命名感觉有点问题)
         int batchSize = msgMetadata.getNumMessagesInBatch();
 
+        //创建ack跟踪器
         // create ack tracker for entry aka batch
         MessageIdImpl batchMessage = new MessageIdImpl(messageId.getLedgerId(), messageId.getEntryId(),
                 getPartitionIndex());
