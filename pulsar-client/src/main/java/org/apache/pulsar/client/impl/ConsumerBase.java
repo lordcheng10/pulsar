@@ -62,7 +62,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T> {
-
+    /**
+     * 1. subscription订阅名(类似kafka的group名)
+     * 2. conf配置
+     * 3. consumerName名字，一个订阅下面可能会有多个consumer实例
+     * 4. subscribeFuture 订阅future(看订阅是否完成)
+     *
+     * **/
     protected final String subscription;
     protected final ConsumerConfigurationData<T> conf;
     protected final String consumerName;
