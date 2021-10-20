@@ -60,6 +60,10 @@ public class ThresholdShedder implements LoadSheddingStrategy {
 
     private final Map<String, Double> brokerAvgResourceUsage = new HashMap<>();
 
+
+    /**
+     * 这个算法有问题:比如有一个大集群200台，然后新启动一个节点，按照该策略，此时很有可能触发均衡操作
+     * */
     @Override
     public Multimap<String, String> findBundlesForUnloading(final LoadData loadData, final ServiceConfiguration conf) {
         selectedBundlesCache.clear();
