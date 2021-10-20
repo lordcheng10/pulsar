@@ -252,6 +252,7 @@ public class ManagedLedgerFactoryImpl implements ManagedLedgerFactory {
     }
 
     private void cacheEvictionTask() {
+        //broker cache的驱逐策略
         double evictionFrequency = Math.max(Math.min(config.getCacheEvictionFrequency(), 1000.0), 0.001);
         long waitTimeMillis = (long) (1000 / evictionFrequency);
 
