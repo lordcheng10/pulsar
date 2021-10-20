@@ -674,6 +674,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
     @Override
     public void checkNamespaceBundleSplit() {
 
+        //bundle split策略
         if (!conf.isLoadBalancerAutoBundleSplitEnabled() || pulsar.getLeaderElectionService() == null
                 || !pulsar.getLeaderElectionService().isLeader()) {
             return;
