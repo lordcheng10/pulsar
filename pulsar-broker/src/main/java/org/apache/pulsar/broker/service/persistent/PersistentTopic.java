@@ -2318,6 +2318,7 @@ public class PersistentTopic extends AbstractTopic
     public void checkBackloggedCursors() {
         // activate caught up cursors which include consumers
         subscriptions.forEach((subName, subscription) -> {
+            //应该用距离上一次ack的时间长短来设置 curseor是否活跃
             if (!subscription.getConsumers().isEmpty()
                 && subscription.getCursor().getNumberOfEntries() < backloggedCursorThresholdEntries) {
                 subscription.getCursor().setActive();
