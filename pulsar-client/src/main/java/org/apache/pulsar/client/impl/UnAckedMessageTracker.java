@@ -124,9 +124,10 @@ public class UnAckedMessageTracker implements Closeable {
         }
     };
 
-    //tickDurationInMs对应的是周期执行的间隔，而ackTimeoutMillis只是用来算需要多少个箱子,箱子的个数是向下取整
+    //tickDurationInMs对应的是周期执行的间隔，而ackTimeoutMillis只是用来算需要多少个箱子,箱子的个数是向上取整
     //当ackTimeoutMillis和tickDurationInMs部署整数倍关系时，那么实际触发超时重传动作就会比实际配置的超时时间晚最多tickDurationInMs
     //这样箱子队列中队首的箱子永远是达到超时时间的箱子
+    //传入的tickDurationInMs<=ackTimeoutMillis
     public UnAckedMessageTracker(PulsarClientImpl client, ConsumerBase<?> consumerBase, long ackTimeoutMillis, long tickDurationInMs) {
         //使用了google的guava框架,ack超时时间需要大于tickDurationInMs周期时间
         Preconditions.checkArgument(tickDurationInMs > 0 && ackTimeoutMillis >= tickDurationInMs);
@@ -144,9 +145,11 @@ public class UnAckedMessageTracker implements Closeable {
         this.messageIdPartitionMap = new ConcurrentHashMap<>();
         //message等待ack的时间顺序
         this.timePartitions = new ArrayDeque<>();
-        //箱子的个数是向下取整
+        //箱子的个数是向上取整
         int blankPartitions = (int)Math.ceil((double)this.ackTimeoutMillis / this.tickDurationInMs);
         //用空白分区来占位
+        //注意这里最少都是两个，这样就解决了只有一个时，timeout不准的问题
+        //向上取整不够，还得再额外多一个，如果没除尽，向上取整，这样会比给定的超时时间多一个<tickDurationInMs时间才会触发，也就是实际超时时间比配置的最多要多tickDurationInMs
         for (int i = 0; i < blankPartitions + 1; i++) {
             timePartitions.add(new ConcurrentOpenHashSet<>(16, 1));
         }
@@ -238,6 +241,7 @@ public class UnAckedMessageTracker implements Closeable {
         writeLock.lock();
         try {
             //从队首取出一个箱子
+            //注意这里是放在最后一个箱子里,但是当
             ConcurrentOpenHashSet<MessageId> partition = timePartitions.peekLast();
             //从map中取出该消息对应的箱子
             ConcurrentOpenHashSet<MessageId> previousPartition = messageIdPartitionMap.putIfAbsent(messageId,
