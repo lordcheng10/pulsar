@@ -54,7 +54,7 @@ public class UnAckedMessageTracker implements Closeable {
     protected final Lock writeLock;
     //当ack timeout设置为0时，会关闭ack超时重发功能，这个类就是用来赋值关闭ack超时的
     public static final UnAckedMessageTrackerDisabled UNACKED_MESSAGE_TRACKER_DISABLED = new UnAckedMessageTrackerDisabled();
-    //ack超时时间
+    //ack超时时间，但当ackTimeoutMillis/tickDurationInMs除不尽时，实际的超时时间会超过ackTimeoutMillis，超过的部分不会大于tickDurationInMs时间
     private final long ackTimeoutMillis;
     //持续时间，看起来像是周期间隔类的意思
     private final long tickDurationInMs;
