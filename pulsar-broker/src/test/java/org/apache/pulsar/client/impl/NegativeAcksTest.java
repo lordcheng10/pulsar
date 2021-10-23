@@ -114,6 +114,8 @@ public class NegativeAcksTest extends ProducerConsumerBase {
                 .acknowledgmentGroupTime(0, TimeUnit.SECONDS)
                 .subscriptionType(subscriptionType)
                 .negativeAckRedeliveryDelay(negAcksDelayMillis, TimeUnit.MILLISECONDS)
+                //当ackTimeOut为0时，就关闭了ack超时重发功能，此时如果发送消息后，没有ack，也没有nack，那消息是不会重发的
+                //当设置ackTimeOut为0时，ackTracker会使用UnAckedMessageTrackerDisabled对象
                 .ackTimeout(ackTimeout, TimeUnit.MILLISECONDS)
                 .subscribe();
 
