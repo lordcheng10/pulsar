@@ -39,6 +39,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 //为什么UnAckedMessageTracker继承了closeAble接口，而NegativeAcksTracker没有，并且本类实现了对应的close和stop等清理动作
+//Un(未) Acked(确认的) Message(消息) Tracker(追踪器)
 public class UnAckedMessageTracker implements Closeable {
     private static final Logger log = LoggerFactory.getLogger(UnAckedMessageTracker.class);
     //消息和partition的映射，但为什么partition会是一个MessageId的集合呢

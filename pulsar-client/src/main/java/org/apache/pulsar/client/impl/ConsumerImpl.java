@@ -142,6 +142,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     //这三个tracker区别是啥
     private final UnAckedMessageTracker unAckedMessageTracker;
+    //这个变量是什么意思，
     private final AcknowledgmentsGroupingTracker acknowledgmentsGroupingTracker;
     private final NegativeAcksTracker negativeAcksTracker;
 
