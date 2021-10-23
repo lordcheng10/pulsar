@@ -99,6 +99,7 @@ public class UnAckedMessageTracker implements Closeable {
     //超时器,netty出品
     private Timeout timeout;
 
+    //定义这个什么都不做的变量就是为了定义UnAckedMessageTrackerDisabled类,否则UnAckedMessageTrackerDisabled这个类的定义就得自己取初始化这些变量了
     public UnAckedMessageTracker() {
         //初始化怎么把这些变量都设置为null呀
         readLock = null;
@@ -123,6 +124,9 @@ public class UnAckedMessageTracker implements Closeable {
         }
     };
 
+    //tickDurationInMs对应的是周期执行的间隔，而ackTimeoutMillis只是用来算需要多少个箱子,箱子的个数是向下取整
+    //当ackTimeoutMillis和tickDurationInMs部署整数倍关系时，那么实际触发超时重传动作就会比实际配置的超时时间晚最多tickDurationInMs
+    //这样箱子队列中队首的箱子永远是达到超时时间的箱子
     public UnAckedMessageTracker(PulsarClientImpl client, ConsumerBase<?> consumerBase, long ackTimeoutMillis, long tickDurationInMs) {
         //使用了google的guava框架,ack超时时间需要大于tickDurationInMs周期时间
         Preconditions.checkArgument(tickDurationInMs > 0 && ackTimeoutMillis >= tickDurationInMs);
@@ -140,7 +144,7 @@ public class UnAckedMessageTracker implements Closeable {
         this.messageIdPartitionMap = new ConcurrentHashMap<>();
         //message等待ack的时间顺序
         this.timePartitions = new ArrayDeque<>();
-        //空白分区
+        //箱子的个数是向下取整
         int blankPartitions = (int)Math.ceil((double)this.ackTimeoutMillis / this.tickDurationInMs);
         //用空白分区来占位
         for (int i = 0; i < blankPartitions + 1; i++) {
@@ -158,10 +162,11 @@ public class UnAckedMessageTracker implements Closeable {
                 //先给一个写锁
                 writeLock.lock();
                 try {
-                    //取出一个partition分区
+                    //刚启动后，在第一个周期内，消息超时可能是不准的
                     ConcurrentOpenHashSet<MessageId> headPartition = timePartitions.removeFirst();
                     //判断分区是否未空
                     //这里判空后，再forEeach会不会多此一举了
+                    //在放入第一个消息之前，队首的箱子消息数是空，所以需要判断下是否为空，以此来判断是否是第一次
                     if (!headPartition.isEmpty()) {
                         log.warn("[{}] {} messages have timed-out", consumerBase, headPartition.size());
                         headPartition.forEach(messageId -> {
@@ -225,6 +230,9 @@ public class UnAckedMessageTracker implements Closeable {
         }
     }
 
+    //首先设计了一个箱子队列，当放入消息的时候，先从队列中取出箱子，然后把消息放入到箱子中，最后把箱子放到队列末尾
+    //在这个过程中，如果该消息已经在某一个箱子中了，那么久忽略，返回添加失败的状态：false
+    //每次加入一个消息都是放入队首的第一个箱子中，只有在每次触发执行的时候才会把第一个箱子移动到末尾，所以在每次触发执行的时候，队首的箱子里面的就是满足ack超时的消息
     public boolean add(MessageId messageId) {
         //加上写锁
         writeLock.lock();
