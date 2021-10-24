@@ -142,7 +142,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
     //这三个tracker区别是啥
     private final UnAckedMessageTracker unAckedMessageTracker;
-    //这个变量是什么意思，
+    //这个变量是什么意思，这个像是累计ACK，上面哪个和下面的都是针对单条消息的确认
     private final AcknowledgmentsGroupingTracker acknowledgmentsGroupingTracker;
     private final NegativeAcksTracker negativeAcksTracker;
 
