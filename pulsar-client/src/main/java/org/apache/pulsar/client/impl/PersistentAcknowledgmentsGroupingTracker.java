@@ -50,44 +50,51 @@ import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.common.util.collections.BitSetRecyclable;
 import org.apache.pulsar.common.util.collections.ConcurrentBitSetRecyclable;
 
+//看起来似乎是累计确认的acker
 /**
  * Group the acknowledgements for a certain time and then sends them out in a single protobuf command.
  */
 @Slf4j
 public class PersistentAcknowledgmentsGroupingTracker implements AcknowledgmentsGroupingTracker {
 
+    //当累计确认的消息达到阈值1000时，立即发出ack命令
     /**
      * When reaching the max group size, an ack command is sent out immediately
      */
     private static final int MAX_ACK_GROUP_SIZE = 1000;
-
+    //对应的consumer
     private final ConsumerImpl<?> consumer;
-
+    //这个是开始累计时间还是要发送时间
     private final long acknowledgementGroupTimeMicros;
-
+    //当前单曲确认的ack future
     private volatile TimedCompletableFuture<Void> currentIndividualAckFuture;
+    //当前累计确认的ack future
     private volatile TimedCompletableFuture<Void> currentCumulativeAckFuture;
-
+    //上一个累计确认的future
     private volatile LastCumulativeAck lastCumulativeAck =
             LastCumulativeAck.create((MessageIdImpl) MessageIdImpl.earliest, null);
-
+    //累计确认是否要flush
     private volatile boolean cumulativeAckFlushRequired = false;
-
+    //当我们flush的时候，需要确认当前的ack请求已经正确发送了
     // When we flush the command, we should ensure current ack request will send correct
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-
+    //上次累计确认更新器
     private static final AtomicReferenceFieldUpdater<PersistentAcknowledgmentsGroupingTracker, LastCumulativeAck> LAST_CUMULATIVE_ACK_UPDATER = AtomicReferenceFieldUpdater
             .newUpdater(PersistentAcknowledgmentsGroupingTracker.class, LastCumulativeAck.class, "lastCumulativeAck");
 
+    //这是已经确认要单独发送ack但未发送的消息集合
     /**
      * This is a set of all the individual acks that the application has issued and that were not already sent to
      * broker.
      */
     private final ConcurrentSkipListSet<MessageIdImpl> pendingIndividualAcks;
+    //挂起的batch ack集合，这个ConcurrentBitSetRecyclable是什么 看起来就是一个set集合，意思是记录了每个batch message里面包含的所有message集合？
     private final ConcurrentHashMap<MessageIdImpl, ConcurrentBitSetRecyclable> pendingIndividualBatchIndexAcks;
-
+    //定时任务
     private final ScheduledFuture<?> scheduledTask;
+    //是否开启batch index ack
     private final boolean batchIndexAckEnabled;
+    //接收ack是否开启？这个是什么意思
     private final boolean ackReceiptEnabled;
 
     public PersistentAcknowledgmentsGroupingTracker(ConsumerImpl<?> consumer, ConsumerConfigurationData<?> conf,

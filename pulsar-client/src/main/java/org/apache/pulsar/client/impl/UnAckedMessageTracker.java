@@ -290,6 +290,7 @@ public class UnAckedMessageTracker implements Closeable {
         }
     }
 
+    //是消息数
     long size() {
         //添加读锁
         readLock.lock();
