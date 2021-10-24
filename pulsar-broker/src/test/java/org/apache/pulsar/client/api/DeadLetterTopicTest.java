@@ -43,7 +43,7 @@ import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
-
+//Dead(死)Letter(信)TopicTest
 @Test(groups = "flaky")
 public class DeadLetterTopicTest extends ProducerConsumerBase {
 
@@ -65,11 +65,11 @@ public class DeadLetterTopicTest extends ProducerConsumerBase {
     @Test(groups = "quarantine")
     public void testDeadLetterTopic() throws Exception {
         final String topic = "persistent://my-property/my-ns/dead-letter-topic";
-
+        //重发次数
         final int maxRedeliveryCount = 2;
-
+        //发送的消息数
         final int sendMessages = 100;
-
+        //正常的消费者
         Consumer<byte[]> consumer = pulsarClient.newConsumer(Schema.BYTES)
                 .topic(topic)
                 .subscriptionName("my-subscription")
@@ -82,6 +82,7 @@ public class DeadLetterTopicTest extends ProducerConsumerBase {
 
         @Cleanup
         PulsarClient newPulsarClient = newPulsarClient(lookupUrl.toString(), 0);// Creates new client connection
+        //死信消费者
         Consumer<byte[]> deadLetterConsumer = newPulsarClient.newConsumer(Schema.BYTES)
                 .topic("persistent://my-property/my-ns/dead-letter-topic-my-subscription-DLQ")
                 .subscriptionName("my-subscription")
