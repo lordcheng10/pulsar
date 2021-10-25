@@ -46,31 +46,37 @@ public interface LoadManager {
 
     void start() throws PulsarServerException;
 
+    //是分配新捆绑的集中决策。
     /**
      * Is centralized decision making to assign a new bundle.
      */
     boolean isCentralized();
 
+    // 返回由某些特定于实现的算法或标准决定的最小加载资源单元
     /**
      * Returns the Least Loaded Resource Unit decided by some algorithm or criteria which is implementation specific.
      */
     Optional<ResourceUnit> getLeastLoaded(ServiceUnitId su) throws Exception;
 
+    // 生成负载报告
     /**
      * Generate the load report.
      */
     LoadManagerReport generateLoadReport() throws Exception;
 
+    //设置标志以强制加载报告更新。
     /**
      * Set flag to force load report update.
      */
     void setLoadReportForceUpdateFlag();
 
+    //把负载报告写到zk
     /**
      * Publish the current load report on ZK.
      */
     void writeLoadReportOnZookeeper() throws Exception;
 
+    //是否强制把负载报告写到zk
     /**
      * Publish the current load report on ZK, forced or not.
      * By default rely on method writeLoadReportOnZookeeper().
@@ -79,26 +85,31 @@ public interface LoadManager {
         writeLoadReportOnZookeeper();
     }
 
+    //把分配的资源quota写到zk
     /**
      * Update namespace bundle resource quota on ZK.
      */
     void writeResourceQuotasToZooKeeper() throws Exception;
 
+    //生成负载metric
     /**
      * Generate load balancing stats metrics.
      */
     List<Metrics> getLoadBalancingMetrics();
 
+    //执行负载均衡操作（当一 broker 负载过高，强行将部分负载分配到负载较低的 broker 上）
     /**
      * Unload a candidate service unit to balance the load.
      */
     void doLoadShedding();
 
+    //命名空间split
     /**
      * Namespace bundle split.
      */
     void doNamespaceBundleSplit() throws Exception;
 
+    //从负载均衡器列表中删除当前代理的可见性，因此其他代理无法将任何请求重定向到此代理，并且此代理不会接受新的连接请求。
     /**
      * Removes visibility of current broker from loadbalancer list so, other brokers can't redirect any request to this
      * broker and this broker won't accept new connection requests.
@@ -107,6 +118,7 @@ public interface LoadManager {
      */
     void disableBroker() throws Exception;
 
+    //获取可获得的broker列表
     /**
      * Get list of available brokers in cluster.
      *
@@ -115,6 +127,7 @@ public interface LoadManager {
      */
     Set<String> getAvailableBrokers() throws Exception;
 
+    //停掉负载均衡管理器
     void stop() throws PulsarServerException;
 
     /**
@@ -125,6 +138,7 @@ public interface LoadManager {
      */
     void initialize(PulsarService pulsar);
 
+    //创建负载管理器:通过反射的方式来加载pulsar broker配置
     static LoadManager create(final PulsarService pulsar) {
         try {
             final ServiceConfiguration conf = pulsar.getConfiguration();

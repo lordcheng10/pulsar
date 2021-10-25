@@ -96,6 +96,7 @@ class LeaderElectionImpl<T> implements LeaderElection<T> {
         return elect();
     }
 
+    //leader选举注册zk的地方
     private synchronized CompletableFuture<LeaderElectionState> elect() {
         // First check if there's already a leader elected
         internalState = InternalState.ElectionInProgress;

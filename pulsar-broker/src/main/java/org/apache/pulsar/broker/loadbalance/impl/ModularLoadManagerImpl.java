@@ -123,6 +123,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
     private MetadataCache<ResourceQuota> resourceQuotaCache;
     private MetadataCache<TimeAverageBrokerData> timeAverageBrokerDataCache;
 
+    //计算broker系统资源的使用率
     // Broker host usage object used to calculate system resource usage.
     private BrokerHostUsage brokerHostUsage;
 
@@ -206,6 +207,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         loadData = new LoadData();
         loadSheddingPipeline = new ArrayList<>();
         preallocatedBundleToBroker = new ConcurrentHashMap<>();
+        //单线程进行数据上报
         scheduler = Executors.newSingleThreadScheduledExecutor(new DefaultThreadFactory("pulsar-modular-load-manager"));
         this.brokerToFailureDomainMap = Maps.newHashMap();
 
@@ -273,13 +275,17 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
 
     @Override
     public void accept(Notification t) {
+        //1. 监听 zookeeper 上 /loadbalance/brokers 的路径，并注册事件回调
+        // 主要用于监听 broker 增加或减少事件，以便执行如下操作
         if (t.getPath().startsWith(LoadManager.LOADBALANCE_BROKERS_ROOT)) {
             brokersData.listLocks(LoadManager.LOADBALANCE_BROKERS_ROOT)
                     .thenAccept(brokers -> {
+                        // 1. 回收已经停机或宕机的 broker 的任何预分配资源
                         reapDeadBrokerPreallocations(brokers);
                     });
 
             try {
+                // 2. 提交一个任务重新计算负载（updateAll方法下节将详细分析）
                 scheduler.submit(ModularLoadManagerImpl.this::updateAll);
             } catch (RejectedExecutionException e) {
                 // Executor is shutting down
@@ -453,6 +459,9 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         checkNamespaceBundleSplit();
     }
 
+    // 作为领导者（leader） broker，需要通过从 zookeeper 上查询所有的 broker 负载数据，
+    // 而这负载数据是每个 broker 通过 updateLocalBrokerData 方法定时上报给 zookeeper 的，
+    // 然后更新到 brokerDataMap 中
     // As the leader broker, update the broker data map in loadData by querying metadata store for the broker data put
     // there by each broker via updateLocalBrokerData.
     private void updateAllBrokerData() {
@@ -958,7 +967,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
             updateLocalBrokerData();
             if (needBrokerDataUpdate() || force) {
                 localData.setLastUpdate(System.currentTimeMillis());
-
+                //写到zk上
                 brokerDataLock.updateValue(localData).join();
 
                 // Clear deltas.
@@ -977,6 +986,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
     }
 
+    //作为领导代理，将从所有代理聚合的包数据写入元数据存储。
     /**
      * As the leader broker, write bundle data aggregated from all brokers to metadata store.
      */

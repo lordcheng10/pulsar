@@ -686,6 +686,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             this.topicPoliciesService.start();
 
+            //选举leader，一旦选举为leader，会启动两个服务
             // Start the leader election service
             startLeaderElectionService();
 
@@ -712,6 +713,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             this.metricsGenerator = new MetricsGenerator(this);
 
+            //启动负载均衡器并开启上报线程
             // By starting the Load manager service, the broker will also become visible
             // to the rest of the broker by creating the registration z-node. This needs
             // to be done only when the broker is fully operative.
@@ -898,6 +900,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                     if (state == LeaderElectionState.Leading) {
                         LOG.info("This broker was elected leader");
                         if (getConfiguration().isLoadBalancerEnabled()) {
+                            //如果是leader并且开启了负载均衡
                             long loadSheddingInterval = TimeUnit.MINUTES
                                     .toMillis(getConfiguration().getLoadBalancerSheddingIntervalMinutes());
                             long resourceQuotaUpdateInterval = TimeUnit.MINUTES
@@ -909,9 +912,11 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                             if (loadResourceQuotaTask != null) {
                                 loadResourceQuotaTask.cancel(false);
                             }
+                            //启动周期任务LoadSheddingTask:这个是周期执行负载均衡操作
                             loadSheddingTask = loadManagerExecutor.scheduleAtFixedRate(
                                     new LoadSheddingTask(loadManager),
                                     loadSheddingInterval, loadSheddingInterval, TimeUnit.MILLISECONDS);
+                            //启动周期执行的任务LoadResourceQuotaUpdaterTask：周期性的把资源配额信息写到zk上
                             loadResourceQuotaTask = loadManagerExecutor.scheduleAtFixedRate(
                                     new LoadResourceQuotaUpdaterTask(loadManager), resourceQuotaUpdateInterval,
                                     resourceQuotaUpdateInterval, TimeUnit.MILLISECONDS);
@@ -997,9 +1002,11 @@ public class PulsarService implements AutoCloseable, ShutdownService {
     }
 
     protected void startLoadManagementService() throws PulsarServerException {
+        //1.启动负载均衡器
         LOG.info("Starting load management service ...");
         this.loadManager.get().start();
 
+        //如果开启了负载均衡，那么这里会启动上报线程
         if (config.isLoadBalancerEnabled()) {
             LOG.info("Starting load balancer");
             if (this.loadReportTask == null) {
