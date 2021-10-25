@@ -18,11 +18,13 @@
  */
 package org.apache.pulsar.common.naming;
 
+//资源调度基本单元
 /**
  * Basic interface for service unit's identification.
  */
 public interface ServiceUnitId {
 
+    //返回资源全限定名
     @Override
     String toString();
 
