@@ -210,10 +210,12 @@ public class LoadManagerShared {
         return bundleName.substring(0, pos);
     }
 
+    //这里主要是获取主机资源数据，并通过JVM的Runtime中的方法获取内存相关信息
     // Get the system resource usage for this broker.
     public static SystemResourceUsage getSystemResourceUsage(final BrokerHostUsage brokerHostUsage) throws IOException {
+        //这里是直接读取了定时更新的 broker 主机状态数据，上文已有描述，这里不再赘述
         SystemResourceUsage systemResourceUsage = brokerHostUsage.getBrokerHostUsage();
-
+        // 这里覆盖了主机收集的内存使用以及内存限制，用JVM自己的内存信息
         // Override System memory usage and limit with JVM heap usage and limit
         long maxHeapMemoryInBytes = Runtime.getRuntime().maxMemory();
         long memoryUsageInBytes = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();

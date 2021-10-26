@@ -72,6 +72,7 @@ import org.apache.pulsar.common.policies.data.impl.DispatchRateImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+//拆分 namespaceBundle 过程
 //http接口
 @Path("/namespaces")
 @Produces(MediaType.APPLICATION_JSON)
@@ -497,6 +498,7 @@ public class Namespaces extends NamespacesBase {
     public void unloadNamespace(@Suspended final AsyncResponse asyncResponse, @PathParam("tenant") String tenant,
             @PathParam("namespace") String namespace) {
         try {
+            //验证NamespaceName
             validateNamespaceName(tenant, namespace);
             internalUnloadNamespace(asyncResponse);
         } catch (WebApplicationException wae) {
@@ -536,7 +538,9 @@ public class Namespaces extends NamespacesBase {
             @QueryParam("splitAlgorithmName") String splitAlgorithmName) {
 
         try {
+            //验证NamespaceName
             validateNamespaceName(tenant, namespace);
+            //这里才是实际拆分NamespaceBundle的方法
             internalSplitNamespaceBundle(asyncResponse, bundleRange, authoritative, unload, splitAlgorithmName);
         } catch (WebApplicationException wae) {
             asyncResponse.resume(wae);

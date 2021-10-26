@@ -1106,23 +1106,28 @@ public abstract class NamespacesBase extends AdminResource {
         });
     }
 
+    //实际处理NamespaceBundle拆分的方法
     @SuppressWarnings("deprecation")
     protected void internalSplitNamespaceBundle(AsyncResponse asyncResponse, String bundleRange,
                                                 boolean authoritative, boolean unload, String splitAlgorithmName) {
+        //验证是否有超级管理员访问权限
         validateSuperUserAccess();
         checkNotNull(bundleRange, "BundleRange should not be null");
         log.info("[{}] Split namespace bundle {}/{}", clientAppId(), namespaceName, bundleRange);
-
+        //获取NamespaceName的策略信息
         Policies policies = getNamespacePolicies(namespaceName);
-
+        //判断是否全局NamespceName
         if (namespaceName.isGlobal()) {
+            //检查此集群所有者是否在全局（global）namespace：如果集群所属它，则重定向
             // check cluster ownership for a given global namespace: redirect if peer-cluster owns it
             validateGlobalNamespaceOwnership(namespaceName);
         } else {
+            //检查此集群的所有者，如果存在，则重定向它所有者（v1.x版本有用，v2.x版本此检查已废弃）
             validateClusterOwnership(namespaceName.getCluster());
+            //检查当前租户是否有访问Namesapce的集群权限
             validateClusterForTenant(namespaceName.getTenant(), namespaceName.getCluster());
         }
-
+        //验证当前节点是否有权限对 global zookeeper 中策略数据进行读写操作
         validatePoliciesReadOnlyAccess();
 
         List<String> supportedNamespaceBundleSplitAlgorithms =
@@ -1137,6 +1142,7 @@ public abstract class NamespacesBase extends AdminResource {
         NamespaceBundle nsBundle;
 
         try {
+            //验证 bundleRange 是否存在，不存在则抛异常，验证是否属于当前 broker 节点，如果不是，重定向
             nsBundle = validateNamespaceBundleOwnership(namespaceName, policies.bundles, bundleRange,
                     authoritative, true);
         } catch (Exception e) {

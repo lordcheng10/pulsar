@@ -239,6 +239,7 @@ public abstract class AbstractMetadataStore implements MetadataStoreExtended, Co
     @Override
     public final CompletableFuture<Stat> put(String path, byte[] data, Optional<Long> optExpectedVersion,
             EnumSet<CreateOption> options) {
+        //这里是写zk
         // Ensure caches are invalidated before the operation is confirmed
         return storePut(path, data, optExpectedVersion, options)
                 .thenApply(stat -> {

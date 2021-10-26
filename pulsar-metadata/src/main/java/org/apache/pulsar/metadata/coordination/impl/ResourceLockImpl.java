@@ -33,6 +33,7 @@ import org.apache.pulsar.metadata.api.extended.CreateOption;
 import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
 import org.apache.pulsar.metadata.api.MetadataSerde;
 
+//这个实际就是一个zookeeper操作类
 @Slf4j
 public class ResourceLockImpl<T> implements ResourceLock<T> {
 
@@ -137,6 +138,7 @@ public class ResourceLockImpl<T> implements ResourceLock<T> {
 
     synchronized CompletableFuture<Void> acquire() {
         CompletableFuture<Void> result = new CompletableFuture<>();
+        //实际写zookeeper在这里acquireWithNoRevalidation
         acquireWithNoRevalidation()
                 .thenRun(() -> result.complete(null))
                 .exceptionally(ex -> {

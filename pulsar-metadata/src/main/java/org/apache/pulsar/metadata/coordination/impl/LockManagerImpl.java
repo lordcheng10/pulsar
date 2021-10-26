@@ -74,6 +74,7 @@ class LockManagerImpl<T> implements LockManager<T> {
         ResourceLockImpl<T> lock = new ResourceLockImpl<>(store, serde, path, value);
 
         CompletableFuture<ResourceLock<T>> result = new CompletableFuture<>();
+        //lock.acquire()是往zk上的目录写
         lock.acquire().thenRun(() -> {
             synchronized (LockManagerImpl.this) {
                 if (state == State.Ready) {

@@ -87,6 +87,13 @@ import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 从以上可以看出，负载均衡器的职责非常清晰，其核心工作如下：
+ *
+ * 更新集群中所有 broker 负载数据
+ * 更新集群中所有 broker 上 NamespaceBundle 集合负载数据
+ * 基于以上负载数据与设定的阈值判断，是否有出现超载的 namespaceBundle ，如果有，则发送拆分 namespaceBundle 命令给 broker，执行拆分任务。
+ * */
 //默认使用的负载均衡器
 public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Notification> {
     private static final Logger log = LoggerFactory.getLogger(ModularLoadManagerImpl.class);
@@ -310,6 +317,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         loadSheddingPipeline.add(createLoadSheddingStrategy());
     }
 
+    //当/loadbalance/brokers目录下变更时，就会触发更新，也就是说上报的负载数据，是通过监听回调的方式来更新到leader的缓存中的
     @Override
     public void accept(Notification t) {
         //1. 监听 zookeeper 上 /loadbalance/brokers 的路径，并注册事件回调
@@ -488,13 +496,18 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         return false;
     }
 
+    //更新 broker 和 NamespaceBundle 负载数据
     // Update both the broker data and the bundle data.
     public void updateAll() {
         if (log.isDebugEnabled()) {
             log.debug("Updating broker and bundle data for loadreport");
         }
+        //这个方法实际就是更新loadData中的brokerData
         updateAllBrokerData();
+        //这个方法实际就是更新loadData中的bundleData
         updateBundleData();
+        //作为领导者代理，尝试自动检测和拆分热命名空间包。
+        //此时broker有最新的负载报告：检查是否有任何包需要拆分
         // broker has latest load-report: check if any bundle requires split
         checkNamespaceBundleSplit();
     }
@@ -502,25 +515,35 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
     // 作为领导者（leader） broker，需要通过从 zookeeper 上查询所有的 broker 负载数据，
     // 而这负载数据是每个 broker 通过 updateLocalBrokerData 方法定时上报给 zookeeper 的，
     // 然后更新到 brokerDataMap 中
+    // 作为领导者（leader） broker，需要通过从 zookeeper 上查询所有的 broker 负载数据，
+    // 而这负载数据是每个 broker 通过 updateLocalBrokerData 方法定时上报给 zookeeper 的，然后更新到 brokerDataMap 中
     // As the leader broker, update the broker data map in loadData by querying metadata store for the broker data put
     // there by each broker via updateLocalBrokerData.
     private void updateAllBrokerData() {
+        //从 zookeeper 上获取当前所有存活的 broker
         final Set<String> activeBrokers = getAvailableBrokers();
+        //这里实际就在更新loadData里的数据了,这个方法周期性调度
         final Map<String, BrokerData> brokerDataMap = loadData.getBrokerData();
         for (String broker : activeBrokers) {
             try {
                 String key = String.format("%s/%s", LoadManager.LOADBALANCE_BROKERS_ROOT, broker);
+                //从 zookeeper 缓存brokersData中读取（每个） broker 上负载数据（LocalBrokerData），如果没有 key(这个key实际是一个zk路径)，则从缓存brokerDataMap中移除该broker数据，然后跳过
                 Optional<LocalBrokerData> localData = brokersData.readLock(key).get();
                 if (!localData.isPresent()) {
+                    // 仅当在使用最新数据刷新 availableBrokerCache 之前更新 update-brokerData 并且 broker 的delete-znode监视事件未更新 availableBrokerCache 时，
+                    // 才会发生（简单的说，当前已经获取到availableBrokerCache数据，
+                    // 但是此时刚好有个 broker 挂掉，这时候，availableBrokerCache数据已经过期，然后在从 brokerDataCache 中获取缓存数据，可能就出现此种情况）
                     brokerDataMap.remove(broker);
                     log.info("[{}] Broker load report is not present", broker);
                     continue;
                 }
-
+                //是否包含此 broker 节点负载数据
                 if (brokerDataMap.containsKey(broker)) {
+                    // 如果包含，则替换最新的负载数据
                     // Replace previous local broker data.
                     brokerDataMap.get(broker).setLocalData(localData.get());
                 } else {
+                    // 否则，用当前数据创建新的 brokerData
                     // Initialize BrokerData object for previously unseen
                     // brokers.
                     brokerDataMap.put(broker, new BrokerData(localData.get()));
@@ -537,25 +560,32 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
     }
 
+    //这里是更新 NamespaceBundle 负载数据
     // As the leader broker, use the local broker data saved on metadata store to update the bundle stats so that better
     // load management decisions may be made.
     private void updateBundleData() {
         final Map<String, BundleData> bundleData = loadData.getBundleData();
+        // 迭代 broker 负载数据
         // Iterate over the broker data.
         for (Map.Entry<String, BrokerData> brokerEntry : loadData.getBrokerData().entrySet()) {
             final String broker = brokerEntry.getKey();
             final BrokerData brokerData = brokerEntry.getValue();
+            //从最新更新的 broker 负载中读取 NamespaceBundle 负载数据
+            //所以上面upDateAll方法里面调用的顺序不能变，得先调用updateAllBrokerData，不然这里就用不到最新的数据了
             final Map<String, NamespaceBundleStats> statsMap = brokerData.getLocalData().getLastStats();
 
+            // 迭代当前最新可用的 bundle 状态数据更新到 bundleData 中（注：这里bundle指的是NamespaceBundle的全限定名，下同）
             // Iterate over the last bundle stats available to the current
             // broker to update the bundle data.
             for (Map.Entry<String, NamespaceBundleStats> entry : statsMap.entrySet()) {
                 final String bundle = entry.getKey();
                 final NamespaceBundleStats stats = entry.getValue();
                 if (bundleData.containsKey(bundle)) {
+                    // 如果原 bundleData 已有此 bundle，则直接更新新的采样数据
                     // If we recognize the bundle, add these stats as a new sample.
                     bundleData.get(bundle).update(stats);
                 } else {
+                    //否则，尝试从 zookeeper 中读取此 bundle 的采样数据，如果没有找到，这返回默认采样数据，并且用最新的采样数据更新。
                     // Otherwise, attempt to find the bundle data on metadata store.
                     // If it cannot be found, use the latest stats as the first sample.
                     BundleData currentBundleData = getBundleDataOrDefault(bundle);
@@ -564,6 +594,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                 }
             }
 
+            // 从 预分配的 bundleData 中移除所有已加载的 bundle
             // Remove all loaded bundles from the preallocated maps.
             final Map<String, BundleData> preallocatedBundleData = brokerData.getPreallocatedBundleData();
             synchronized (preallocatedBundleData) {
@@ -621,19 +652,23 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
     }
 
+    //作为领导代理，选择要卸载的命名空间服务包，以便将它们重新分配给新代理。
     /**
      * As the leader broker, select bundles for the namespace service to unload so that they may be reassigned to new
      * brokers.
      */
     @Override
     public synchronized void doLoadShedding() {
+        //是否启用自动namespaceBundle分配服务
         if (!LoadManagerShared.isLoadSheddingEnabled(pulsar)) {
             return;
         }
+        //如果 broker 个数少于等于1，则直接返回
         if (getAvailableBrokers().size() <= 1) {
             log.info("Only 1 broker available: no load shedding will be performed");
             return;
         }
+        // 移除近来已在卸载过处于 GracePeriod 时间的 namespaceBundle（简单的说是，上一次卸载还没超过GracePeriod 时间，保护期不再进行二次卸载的 NamespaceBundle）
         // Remove bundles who have been unloaded for longer than the grace period from the recently unloaded map.
         final long timeout = System.currentTimeMillis()
                 - TimeUnit.MINUTES.toMillis(conf.getLoadBalancerSheddingGracePeriodMinutes());
@@ -712,6 +747,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         return true;
     }
 
+    //作为领导者代理，尝试自动检测和拆分热命名空间包。
     /**
      * As the leader broker, attempt to automatically detect and split hot namespace bundles.
      */
@@ -724,6 +760,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
         final boolean unloadSplitBundles = pulsar.getConfiguration().isLoadBalancerAutoUnloadSplitBundlesEnabled();
         synchronized (bundleSplitStrategy) {
+            //基于特定阈值来决定哪些bundle需要被拆分，返回需要拆分的 bundle 集
             final Set<String> bundlesToBeSplit = bundleSplitStrategy.findBundlesToSplit(loadData, pulsar);
             NamespaceBundleFactory namespaceBundleFactory = pulsar.getNamespaceService().getNamespaceBundleFactory();
             for (String bundleName : bundlesToBeSplit) {
@@ -743,6 +780,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                             .invalidateBundleCache(NamespaceName.get(namespaceName));
                     deleteBundleDataFromMetadataStore(bundleName);
 
+                    //从这里可以看出，只是发一个namespaceBundle拆分请求给 broker，其请求URL为:http(s)://brokerip:port/{tenant}/{namespace}/{bundle}/split
                     log.info("Load-manager splitting bundle {} and unloading {}", bundleName, unloadSplitBundles);
                     pulsar.getAdminClient().namespaces().splitNamespaceBundle(namespaceName, bundleRange,
                         unloadSplitBundles, null);
@@ -895,9 +933,11 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
     @Override
     public void start() throws PulsarServerException {
         try {
+            // 此时，端口将更新为服务器分配的真实端口号
             // At this point, the ports will be updated with the real port number that the server was assigned
             Map<String, String> protocolData = pulsar.getProtocolDataToAdvertise();
 
+            //初始化负载数据
             lastData = new LocalBrokerData(pulsar.getSafeWebServiceAddress(), pulsar.getWebServiceAddressTls(),
                     pulsar.getSafeBrokerServiceUrl(), pulsar.getBrokerServiceUrlTls(), pulsar.getAdvertisedListeners());
             lastData.setProtocols(protocolData);
@@ -913,18 +953,23 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
             localData.setPersistentTopicsEnabled(pulsar.getConfiguration().isEnablePersistentTopics());
             localData.setNonPersistentTopicsEnabled(pulsar.getConfiguration().isEnableNonPersistentTopics());
 
+            //获取lookup地址（这个也就是暴露给客户端使用的地址）
             String lookupServiceAddress = pulsar.getAdvertisedAddress() + ":"
                     + (conf.getWebServicePort().isPresent() ? conf.getWebServicePort().get()
                             : conf.getWebServicePortTls().get());
+            //broker的负载数据上报目录
             brokerZnodePath = LoadManager.LOADBALANCE_BROKERS_ROOT + "/" + lookupServiceAddress;
             final String timeAverageZPath = TIME_AVERAGE_BROKER_ZPATH + "/" + lookupServiceAddress;
+            //更新该broker的本地负载数据缓存localData
             updateLocalBrokerData();
-
+            //这里实际就是为了获取ResourceLockImpl对象，该对象可以操作zookeeper,创建的过程中也把zookeeper上的目录创建了，并在上面写了数据
             brokerDataLock = brokersData.acquireLock(brokerZnodePath, localData).join();
-
+            //这里也是会创建zk目录
             timeAverageBrokerDataCache.readModifyUpdateOrCreate(timeAverageZPath,
                     __ -> new TimeAverageBrokerData()).join();
+            //这里会更新下bundle数据和broker数据
             updateAll();
+            //更新时间
             lastBundleDataUpdate = System.currentTimeMillis();
         } catch (Exception e) {
             log.error("Unable to acquire lock for broker: [{}]", brokerZnodePath, e);
@@ -949,6 +994,8 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
     }
 
+    //核心在于，更新当前 broker 所在主机以及 namespaceBundle 的负载数据
+    //作为任何代理，检索名称空间包统计信息和系统资源使用情况以更新此代理的本地数据。
     /**
      * As any broker, retrieve the namespace bundle stats and system resource usage to update data local to this broker.
      * @return
@@ -957,8 +1004,11 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
     public LocalBrokerData updateLocalBrokerData() {
         lock.lock();
         try {
+            //获取系统负载
             final SystemResourceUsage systemResourceUsage = LoadManagerShared.getSystemResourceUsage(brokerHostUsage);
+            //更新本地的系统负载和bundle数据
             localData.update(systemResourceUsage, getBundleStats());
+            //更新对应的metric
             updateLoadBalancingMetrics(systemResourceUsage);
         } catch (Exception e) {
             log.warn("Error when attempting to update local broker data", e);

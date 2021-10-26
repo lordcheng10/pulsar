@@ -47,6 +47,7 @@ public class BundleSplitterTask implements BundleSplitStrategy {
         bundleCache = new HashSet<>();
     }
 
+    //基于特定阈值来决定哪些bundle需要被拆分，返回需要拆分的 bundle 集
     /**
      * Determines which bundles should be split based on various thresholds.
      *
