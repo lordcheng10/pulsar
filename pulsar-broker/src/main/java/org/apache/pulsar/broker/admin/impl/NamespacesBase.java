@@ -2021,6 +2021,7 @@ public abstract class NamespacesBase extends AdminResource {
 
         if (policies.bundles != null && policies.bundles.getNumBundles() > 0) {
             if (policies.bundles.getBoundaries() == null || policies.bundles.getBoundaries().size() == 0) {
+                //创建bundles
                 policies.bundles = getBundles(policies.bundles.getNumBundles());
             } else {
                 policies.bundles = validateBundlesData(policies.bundles);

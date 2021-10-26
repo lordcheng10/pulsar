@@ -20,6 +20,8 @@ package org.apache.pulsar.broker;
 
 import org.apache.pulsar.policies.data.loadbalancer.NamespaceBundleStats;
 
+//BundleData 实际上包含了 一个短期采样数据，一个长期采样数据，topic 数
+// Data class comprising the short term and long term historical data for this bundle.
 /**
  * Data class comprising the short term and long term historical data for this bundle.
  */

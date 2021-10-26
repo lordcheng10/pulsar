@@ -627,6 +627,11 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             this.brokerService = newBrokerService(this);
 
+            //创建并初始化负载均衡器
+            //启动负载管理服务（即使负载均衡被禁用)
+            //从以上可以看出，当系统启动时，通过反射自动加载 broker.conf 配置文件中的负载均衡器实现类，如果加载失败，
+            // 则加载系统内置简单的负载均衡器 SimpleLoadManagerImpl。目前，
+            // 配置默认的负载均衡实现类为 org.apache.pulsar.broker.loadbalance.impl.ModularLoadManagerImpl
             // Start load management service (even if load balancing is disabled)
             this.loadManager.set(LoadManager.create(this));
 
@@ -686,6 +691,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             this.topicPoliciesService.start();
 
+            //2.1 启动选举服务
             //选举leader，一旦选举为leader，会启动两个服务
             // Start the leader election service
             startLeaderElectionService();
@@ -713,6 +719,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
 
             this.metricsGenerator = new MetricsGenerator(this);
 
+            //2.2 启动负载均衡器，并开启定时负载数据上报任务
             //启动负载均衡器并开启上报线程
             // By starting the Load manager service, the broker will also become visible
             // to the rest of the broker by creating the registration z-node. This needs
@@ -894,24 +901,31 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                         .build());
     }
 
+    //2.1 启动选举服务
+    //负载均衡服务中，其最关键的两个任务并不是负载均衡器来调度运行的，而是通过 zookeeper 选举服务，在 broker 间选举确定领导者（leader）后，再通过领导者的回调方法，来进行启动的
+    // PulsarService 类启动领导者选举服务，一旦被选为领导者，则会启动两个任务
     protected void startLeaderElectionService() {
         this.leaderElectionService = new LeaderElectionService(coordinationService, getSafeWebServiceAddress(),
                 state -> {
                     if (state == LeaderElectionState.Leading) {
                         LOG.info("This broker was elected leader");
                         if (getConfiguration().isLoadBalancerEnabled()) {
-                            //如果是leader并且开启了负载均衡
+                            //如果是启用负载均衡器，则定期执行 loadSheddingTask 和 loadResourceQuotaTask
+                            //loadSheddingInterval：执行负载均衡操作的周期间隔时间
                             long loadSheddingInterval = TimeUnit.MINUTES
                                     .toMillis(getConfiguration().getLoadBalancerSheddingIntervalMinutes());
+                            //周期更新resource quota的间隔时间
                             long resourceQuotaUpdateInterval = TimeUnit.MINUTES
                                     .toMillis(getConfiguration().getLoadBalancerResourceQuotaUpdateIntervalMinutes());
-
+                            //如果loadSheddingTask已经启动过，那么久cancel掉
                             if (loadSheddingTask != null) {
                                 loadSheddingTask.cancel(false);
                             }
+                            //通用的loadResourceQuotaTask如果启动过久cancel掉
                             if (loadResourceQuotaTask != null) {
                                 loadResourceQuotaTask.cancel(false);
                             }
+                            //这两个任务实际是是定期调度LoadManager的doLoadShedding和writeResourceQuotasToZooKeeper方法
                             //启动周期任务LoadSheddingTask:这个是周期执行负载均衡操作
                             loadSheddingTask = loadManagerExecutor.scheduleAtFixedRate(
                                     new LoadSheddingTask(loadManager),
@@ -1001,12 +1015,17 @@ public class PulsarService implements AutoCloseable, ShutdownService {
         return () -> new NamespaceService(PulsarService.this);
     }
 
+    //任一 broker 都会启动负载均衡器，并且定期执行负载数据上报给 zookeeper 任务（LoadReportUpdaterTask）
+    //LoadReportUpdaterTask任务实际就是定期调用LoadManager的writeLoadReportOnZookeeper方法
+    //跟2.1小结类似，LoadReportUpdaterTask 实际上也是直接调用负载均衡器的方法实现：writeLoadReportOnZookeeper。
+    // 很显然，系统把负载均衡所有的关联方法抽象一个接口，实现一个负载均衡器，这种设计使职责非常清晰，也符合面向接口编程，
+    // 用户可以根据自己的需求来进行负载均衡器定制，比如支持跨机房、跨区域资源调度等
     protected void startLoadManagementService() throws PulsarServerException {
         //1.启动负载均衡器
         LOG.info("Starting load management service ...");
         this.loadManager.get().start();
 
-        //如果开启了负载均衡，那么这里会启动上报线程
+        //2.如果开启了负载均衡，那么这里会启动上报线程
         if (config.isLoadBalancerEnabled()) {
             LOG.info("Starting load balancer");
             if (this.loadReportTask == null) {

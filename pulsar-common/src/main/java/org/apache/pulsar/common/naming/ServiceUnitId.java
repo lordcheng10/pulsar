@@ -18,7 +18,7 @@
  */
 package org.apache.pulsar.common.naming;
 
-//资源调度基本单元
+//资源调度的基本单元
 /**
  * Basic interface for service unit's identification.
  */
@@ -28,6 +28,7 @@ public interface ServiceUnitId {
     @Override
     String toString();
 
+    //返回此资源属于哪个命名空间
     /**
      * Return the namespace object that this <code>ServiceUnitId</code> belongs to.
      *
@@ -35,6 +36,7 @@ public interface ServiceUnitId {
      */
     NamespaceName getNamespaceObject();
 
+    // 检查 topic 全限定名是否在包括在 ServiceUnitId 对象内
     /**
      * Check whether a fully-qualified topic is included in this <code>ServiceUnitId</code> object.
      *

@@ -30,12 +30,14 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+//LocalBrokerData 由每个 broker 主机维护的负载数据，它会定时上报给 zookeeper 上
 /**
  * Contains all the data that is maintained locally on each broker.
  */
 @JsonDeserialize(as = LocalBrokerData.class)
 public class LocalBrokerData implements LoadManagerReport {
 
+    // ServiceLookupData 结构，其为静态数据
     // URLs to satisfy contract of ServiceLookupData (used by NamespaceService).
     private final String webServiceUrl;
     private final String webServiceUrlTls;
@@ -44,6 +46,7 @@ public class LocalBrokerData implements LoadManagerReport {
     private boolean persistentTopicsEnabled = true;
     private boolean nonPersistentTopicsEnabled = true;
 
+    // 此可以参考 SystemResourceUsage 类.
     // Most recently available system resource usage.
     private ResourceUsage cpu;
     private ResourceUsage memory;
@@ -52,6 +55,7 @@ public class LocalBrokerData implements LoadManagerReport {
     private ResourceUsage bandwidthIn;
     private ResourceUsage bandwidthOut;
 
+    // 以下是当前 broker 中 所有的 NamespaceBundle 对应总数据
     // Message data from the most recent namespace bundle stats.
     private double msgThroughputIn;
     private double msgThroughputOut;
@@ -69,15 +73,16 @@ public class LocalBrokerData implements LoadManagerReport {
     private int numConsumers;
     private int numProducers;
 
+    // bundle 总数
     // All bundles belonging to this broker.
     private Set<String> bundles;
-
+    // 自上次调用更新以来获得的捆绑包。
     // The bundles gained since the last invocation of update.
     private Set<String> lastBundleGains;
-
+    //自上次调用更新以来丢失的包。
     // The bundles lost since the last invocation of update.
     private Set<String> lastBundleLosses;
-
+    //该代理正在运行的版本字符串，从 POM 中的 Maven 构建工件获得
     // The version string that this broker is running, obtained from the Maven build artifact in the POM
     private String brokerVersionString;
     // This place-holder requires to identify correct LoadManagerReport type while deserializing

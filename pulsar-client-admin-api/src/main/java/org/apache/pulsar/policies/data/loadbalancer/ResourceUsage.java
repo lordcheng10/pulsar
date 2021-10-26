@@ -25,7 +25,9 @@ import lombok.EqualsAndHashCode;
  */
 @EqualsAndHashCode
 public class ResourceUsage {
+    //（当前）使用值
     public double usage;
+    //限额值
     public double limit;
 
     public ResourceUsage(double usage, double limit) {

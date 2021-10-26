@@ -71,6 +71,7 @@ import org.apache.pulsar.metadata.api.MetadataStoreException.NotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+//http接口
 @Path("/namespaces")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -156,6 +157,7 @@ public class Namespaces extends NamespacesBase {
         return getNamespacePolicies(namespaceName);
     }
 
+    //创建namespace
     @SuppressWarnings("deprecation")
     @PUT
     @Path("/{property}/{cluster}/{namespace}")

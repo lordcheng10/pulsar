@@ -25,8 +25,11 @@ import com.google.common.base.Objects;
 import com.google.common.collect.BoundType;
 import com.google.common.collect.Range;
 
+//资源分配分片，它是 NamespaceName 的分片，创建时可以根据策略来指定分片个数，如果没有指定，则用系统默认值4，
+// 来均匀分配一个namespace下的topic个数。
 public class NamespaceBundle implements ServiceUnitId, Comparable<NamespaceBundle> {
     private final NamespaceName nsname;
+    //代表一个范围，比如：Range<Integer> a1 = Range.closed(0,1) 为: [0..1]
     private final Range<Long> keyRange;
     private final NamespaceBundleFactory factory;
     // Issue#596: remove this once we remove broker persistent/non-persistent mode configuration
@@ -52,6 +55,7 @@ public class NamespaceBundle implements ServiceUnitId, Comparable<NamespaceBundl
         this.bundleRange = String.format("0x%08x_0x%08x", keyRange.lowerEndpoint(), keyRange.upperEndpoint());
     }
 
+    //NamespaceBundle的实现
     @Override
     public NamespaceName getNamespaceObject() {
         return this.nsname;

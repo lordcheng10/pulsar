@@ -18,6 +18,7 @@
  */
 package org.apache.pulsar.policies.data.loadbalancer;
 
+//SystemResourceUsage 由 BrokerHostUsage 组件的方法计算给出，代表一个主机各资源使用情况
 /**
  * This class represents a object which reflects system resource usage per resource and the upper limit on the resource.
  */
@@ -29,11 +30,15 @@ public class SystemResourceUsage {
     public enum ResourceType {
         CPU, Memory, BandwidthIn, BandwidthOut
     }
-
+    // 扇入流量指标
     public ResourceUsage bandwidthIn;
+    // 扇出流量指标
     public ResourceUsage bandwidthOut;
+    // CPU使用指标
     public ResourceUsage cpu;
+    // Java （堆内）内存使用指标
     public ResourceUsage memory;
+    // Java （堆外）直接内存使用指标
     public ResourceUsage directMemory;
 
     public SystemResourceUsage() {

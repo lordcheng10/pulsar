@@ -23,20 +23,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.pulsar.broker.BrokerData;
 import org.apache.pulsar.broker.BundleData;
 
+//LoadData 实际上是包含所有的 broker 、 namespaceBundle 的性能采样数据。由此可以猜测，负载均衡器就是通过它通过设定要的资源阈值来执行负载均衡的。
+//LoadData 实际上包含了每个 broker 、 namespaceBundle 的负载数据，还有最近被卸载的 namespaceBundle 数据集。
 /**
  * This class represents all data that could be relevant when making a load management decision.
  */
 public class LoadData {
+    // broker name ---> brokerData 的映射
     /**
      * Map from broker names to their available data.
      */
     private final Map<String, BrokerData> brokerData;
-
+    // bundle names ----> bundle 时间敏感的聚合数据的映射
     /**
      * Map from bundle names to their time-sensitive aggregated data.
      */
     private final Map<String, BundleData> bundleData;
 
+    //最近卸载的 namespace ---> namespaceBundle 映射
     /**
      * Map from recently unloaded bundles to the timestamp of when they were last loaded.
      */

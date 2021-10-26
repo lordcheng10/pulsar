@@ -20,6 +20,7 @@ package org.apache.pulsar.broker;
 
 import org.apache.pulsar.policies.data.loadbalancer.NamespaceBundleStats;
 
+//TimeAverageMessageData 实际上包含了采样数据选项：消息出入站字节数，消息出入站数。
 /**
  * Data class comprising the average message data over a fixed period of time.
  */

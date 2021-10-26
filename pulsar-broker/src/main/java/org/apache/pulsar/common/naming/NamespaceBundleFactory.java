@@ -215,6 +215,7 @@ public class NamespaceBundleFactory {
         return this.hashFunc.hashString(name, Charsets.UTF_8).padToLong();
     }
 
+    //构建NamespaceBundles对象，在这个方法NamespaceBundles.getPartitions(bundleData)里面把对应的partition字符串数组转成partition[](因为之前在构建的时候是把long型转成的字符串)
     public NamespaceBundles getBundles(NamespaceName nsname, BundlesData bundleData) {
         return new NamespaceBundles(nsname, this, Optional.empty(), NamespaceBundles.getPartitions(bundleData));
     }

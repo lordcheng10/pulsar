@@ -32,6 +32,9 @@ import org.apache.pulsar.policies.data.loadbalancer.LoadManagerReport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+// pulsar 系统目前使用的负载均衡类使用的是 ModularLoadManagerImpl ，但是它并不是继承以上所说接口，而是 ModularLoadManager 接口，然后通过包装类 来兼容 LoadManager,故大同小异。
+//通过ModularLoadManagerWrapper来继承LoadManager，然后在ModularLoadManagerWrapper中去引用另外一个未继承LoadManager接口，而是继承ModularLoadManager接口的负载均衡器，从而实现两种均衡器接口的兼容
+//该负载均衡器接口的实现，实际就两个：SimpleLoadManagerImpl和ModularLoadManagerImpl,只不过ModularLoadManagerImpl不是直接继承这个接口，而是通过ModularLoadManagerWrapper包装类的引用来间接'继承'
 /**
  * LoadManager runs though set of load reports collected from different brokers and generates a recommendation of
  * namespace/ServiceUnit placement on machines/ResourceUnit. Each Concrete Load Manager will use different algorithms to
@@ -138,7 +141,11 @@ public interface LoadManager {
      */
     void initialize(PulsarService pulsar);
 
+    //1. 创建并初始化负载均衡器
     //创建负载管理器:通过反射的方式来加载pulsar broker配置
+    //也就是说可以自定义负载管理器
+    //从 create 方法可以看出，pulsar 有两个负载均衡接口类，一个最初版本为 LoadManager,一个为了更直观的方法名称而创建的 ModularLoadManager，
+    // 这两个接口类， ModularLoadManager 通过包装成 ModularLoadManagerWrapper，以便统一加载内置或自定义负载均衡器
     static LoadManager create(final PulsarService pulsar) {
         try {
             final ServiceConfiguration conf = pulsar.getConfiguration();
@@ -150,6 +157,9 @@ public interface LoadManager {
                 casted.initialize(pulsar);
                 return casted;
             } else if (loadManagerInstance instanceof ModularLoadManager) {
+                //这里是为了兼容老得负载均衡器接口LoadManager，才搞了一个包装类ModularLoadManagerWrapper
+                //我们如果要自定义负载均衡器的时候，最好是继承新的接口ModularLoadManager
+                //为什么要搞一个新的负载均衡器接口，是因为之前老接口名字取得不好，所以才搞一个新的
                 final LoadManager casted = new ModularLoadManagerWrapper((ModularLoadManager) loadManagerInstance);
                 casted.initialize(pulsar);
                 return casted;

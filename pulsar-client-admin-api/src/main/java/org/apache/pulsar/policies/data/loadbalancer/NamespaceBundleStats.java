@@ -21,18 +21,27 @@ package org.apache.pulsar.policies.data.loadbalancer;
 import java.io.Serializable;
 import lombok.EqualsAndHashCode;
 
+//NamespaceBundleStats 由 updateBundleData 方法维护，代表一个NamespaceBundle下各资源使用情况
 /**
  */
 @EqualsAndHashCode
 public class NamespaceBundleStats implements Comparable<NamespaceBundleStats>, Serializable {
 
+    // 消息入站速率
     public double msgRateIn;
+    // 消息入站吞吐量
     public double msgThroughputIn;
+    // 消息出站速率
     public double msgRateOut;
+    // 消息出站吞吐量
     public double msgThroughputOut;
+    // 消费者数
     public int consumerCount;
+    // 生产者数
     public int producerCount;
+    // topic 数
     public long topics;
+    // 缓存大小
     public long cacheSize;
 
     // Consider the throughput equal if difference is less than 100 KB/s

@@ -27,6 +27,8 @@ import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+//来自配置中提供的命名空间字段的值的解析器。
+//资源分配单元，属于系统内部概念，它设计可以包含多个 topic。对于外部，只需要设置 Namespace 名即可，对应 Namespace内部的 localName 属性。
 /**
  * Parser of a value from the namespace field provided in configuration.
  */
@@ -48,11 +50,13 @@ public class NamespaceName implements ServiceUnitId {
 
     public static final NamespaceName SYSTEM_NAMESPACE = NamespaceName.get("pulsar/system");
 
+    //这里，跟 topic 全限定名一样，pulsar v2.x 版本的全限定名，它与v1.x不同之处在于，剥离了 cluster 字段。
+    //这里是v2.x版本构造函数
     public static NamespaceName get(String tenant, String namespace) {
         validateNamespaceName(tenant, namespace);
         return get(tenant + '/' + namespace);
     }
-
+    //这里是v1.x版本构造函数
     public static NamespaceName get(String tenant, String cluster, String namespace) {
         validateNamespaceName(tenant, cluster, namespace);
         return get(tenant + '/' + cluster + '/' + namespace);

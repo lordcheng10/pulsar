@@ -87,38 +87,54 @@ import org.apache.pulsar.policies.data.loadbalancer.SystemResourceUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+//默认使用的负载均衡器
 public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Notification> {
     private static final Logger log = LoggerFactory.getLogger(ModularLoadManagerImpl.class);
 
+    //ZNode 的路径，其子节点包含每个bundle的 BundleData json（ResourceQuota 的新 API 版本）:记录该bundle下有多少topic、以及该bundle的发送速率等
     // Path to ZNode whose children contain BundleData jsons for each bundle (new API version of ResourceQuota).
     public static final String BUNDLE_DATA_PATH = "/loadbalance/bundle-data";
 
+    //为看不见的bundle假定的默认消息速率(msg/s)。
     // Default message rate to assume for unseen bundles.
     public static final double DEFAULT_MESSAGE_RATE = 50;
 
+    //为看不见的bundle假定的默认吞吐量(bytes/s)。
+    //请注意，默认消息大小被隐式定义为 DEFAULT_MESSAGE_THROUGHPUT / DEFAULT_MESSAGE_RATE。
     // Default message throughput to assume for unseen bundles.
     // Note that the default message size is implicitly defined as DEFAULT_MESSAGE_THROUGHPUT / DEFAULT_MESSAGE_RATE.
     public static final double DEFAULT_MESSAGE_THROUGHPUT = 50000;
 
+    //为观察长期数据而保留的有效样本数。
     // The number of effective samples to keep for observing long term data.
     public static final int NUM_LONG_SAMPLES = 1000;
 
+    //为观察短期数据而保留的有效样本数。
     // The number of effective samples to keep for observing short term data.
     public static final int NUM_SHORT_SAMPLES = 10;
 
+    //其子节点包含 ResourceQuota json 的 ZNode 的路径。
+    //bookie_ss_share/loadbalance/resource-quota/default命名空间下的quota配置默认是有设置的：看起来default命名空间的quota，写入速率只有40mgs/s
+    //{"msgRateIn":40.0,"msgRateOut":120.0,"bandwidthIn":100000.0,"bandwidthOut":300000.0,"memory":80.0,"dynamic":true}
     // Path to ZNode whose children contain ResourceQuota jsons.
     public static final String RESOURCE_QUOTA_ZPATH = "/loadbalance/resource-quota/namespace";
 
+    //包含每个代理的 TimeAverageBrokerData json 的 ZNode 的路径。
+    //看起来该目录下记录了各个节点在一段时间内的平均数据：比如平均写入速率,eg:
+    //{"shortTermMsgThroughputIn":4.709897361740486E7,"shortTermMsgThroughputOut":155282.16141480498,"shortTermMsgRateIn":45382.07492227784,"shortTermMsgRateOut":149.79520981173818,
+    // "longTermMsgThroughputIn":5.2876187912063405E7,"longTermMsgThroughputOut":8399724.720383286,"longTermMsgRateIn":50947.373817837266,"longTermMsgRateOut":8093.283957073706}
     // Path to ZNode containing TimeAverageBrokerData jsons for each broker.
     public static final String TIME_AVERAGE_BROKER_ZPATH = "/loadbalance/broker-time-average";
 
+    //要重用的broker候选集合，以避免创建对象。
     // Set of broker candidates to reuse so that object creation is avoided.
     private final Set<String> brokerCandidateCache;
 
-    // Cache of the local broker data, stored in LoadManager.LOADBALANCE_BROKER_ROOT.
+    //本地代理数据的缓存，存储在 LoadManager.LOADBALANCE_BROKERs_ROOT 中。
+    // Cache of the local broker data, stored in LoadManager.LOADBALANCE_BROKERS_ROOT.
     private LockManager<LocalBrokerData> brokersData;
     private ResourceLock<LocalBrokerData> brokerDataLock;
-
+    //各个bundle中的数据
     private MetadataCache<BundleData> bundlesCache;
     private MetadataCache<ResourceQuota> resourceQuotaCache;
     private MetadataCache<TimeAverageBrokerData> timeAverageBrokerDataCache;
@@ -127,66 +143,79 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
     // Broker host usage object used to calculate system resource usage.
     private BrokerHostUsage brokerHostUsage;
 
+    //从代理到命名空间映射到分配给该代理的命名空间中的包范围。
+    //用于在一个命名空间内跨代理均匀分布包
     // Map from brokers to namespaces to the bundle ranges in that namespace assigned to that broker.
     // Used to distribute bundles within a namespace evenly across brokers.
     private final ConcurrentOpenHashMap<String, ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>>>
             brokerToNamespaceToBundleRange;
 
+    //包含此代理的 LocalBrokerData json 的 ZNode 的路径。
     // Path to the ZNode containing the LocalBrokerData json for this broker.
     private String brokerZnodePath;
 
+    //用于拆分捆绑包的策略。
     // Strategy to use for splitting bundles.
     private BundleSplitStrategy bundleSplitStrategy;
-
+    //属于脉冲星服务的服务配置。
     // Service configuration belonging to the pulsar service.
     private ServiceConfiguration conf;
 
+    // 用于初始化历史数据的默认包统计信息。
+    // 在 bundle 收到它的第一个样本后，这个数据被覆盖。
     // The default bundle stats which are used to initialize historic data.
     // This data is overridden after the bundle receives its first sample.
     private final NamespaceBundleStats defaultStats;
 
+    // 用于过滤经纪人不被选中进行分配。
     // Used to filter brokers from being selected for assignment.
     private final List<BrokerFilter> filterPipeline;
-
+    // 上次调用 updateBundleData 的时间戳。
     // Timestamp of last invocation of updateBundleData.
     private long lastBundleDataUpdate;
-
+    // LocalBrokerData 在最近更新之前可用。
     // LocalBrokerData available before most recent update.
     private LocalBrokerData lastData;
 
+    //用于确定应该卸载哪些命名空间（如果有）的管道。
     // Pipeline used to determine what namespaces, if any, should be unloaded.
     private final List<LoadSheddingStrategy> loadSheddingPipeline;
 
+    //正在运行的代理的本地数据。
     // Local data for the broker this is running on.
     private LocalBrokerData localData;
 
+    //加载包含每个代理可用数据的数据。
     // Load data comprising data available for each broker.
     private final LoadData loadData;
-
+    //用于确定捆绑包是否已预先分配。
     // Used to determine whether a bundle is preallocated.
     private final Map<String, String> preallocatedBundleToBroker;
-
+    //用于确定新主题放置位置的策略。
     // Strategy used to determine where new topics should be placed.
     private ModularLoadManagerStrategy placementStrategy;
-
+    //用于确定哪些代理可用于特定命名空间的策略。
     // Policies used to determine which brokers are available for particular namespaces.
     private SimpleResourceAllocationPolicies policies;
-
+    //Pulsar 服务用于初始化它。
     // Pulsar service used to initialize this.
     private PulsarService pulsar;
-
+    //Executor 服务用于定期更新代理数据。
     // Executor service used to regularly update broker data.
     private final ScheduledExecutorService scheduler;
-
+    //检查给定的代理是否可以加载持久/非持久主题
     // check if given broker can load persistent/non-persistent topic
     private final BrokerTopicLoadingPredicate brokerTopicLoadingPredicate;
-
+    //代理故障域映射
     private Map<String, String> brokerToFailureDomainMap;
 
+    //记录负载平衡指标
     // record load balancing metrics
     private AtomicReference<List<Metrics>> loadBalancingMetrics = new AtomicReference<>();
+    //记录捆绑卸载指标
     // record bundle unload metrics
     private AtomicReference<List<Metrics>> bundleUnloadMetrics = new AtomicReference<>();
+    //记录捆绑拆分指标
     // record bundle split metrics
     private AtomicReference<List<Metrics>> bundleSplitMetrics = new AtomicReference<>();
 
@@ -241,14 +270,17 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         bundlesCache = pulsar.getLocalMetadataStore().getMetadataCache(BundleData.class);
         resourceQuotaCache = pulsar.getLocalMetadataStore().getMetadataCache(ResourceQuota.class);
         timeAverageBrokerDataCache = pulsar.getLocalMetadataStore().getMetadataCache(TimeAverageBrokerData.class);
+        //在这里就注册了监听器，监听器就是该类，因为它实现了 Consumer<Notification>接口,在这个接口的accept方法中会进行回调处理
         pulsar.getLocalMetadataStore().registerListener(this);
 
+        //3. 判断是 *nix系还是win系操作系统，根据不同的操作系统环境来计算主机资源数据服务，服务定时来更新主机资源负载数据，以便使用时直接读取数据，下文将会提到使用场景
         if (SystemUtils.IS_OS_LINUX) {
             brokerHostUsage = new LinuxBrokerHostUsageImpl(pulsar);
         } else {
             brokerHostUsage = new GenericBrokerHostUsageImpl(pulsar);
         }
 
+        //4. 创建 bundle 分割任务
         bundleSplitStrategy = new BundleSplitterTask();
 
         conf = pulsar.getConfiguration();
@@ -258,18 +290,23 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         defaultStats.msgThroughputOut = DEFAULT_MESSAGE_THROUGHPUT;
         defaultStats.msgRateIn = DEFAULT_MESSAGE_RATE;
         defaultStats.msgRateOut = DEFAULT_MESSAGE_RATE;
-
+        //6. 创建唯一的 LeastLongTermMessageRate 实现
         placementStrategy = ModularLoadManagerStrategy.create(conf);
+        //7. 创建简单资源分配策略服务
         policies = new SimpleResourceAllocationPolicies(pulsar);
+        // 新增 broker 版本过滤器
         filterPipeline.add(new BrokerVersionFilter());
-
+        //8. 刷新各个 broker 分配到不同的故障域
         refreshBrokerToFailureDomainMap();
+        //9. 注册故障域中主机变更事件，一旦变更，则执行 refreshBrokerToFailureDomainMap 方法
         // register listeners for domain changes
         pulsar.getPulsarResources().getClusterResources().getFailureDomainResources()
                 .registerListener(__ -> {
                     scheduler.execute(() -> refreshBrokerToFailureDomainMap());
                 });
 
+
+        //负载超载时，执行动作策略
         loadSheddingPipeline.add(createLoadSheddingStrategy());
     }
 
@@ -321,9 +358,11 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         initialize(pulsar);
     }
 
+    //当 broker 存活数变更时，将会回调此方法，回收预分配资源
     // For each broker that we have a recent load report, see if they are still alive
     private void reapDeadBrokerPreallocations(List<String> aliveBrokers) {
         for (String broker : loadData.getBrokerData().keySet()) {
+            //表明 broker 已停机或宕机（当然也可能是broker与zookeeper通讯中断）
             if (!aliveBrokers.contains(broker)) {
                 if (log.isDebugEnabled()) {
                     log.debug("Broker {} appears to have stopped; now reclaiming any preallocations", broker);
@@ -338,6 +377,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                             log.debug("Removing old preallocation on dead broker {} for bundle {}",
                                     preallocatedBroker, preallocatedBundle);
                         }
+                        //移除在已经宕机 broker 上老预分配资源
                         iterator.remove();
                     }
                 }
@@ -845,6 +885,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
     }
 
+    //与任何代理一样，启动负载管理器。
     /**
      * As any broker, start the load manager.
      *

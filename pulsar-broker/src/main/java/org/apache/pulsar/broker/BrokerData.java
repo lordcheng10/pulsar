@@ -23,6 +23,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import lombok.Data;
 import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 
+
+// BrokerData 实际上包含一个 broker 负载数据，一个时间聚合负载数据，一个预先分配的 namespaceBundle 数据。
+//包含三个组件的数据类，其中包含有关其他代理的领导代理可用的所有数据：
+//- 由每个单独的代理 (LocalBrokerData) 写入 ZooKeeper 的本地代理数据。
+//  - 由领导代理 (TimeAverageBrokerData) 写入 ZooKeeper 的时间平均包数据。
+//- 未写入 ZooKeeper 但由领导代理维护的预分配包 (Map<String, BundleData>)。
 /**
  * Data class containing three components comprising all the data available for the leader broker about other brokers: -
  * The local broker data which is written to ZooKeeper by each individual broker (LocalBrokerData). - The time average

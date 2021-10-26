@@ -30,6 +30,11 @@ import java.util.concurrent.TimeUnit;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.common.util.Codec;
 
+//封装对 completeTopicName 变量的解析。
+/**
+ * 最小资源单元，属于系统内部概念，包含 namespaceName 属性, 意味着此 topic 归在此 namespaceName 上。
+ * 对于外部，只需要设置 topic 名即可，对应 TopicName 内部的 localName 属性
+ * */
 /**
  * Encapsulate the parsing of the completeTopicName name.
  */
@@ -163,10 +168,14 @@ public class TopicName implements ServiceUnitId {
         } catch (NullPointerException e) {
             throw new IllegalArgumentException("Invalid topic name: " + completeTopicName, e);
         }
+
+        //pulsar v2.x 版本的全限定名，它与v1.x不同之处在于，剥离了 cluster 字段。
         if (isV2()) {
+            //例子：persistent://prop/ns/my-topic
             this.completeTopicName = String.format("%s://%s/%s/%s",
                                                    domain, tenant, namespacePortion, localName);
         } else {
+            //例子：persistent://prop/cluster/ns/my-topic
             this.completeTopicName = String.format("%s://%s/%s/%s/%s",
                                                    domain, tenant, cluster,
                                                    namespacePortion, localName);

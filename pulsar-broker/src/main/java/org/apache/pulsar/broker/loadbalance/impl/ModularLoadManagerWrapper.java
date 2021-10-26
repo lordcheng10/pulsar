@@ -31,6 +31,9 @@ import org.apache.pulsar.common.stats.Metrics;
 import org.apache.pulsar.policies.data.loadbalancer.LoadManagerReport;
 import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 
+// pulsar 系统目前使用的负载均衡类使用的是 ModularLoadManagerImpl ，
+// 但是它并不是继承以上所说接口，而是 ModularLoadManager 接口，然后通过包装类 来兼容 LoadManager,故大同小异。
+//通过ModularLoadManagerWrapper来继承LoadManager，然后在ModularLoadManagerWrapper中去引用另外一个未继承LoadManager接口，而是继承ModularLoadManager接口的负载均衡器，从而实现两种均衡器接口的兼容
 /**
  * Wrapper class allowing classes of instance ModularLoadManager to be compatible with the interface LoadManager.
  */

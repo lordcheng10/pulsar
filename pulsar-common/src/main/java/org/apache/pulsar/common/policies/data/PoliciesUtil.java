@@ -49,6 +49,8 @@ public class PoliciesUtil {
 
     private static final long MAX_BUNDLES = ((long) 1) << 32;
 
+    //创建 NamespaceName 时调用，是 NamespaceName 中 Policies 属性 BundlesData 初始化时赋值
+    //把2^32为数进行分段，分成numBundles段，并按照16进制字符串的方式放到数组里
     public static BundlesData getBundles(int numBundles) {
         if (numBundles <= 0) {
             throw new RestException(Response.Status.BAD_REQUEST,
@@ -67,6 +69,7 @@ public class PoliciesUtil {
             }
             curPartition += segSize;
         }
+        //构建一个BundlesData对象，实际类似于：return new BundlesData(partitions,numBundles)
         return BundlesData.builder()
                 .boundaries(partitions)
                 .numBundles(numBundles)

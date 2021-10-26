@@ -72,6 +72,7 @@ import org.apache.pulsar.common.policies.data.impl.DispatchRateImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+//http接口
 @Path("/namespaces")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -124,6 +125,7 @@ public class Namespaces extends NamespacesBase {
         return getNamespacePolicies(namespaceName);
     }
 
+    //创建namespace
     @PUT
     @Path("/{tenant}/{namespace}")
     @ApiOperation(value = "Creates a new namespace with the specified policies")
