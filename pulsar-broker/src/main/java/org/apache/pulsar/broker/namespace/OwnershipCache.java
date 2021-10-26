@@ -150,6 +150,7 @@ public class OwnershipCache {
         return getOwnedBundle(bundle) != null;
     }
 
+    //异步获取 NamespaceEphemeralData 的信息(主要用于定位 broker 的，并且标记为启用或禁用)
     /**
      * Method to get the current owner of the <code>ServiceUnit</code>.
      *
@@ -160,15 +161,18 @@ public class OwnershipCache {
      *             throws exception if no ownership info is found
      */
     public CompletableFuture<Optional<NamespaceEphemeralData>> getOwnerAsync(NamespaceBundle suName) {
+        //先从当前 broker 所属的 namespaceBundles 尝试获取 suname 信息
         CompletableFuture<OwnedBundle> ownedBundleFuture = ownedBundlesCache.getIfPresent(suName);
         if (ownedBundleFuture != null) {
+            // suname 要么已经是当前broker所有，要么尝试分配给当前 broker
             // Either we're the owners or we're trying to become the owner.
             return ownedBundleFuture.thenApply(serviceUnit -> {
+                // 查看资源是否是存活的，返回响应的 broker 信息
                 // We are the owner of the service unit
                 return Optional.of(serviceUnit.isActive() ? selfOwnerInfo : selfOwnerInfoDisabled);
             });
         }
-
+        //如果suname 不属于当前 broker 的，则从只读缓存中读取 namespaceBundle 相关信息（即存在其他 broker 的 namespaceBundle 信息）
         // If we're not the owner, we need to check if anybody else is
         String path = ServiceUnitUtils.path(suName);
         return lockManager.readLock(path);

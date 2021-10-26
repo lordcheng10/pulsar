@@ -466,6 +466,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         return 100 * Math.abs((oldValue - newValue) / oldValue);
     }
 
+    //判断 broker 负载数据是否需要更新到 zookeeper
     // Determine if the broker data requires an update by delegating to the update condition.
     private boolean needBrokerDataUpdate() {
         final long updateMaxIntervalMillis = TimeUnit.MINUTES
@@ -478,6 +479,9 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
             // Always update after surpassing the maximum interval.
             return true;
         }
+        // 如果小于等于呢？则通过计算最小负载数据变更最大率（maxChange），
+        // 通过系统配置的负载变更最大率阈值conf.getLoadBalancerReportUpdateThresholdPercentage()对比，
+        // 如果 maxChange 大于阈值，则立即上报，否则等下一次上报（maxChange计算也较为简单:上一次上报的负载数据与当前本地负载数据每个指标计算出变动百分比，选出其中最大值）
         final double maxChange = Math
                 .max(100.0 * (Math.abs(lastData.getMaxResourceUsage() - localData.getMaxResourceUsage())),
                         Math.max(percentChange(lastData.getMsgRateIn() + lastData.getMsgRateOut(),
@@ -652,6 +656,10 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         }
     }
 
+    //先检查系统配置是否启用了自动减载（isLoadSheddingEnabled），负责找出集群内 broker 上 namespaceBundle 超载的分区，
+    // 然后依次对 namespaceBundle 进行如下操作：执行 namespace 隔离策略（包括 broker 主从分组、反亲缘性检查）、故障转移策略检查，
+    // 持久化和非持久化 topic 支持的 broker 主机隔离，期间，负载均衡器会记录符合要求的候选 broke 集合（brokerCandidateCache），
+    // 然后对符合卸载要求的 namespaceBundle 进行卸载，并记录在 loadData 的最近卸载 bundles （loadData 的 recentlyUnloadedBundles）中。
     //作为领导代理，选择要卸载的命名空间服务包，以便将它们重新分配给新代理。
     /**
      * As the leader broker, select bundles for the namespace service to unload so that they may be reassigned to new
@@ -669,26 +677,40 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
             return;
         }
         // 移除近来已在卸载过处于 GracePeriod 时间的 namespaceBundle（简单的说是，上一次卸载还没超过GracePeriod 时间，保护期不再进行二次卸载的 NamespaceBundle）
+        // unload后，默认30分钟内，不能再unload
         // Remove bundles who have been unloaded for longer than the grace period from the recently unloaded map.
         final long timeout = System.currentTimeMillis()
                 - TimeUnit.MINUTES.toMillis(conf.getLoadBalancerSheddingGracePeriodMinutes());
+        //获取最近卸载的bundle
         final Map<String, Long> recentlyUnloadedBundles = loadData.getRecentlyUnloadedBundles();
+        //过滤掉已卸载的 namespaceBundle，且卸载时间距离现在已经超过timeout时间的需要过滤掉，未过滤掉的（也就是仍在recentlyUnloadedBundles中的bundle）是不能进行二次卸载的，其在规定 GracePeriod 时间内，不再执行二次卸载
+        //loadBalancerSheddingGracePeriodMinutes默认是30分钟，也就是说卸载了一次后，30分钟都不能再卸载该bundle？
         recentlyUnloadedBundles.keySet().removeIf(e -> recentlyUnloadedBundles.get(e) < timeout);
-
+        //减载(Shedding)策略
         for (LoadSheddingStrategy strategy : loadSheddingPipeline) {
+            //根据减载策略，选出集群内，每个 broker 上负载大的 namespaceBundle 集，以便接下来进行卸载
+            //在这个方法findBundlesForUnloading里面，实际上就使用到了recentlyUnloadedBundles，会filter掉recentlyUnloadedBundles中的bundle(因为这些bundle才被卸载过不久)
             final Multimap<String, String> bundlesToUnload = strategy.findBundlesForUnloading(loadData, conf);
 
             bundlesToUnload.asMap().forEach((broker, bundles) -> {
                 bundles.forEach(bundle -> {
                     final String namespaceName = LoadManagerShared.getNamespaceNameFromBundleName(bundle);
                     final String bundleRange = LoadManagerShared.getBundleRangeFromBundleName(bundle);
+                    //这个方法所承担的功能其实就是执行 namespace 反亲缘性检查，当然，还有就是 broker 主从分组，
+                    // 自动故障转移策略执行，持久化和非持久化 topic 支持的 broker 主机隔离，
+                    // 最终选出符合要求的候选 broke 集合（brokerCandidateCache）。
+                    //总的来说该方法就是用来筛选满足条件的候选broker列表的brokerCandidateCache
                     if (!shouldAntiAffinityNamespaceUnload(namespaceName, bundleRange, broker)) {
                         return;
                     }
 
                     log.info("[Overload shedder] Unloading bundle: {} from broker {}", bundle, broker);
                     try {
+                        //发送卸载命令，去卸载
+                        //发命令给 admin，请求把 NamespaceName 的 bundleRange 分区卸载
                         pulsar.getAdminClient().namespaces().unloadNamespaceBundle(namespaceName, bundleRange);
+                        //记录卸载成功的 NamespaceBundle
+                        //放入最近卸载成功的bundle中，我理解应该会有一个模块专门来负责把这些卸载下来的放入到负载低的上面去
                         loadData.getRecentlyUnloadedBundles().put(bundle, System.currentTimeMillis());
                     } catch (PulsarServerException | PulsarAdminException e) {
                         log.warn("Error when trying to perform load shedding on {} for broker {}", bundle, broker, e);
@@ -696,6 +718,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                 });
             });
 
+            //更新metric
             updateBundleUnloadingMetrics(bundlesToUnload);
         }
     }
@@ -721,18 +744,26 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         this.bundleUnloadMetrics.set(metrics);
     }
 
+    //这个方法所承担的功能其实就是执行 namespace 反亲缘性检查，当然，还有就是 broker 主从分组，，
+    // 自动故障转移策略执行，持久化和非持久化 topic 支持的 broker 主机隔离，最终选出符合要求的候选 broke 集合（brokerCandidateCache）。
+    //应该反亲和命名空间卸载
     public boolean shouldAntiAffinityNamespaceUnload(String namespace, String bundle, String currentBroker) {
         try {
+            //读取 namespace 的策略数据，如果没有策略信息或策略中没有设置反亲缘性组检查，就直接返回true
             Optional<LocalPolicies> nsPolicies = pulsar.getPulsarResources().getLocalPolicies()
                     .getLocalPolicies(NamespaceName.get(namespace));
             if (!nsPolicies.isPresent() || StringUtils.isBlank(nsPolicies.get().namespaceAntiAffinityGroup)) {
                 return true;
             }
 
+            //最关键的来了，broker 候选缓存
             synchronized (brokerCandidateCache) {
+                //清空 broker 候选缓存
                 brokerCandidateCache.clear();
+                //获取资源单元（实际上是namespaceBundle）
                 ServiceUnitId serviceUnit = pulsar.getNamespaceService().getNamespaceBundleFactory()
                         .getBundle(namespace, bundle);
+                //应用（执行）此 namespace 策略
                 LoadManagerShared.applyNamespacePolicies(serviceUnit, policies, brokerCandidateCache,
                         getAvailableBrokers(), brokerTopicLoadingPredicate);
                 return LoadManagerShared.shouldAntiAffinityNamespaceUnload(namespace, bundle, currentBroker, pulsar,
@@ -882,6 +913,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                             brokerTopicLoadingPredicate);
                 }
 
+                //通过放置策略来选择要放置的broker
                 // Choose a broker among the potentially smaller filtered list, when possible
                 Optional<String> broker = placementStrategy.selectBroker(brokerCandidateCache, data, loadData, conf);
                 if (log.isDebugEnabled()) {
@@ -1051,11 +1083,14 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         writeBrokerDataOnZooKeeper(false);
     }
 
+    //也就是任一 broker 都会周期性调用此方法把 broker 负载信息上报到 zookeeper 上
     @Override
     public void writeBrokerDataOnZooKeeper(boolean force) {
         lock.lock();
         try {
+            //此方法已在负载均衡器启动时，详细分析过，不再赘述
             updateLocalBrokerData();
+            //判断是否需要上报 zookeeper
             if (needBrokerDataUpdate() || force) {
                 localData.setLastUpdate(System.currentTimeMillis());
                 //写到zk上

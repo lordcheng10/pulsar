@@ -64,7 +64,7 @@ public class SimpleResourceAllocationPolicies {
             return false;
         }
     }
-
+    //获取 namespace 的隔离策略
     private Optional<NamespaceIsolationPolicy> getNamespaceIsolationPolicy(NamespaceName namespace) {
         try {
             Optional<NamespaceIsolationPolicies> policies =
@@ -99,6 +99,7 @@ public class SimpleResourceAllocationPolicies {
         return false;
     }
 
+    //这里就是故障转移是否能使用从 broker 上去
     public boolean shouldFailoverToSecondaries(NamespaceName namespace, int totalPrimaryCandidates) {
         Optional<NamespaceIsolationPolicy> nsPolicy = getNamespaceIsolationPolicy(namespace);
         return nsPolicy.isPresent() && nsPolicy.get().shouldFailover(totalPrimaryCandidates);

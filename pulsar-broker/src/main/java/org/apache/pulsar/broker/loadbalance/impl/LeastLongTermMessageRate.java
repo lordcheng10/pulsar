@@ -33,6 +33,10 @@ import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
+/**
+ * bundle放置策略
+ * */
 /**
  * Placement strategy which selects a broker based on which one has the least long term message rate.
  */

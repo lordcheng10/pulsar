@@ -38,32 +38,45 @@ import org.slf4j.LoggerFactory;
 public class ThresholdShedder implements LoadSheddingStrategy {
     private static final Logger log = LoggerFactory.getLogger(ThresholdShedder.class);
 
+    //Multimap就类似<key,List<value>>
+    //selectedBundlesCache存放了要卸载的bundle缓存
     private final Multimap<String, String> selectedBundlesCache = ArrayListMultimap.create();
-
+    //额外加一个卸载比例，防止卸载的得太少
     private static final double ADDITIONAL_THRESHOLD_PERCENT_MARGIN = 0.05;
 
     private static final double MB = 1024 * 1024;
 
+    //broker平均资源使用率,key是brokerIp:Port,这个map记录了每一个broker对应的资源使用率，该资源使用率是通过权重来计算出来的，并不是平均值，这里名字有歧义
+    //变量名也不对，有歧义
+    //这个变量的目的是为了记录历史负载，方便在计算的时候算上
     private final Map<String, Double> brokerAvgResourceUsage = new HashMap<>();
 
     @Override
     public Multimap<String, String> findBundlesForUnloading(final LoadData loadData, final ServiceConfiguration conf) {
+        //清理缓存
         selectedBundlesCache.clear();
+        //把配置的过载百分比转换成小数
         final double threshold = conf.getLoadBalancerBrokerThresholdShedderPercentage() / 100.0;
+        //最近卸载过的bundle
         final Map<String, Long> recentlyUnloadedBundles = loadData.getRecentlyUnloadedBundles();
+        //最少卸载的流量
         final double minThroughputThreshold = conf.getLoadBalancerBundleUnloadMinThroughputThreshold() * MB;
 
+        //计算出所有broker系统资源的平均使用率
         final double avgUsage = getBrokerAvgUsage(loadData, conf.getLoadBalancerHistoryResourcePercentage(), conf);
 
+        //如果平均使用率是0，那么就直接返回空cache
         if (avgUsage == 0) {
             log.warn("average max resource usage is 0");
             return selectedBundlesCache;
         }
 
+        //遍历每个broker的系统负载
         loadData.getBrokerData().forEach((broker, brokerData) -> {
             final LocalBrokerData localData = brokerData.getLocalData();
+            //获取当前负载
             final double currentUsage = brokerAvgResourceUsage.getOrDefault(broker, 0.0);
-
+            //判断是否小于阈值
             if (currentUsage < avgUsage + threshold) {
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] broker is not overloaded, ignoring at this point", broker);
@@ -91,10 +104,12 @@ public class ThresholdShedder implements LoadSheddingStrategy {
                     broker, currentUsage, avgUsage, threshold, minimumThroughputToOffload / MB,
                     (brokerCurrentThroughput - minimumThroughputToOffload) / MB);
 
+            //流量标记为卸载
             MutableDouble trafficMarkedToOffload = new MutableDouble(0);
+            //至少一个捆绑已选择
             MutableBoolean atLeastOneBundleSelected = new MutableBoolean(false);
 
-            if (localData.getBundles().size() > 1) {
+            if (localData.getBundles().size() > 1) {//看该broker上的bundle数是否超过1,只有超过1才有卸载的必要
                 loadData.getBundleData().entrySet().stream().map((e) -> {
                     String bundle = e.getKey();
                     BundleData bundleData = e.getValue();
@@ -104,14 +119,21 @@ public class ThresholdShedder implements LoadSheddingStrategy {
                 }).filter(e ->
                         !recentlyUnloadedBundles.containsKey(e.getLeft())
                 ).filter(e ->
+                        //这个判断是多余的吧
                         localData.getBundles().contains(e.getLeft())
                 ).sorted((e1, e2) ->
+                        //推理后面逻辑，这里应该是从小到大排序，不然后面放入就可能放入不止一个bundle了
+                        //但实际确实从大到小排序
                         Double.compare(e2.getRight(), e1.getRight())
                 ).forEach(e -> {
+                    //当前卸载流量没有超过计算要卸载的值或者至少卸载一个bundle
                     if (trafficMarkedToOffload.doubleValue() < minimumThroughputToOffload
                             || atLeastOneBundleSelected.isFalse()) {
+                        //放入cache中
                         selectedBundlesCache.put(broker, e.getLeft());
+                        //卸载流量递增
                         trafficMarkedToOffload.add(e.getRight());
+                        //设置标记
                         atLeastOneBundleSelected.setTrue();
                     }
                 });
@@ -128,6 +150,7 @@ public class ThresholdShedder implements LoadSheddingStrategy {
         return selectedBundlesCache;
     }
 
+    //计算出所有broker系统资源的平均使用率和整体的平均负载
     private double getBrokerAvgUsage(final LoadData loadData, final double historyPercentage,
                                      final ServiceConfiguration conf) {
         double totalUsage = 0.0;
@@ -136,14 +159,18 @@ public class ThresholdShedder implements LoadSheddingStrategy {
         for (Map.Entry<String, BrokerData> entry : loadData.getBrokerData().entrySet()) {
             LocalBrokerData localBrokerData = entry.getValue().getLocalData();
             String broker = entry.getKey();
+            //计算该broker的负载，然后放入brokerAvgResourceUsage中
             updateAvgResourceUsage(broker, localBrokerData, historyPercentage, conf);
+            //从brokerAvgResourceUsage中获取负载，然后进行累计总负载
             totalUsage += brokerAvgResourceUsage.getOrDefault(broker, 0.0);
             totalBrokers++;
         }
 
+        //最后计算出平均值
         return totalBrokers > 0 ? totalUsage / totalBrokers : 0;
     }
 
+    //TODO-chenlin:方法名字就不对，有歧义
     private void updateAvgResourceUsage(String broker, LocalBrokerData localBrokerData, final double historyPercentage,
                                         final ServiceConfiguration conf) {
         double historyUsage =

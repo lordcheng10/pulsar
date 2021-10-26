@@ -564,6 +564,9 @@ public abstract class PulsarWebResource {
     }
 
     /**
+     * 检查代理是否是命名空间的所有者。 否则，它将引发异常以将客户端重定向到适当的代理。 如果还没有代理拥有命名空间，则此函数将默认尝试获取所有权。
+     * */
+    /**
      * Checks whether the broker is the owner of the namespace. Otherwise it will raise an exception to redirect the
      * client to the appropriate broker. If no broker owns the namespace yet, this function will try to acquire the
      * ownership by default.
@@ -582,7 +585,7 @@ public abstract class PulsarWebResource {
             }
         }
     }
-
+    //异步验证主题所有权
     protected CompletableFuture<Void> validateTopicOwnershipAsync(TopicName topicName, boolean authoritative) {
         NamespaceService nsService = pulsar().getNamespaceService();
 
@@ -592,9 +595,10 @@ public abstract class PulsarWebResource {
                 .readOnly(false)
                 .loadTopicsInBundle(false)
                 .build();
-
+        // 通过 namespaceService 请求把 topic 所在的 namespace 分配给当前 broker
         return nsService.getWebServiceUrlAsync(topicName, options)
                 .thenApply(webUrl -> {
+                    // 确保获取到 webUrl，否则抛异常
                     // Ensure we get a url
                     if (webUrl == null || !webUrl.isPresent()) {
                         log.info("Unable to get web service url");
@@ -602,7 +606,7 @@ public abstract class PulsarWebResource {
                                 "Failed to find ownership for topic:" + topicName);
                     }
                     return webUrl.get();
-                }).thenCompose(webUrl -> nsService.isServiceUnitOwnedAsync(topicName)
+                }).thenCompose(webUrl -> nsService.isServiceUnitOwnedAsync(topicName)  //nameService 判断 topicName 是不是属于当前 broker，如果不属于，则重定向到相应的 broker 上
                         .thenApply(isTopicOwned -> Pair.of(webUrl, isTopicOwned))
                 ).thenAccept(pair -> {
                     URL webUrl = pair.getLeft();

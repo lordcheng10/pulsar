@@ -422,6 +422,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             }
             isTopicOperationAllowed(topicName, TopicOperation.LOOKUP).thenApply(isAuthorized -> {
                 if (isAuthorized) {
+                    //异步寻找该topic对应的broker
                     lookupTopicAsync(getBrokerService().pulsar(), topicName, authoritative,
                             getPrincipal(), getAuthenticationData(),
                             requestId, advertisedListenerName).handle((lookupResponse, ex) -> {

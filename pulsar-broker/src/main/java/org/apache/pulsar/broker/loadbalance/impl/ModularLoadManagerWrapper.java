@@ -110,6 +110,8 @@ public class ModularLoadManagerWrapper implements LoadManager {
         loadManager.stop();
     }
 
+    // 根据上面的得知，系统配置的负载均衡器实现实际上是 org.apache.pulsar.broker.loadbalance.impl.ModularLoadManagerImpl,
+    // 经过 ModularLoadManagerWrapper 包装后，实际上就是调用 ModularLoadManagerImpl 类的 writeBrokerDataOnZooKeeper 方法
     @Override
     public void writeLoadReportOnZookeeper() {
         loadManager.writeBrokerDataOnZooKeeper();

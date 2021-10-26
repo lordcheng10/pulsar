@@ -199,7 +199,7 @@ public class NamespaceService implements AutoCloseable {
 
         return future;
     }
-
+    //其核心为 findBundle 方法，前面的章节已经分析过了，这里不再赘述，简单说就是 topic 会落在 namespace 哪个 namespaceBundle
     public CompletableFuture<NamespaceBundle> getBundleAsync(TopicName topic) {
         return bundleFactory.getBundlesAsync(topic.getNamespaceObject())
                 .thenApply(bundles -> bundles.findBundle(topic));
@@ -226,6 +226,8 @@ public class NamespaceService implements AutoCloseable {
         return bundleFactory.getFullBundleAsync(fqnn);
     }
 
+    // 服务单位ID（上段代码请求的是 TopicName 实例）请求 broker 地址，这里注意readOnly 参数，
+    // 这个参数不是 true，而是false，这很重要，从这个方法可以看出点题了文章开头的资源
     /**
      * Return the URL of the broker who's owning a particular service unit in asynchronous way.
      *
@@ -237,6 +239,7 @@ public class NamespaceService implements AutoCloseable {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Getting web service URL of topic: {} - options: {}", name, options);
             }
+            //走这条分支，通过 topicName 定位 namespaceBundle
             return getBundleAsync(name)
                     .thenCompose(namespaceBundle -> internalGetWebServiceUrl(namespaceBundle, options));
         }
@@ -264,7 +267,7 @@ public class NamespaceService implements AutoCloseable {
     }
 
     private CompletableFuture<Optional<URL>> internalGetWebServiceUrl(NamespaceBundle bundle, LookupOptions options) {
-
+        //到达这里，终于知道这个方法的用意了，每次，就是通过 namespaceBundle 找 broker 位置，类似于服务发现的意思
         return findBrokerServiceUrl(bundle, options).thenApply(lookupResult -> {
             if (lookupResult.isPresent()) {
                 try {
@@ -361,6 +364,7 @@ public class NamespaceService implements AutoCloseable {
     private final ConcurrentOpenHashMap<NamespaceBundle, CompletableFuture<Optional<LookupResult>>>
             findingBundlesNotAuthoritative = new ConcurrentOpenHashMap<>();
 
+    //激动人心的时刻，通过 namespaceBundle 寻找合适的 broker
     /**
      * Main internal method to lookup and setup ownership of service unit to a broker.
      *
@@ -376,33 +380,39 @@ public class NamespaceService implements AutoCloseable {
         }
 
         ConcurrentOpenHashMap<NamespaceBundle, CompletableFuture<Optional<LookupResult>>> targetMap;
+        //是否需要认证，认证和非认证的分开
         if (options.isAuthoritative()) {
             targetMap = findingBundlesAuthoritative;
         } else {
             targetMap = findingBundlesNotAuthoritative;
         }
-
+        // 首先检查当前 broker 或其他 broker 已经所属了 namespaceBundle
         return targetMap.computeIfAbsent(bundle, (k) -> {
             CompletableFuture<Optional<LookupResult>> future = new CompletableFuture<>();
 
             // First check if we or someone else already owns the bundle
             ownershipCache.getOwnerAsync(bundle).thenAccept(nsData -> {
+                //表示没有查到 namespaceBundle 分配 broker 信息
                 if (!nsData.isPresent()) {
                     // No one owns this bundle
-
+                    // 表示 namespaceBundle 无 broker 拥有（就是当前没分配给任一 broker）
                     if (options.isReadOnly()) {
+                        //如果 readOnly 为 true，意味着不尝试把 namespaceBundle 分配 broker 上
                         // Do not attempt to acquire ownership
                         future.complete(Optional.empty());
                     } else {
+                        // 现在，无 broker 拥有 namespaceBundle，这时候，尝试动态分配给候选 broker（这时候，上一章节更新的候选 broker 集终于要派上用场了）
                         // Now, no one owns the namespace yet. Hence, we will try to dynamically assign it
                         pulsar.getExecutor().execute(() -> {
                             searchForCandidateBroker(bundle, future, options);
                         });
                     }
                 } else if (nsData.get().isDisabled()) {
+                    // 表示 namespaceBundle 正在被卸载中，抛异常
                     future.completeExceptionally(
                             new IllegalStateException(String.format("Namespace bundle %s is being unloaded", bundle)));
                 } else {
+                    //这表明 namespaceBundle 已经被分配了，broker 信息为 nsData
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Namespace bundle {} already owned by {} ", bundle, nsData);
                     }
@@ -430,7 +440,7 @@ public class NamespaceService implements AutoCloseable {
                 future.completeExceptionally(exception);
                 return null;
             });
-
+            //如果执行完，则移除相应的
             future.whenComplete((r, t) -> pulsar.getExecutor().execute(
                 () -> targetMap.remove(bundle)
             ));
@@ -439,6 +449,7 @@ public class NamespaceService implements AutoCloseable {
         });
     }
 
+    //给被卸载的 namespaceBundle 选择候选的 broker（前面章节知道：候选 broker 集是经过负载管理器筛选过的）
     private void searchForCandidateBroker(NamespaceBundle bundle,
                                           CompletableFuture<Optional<LookupResult>> lookupFuture,
                                           LookupOptions options) {
@@ -462,6 +473,7 @@ public class NamespaceService implements AutoCloseable {
         boolean authoritativeRedirect = les.isLeader();
 
         try {
+            // 先检查 namespaceBundle 所属的 namespace 是不是 Heartbeat 或 SLAMonitor namespace
             // check if this is Heartbeat or SLAMonitor namespace
             candidateBroker = checkHeartbeatNamespace(bundle);
             if (candidateBroker == null) {
@@ -469,12 +481,13 @@ public class NamespaceService implements AutoCloseable {
             }
             if (candidateBroker == null) {
                 String broker = getSLAMonitorBrokerName(bundle);
+                // 如果 broker 不为空，检查 broker 是不是存活的
                 // checking if the broker is up and running
                 if (broker != null && isBrokerActive(broker)) {
                     candidateBroker = broker;
                 }
             }
-
+            //还没找到候选 broker
             if (candidateBroker == null) {
                 Optional<LeaderBroker> currentLeader = pulsar.getLeaderElectionService().getCurrentLeader();
 
@@ -482,12 +495,14 @@ public class NamespaceService implements AutoCloseable {
                     // leader broker already assigned the current broker as owner
                     candidateBroker = pulsar.getSafeWebServiceAddress();
                 } else if (!this.loadManager.get().isCentralized()
-                        || pulsar.getLeaderElectionService().isLeader()
+                        || pulsar.getLeaderElectionService().isLeader()//当前 broker 是否领导者
+                        // 如果领导者不是存活的，则回退到用当前 broker 负载均衡器拿到最小负载 broker（简单的说，如果领导者没选举出来或者宕机了，当前的 broker 也执行分配 namespaceBundle 任务）
                         || !currentLeader.isPresent()
 
                         // If leader is not active, fallback to pick the least loaded from current broker loadmanager
                         || !isBrokerActive(currentLeader.get().getServiceUrl())
                 ) {
+                    // 通过 namespaceBundle 从负载均衡器拿到最小负载可用 broker
                     Optional<String> availableBroker = getLeastLoadedFromLoadManager(bundle);
                     if (!availableBroker.isPresent()) {
                         lookupFuture.complete(Optional.empty());

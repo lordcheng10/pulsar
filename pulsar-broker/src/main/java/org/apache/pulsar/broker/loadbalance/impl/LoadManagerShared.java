@@ -84,24 +84,29 @@ public class LoadManagerShared {
     private LoadManagerShared() {
     }
 
+    //应用此 namespace 策略
     // Determines the brokers available for the given service unit according to the given policies.
     // The brokers are put into brokerCandidateCache.
     public static void applyNamespacePolicies(final ServiceUnitId serviceUnit,
             final SimpleResourceAllocationPolicies policies, final Set<String> brokerCandidateCache,
             final Set<String> availableBrokers, final BrokerTopicLoadingPredicate brokerTopicLoadingPredicate) {
+        //负载主缓存
         Set<String> primariesCache = localPrimariesCache.get();
         primariesCache.clear();
-
+        //负载从缓存
         Set<String> secondaryCache = localSecondaryCache.get();
         secondaryCache.clear();
 
         NamespaceName namespace = serviceUnit.getNamespaceObject();
+        //是否有隔离策略
         boolean isIsolationPoliciesPresent = policies.areIsolationPoliciesPresent(namespace);
+        //如果是 namespaceBundle，是否支持非持久化 topic
         boolean isNonPersistentTopic = (serviceUnit instanceof NamespaceBundle)
                 ? ((NamespaceBundle) serviceUnit).hasNonPersistentTopic() : false;
         if (isIsolationPoliciesPresent) {
             LOG.debug("Isolation Policies Present for namespace - [{}]", namespace.toString());
         }
+        //这里迭代集群中存活的 broker
         for (final String broker : availableBrokers) {
             final String brokerUrlString = String.format("http://%s", broker);
             URL brokerUrl;
@@ -111,8 +116,10 @@ public class LoadManagerShared {
                 LOG.error("Unable to parse brokerUrl from ResourceUnitId", e);
                 continue;
             }
+            // 如果有隔离策略
             // todo: in future check if the resource unit has resources to take the namespace
             if (isIsolationPoliciesPresent) {
+                //这里是通过正则表达式验证是否主 broker，如果是，则加入主 broker 缓存区
                 // note: serviceUnitID is namespace name and ResourceID is brokerName
                 if (policies.isPrimaryBroker(namespace, brokerUrl.getHost())) {
                     primariesCache.add(broker);
@@ -120,6 +127,7 @@ public class LoadManagerShared {
                         LOG.debug("Added Primary Broker - [{}] as possible Candidates for"
                                 + " namespace - [{}] with policies", brokerUrl.getHost(), namespace.toString());
                     }
+                    //同上，只不过这是从 broker
                 } else if (policies.isSecondaryBroker(namespace, brokerUrl.getHost())) {
                     secondaryCache.add(broker);
                     if (LOG.isDebugEnabled()) {
@@ -129,6 +137,7 @@ public class LoadManagerShared {
                                 brokerUrl.getHost(), namespace.toString());
                     }
                 } else {
+                    //既不是主 broker ，也不是从 broker，则跳过
                     if (LOG.isDebugEnabled()) {
                         LOG.debug("Skipping Broker - [{}] not primary broker and not shared" + " for namespace - [{}] ",
                                 brokerUrl.getHost(), namespace.toString());
@@ -136,6 +145,8 @@ public class LoadManagerShared {
 
                 }
             } else {
+                //无隔离策略
+                // 非持久性 topic 仅仅只能分配到启用非持久性的 topic 的 broker 上
                 // non-persistent topic can be assigned to only those brokers that enabled for non-persistent topic
                 if (isNonPersistentTopic
                         && !brokerTopicLoadingPredicate.isEnableNonPersistentTopics(brokerUrlString)) {
@@ -143,6 +154,7 @@ public class LoadManagerShared {
                         LOG.debug("Filter broker- [{}] because it doesn't support non-persistent namespace - [{}]",
                                 brokerUrl.getHost(), namespace.toString());
                     }
+                    // 持久性 topic 仅仅只能分配到启用持久化的 topic 的 broker 上
                 } else if (!isNonPersistentTopic
                         && !brokerTopicLoadingPredicate.isEnablePersistentTopics(brokerUrlString)) {
                     // persistent topic can be assigned to only brokers that enabled for persistent-topic
@@ -150,6 +162,7 @@ public class LoadManagerShared {
                         LOG.debug("Filter broker- [{}] because broker only supports non-persistent namespace - [{}]",
                                 brokerUrl.getHost(), namespace.toString());
                     }
+                    //通过策略中正则表达式判断是否共享 broker（即非主 broker）
                 } else if (policies.isSharedBroker(brokerUrl.getHost())) {
                     secondaryCache.add(broker);
                     if (LOG.isDebugEnabled()) {
@@ -159,8 +172,11 @@ public class LoadManagerShared {
                 }
             }
         }
+        //如果有隔离策略，则只把主 broker 放入 brokerCandidateCache
         if (isIsolationPoliciesPresent) {
             brokerCandidateCache.addAll(primariesCache);
+            //到了这里，终于看到故障转移相关的策略配置了，如果对于当前 namespace 没有足够的主 broker 分配
+            // ，根据故障转移策略是否增加一些从 broker 进去（上文提到的简单资源分配策这里终于派上用场了）
             if (policies.shouldFailoverToSecondaries(namespace, primariesCache.size())) {
                 LOG.debug(
                         "Not enough of primaries [{}] available for namespace - [{}], "
@@ -169,6 +185,7 @@ public class LoadManagerShared {
                 brokerCandidateCache.addAll(secondaryCache);
             }
         } else {
+            //如果当前 namespace 没有设置隔离策略，则把从 broker 全部加入到 broker 候选名单
             LOG.debug(
                     "Policies not present for namespace - [{}] so only "
                             + "considering shared [{}] brokers for possible owner",
