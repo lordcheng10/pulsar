@@ -65,6 +65,7 @@ public class OwnershipCache {
     private final String ownerBrokerUrlTls;
 
     /**
+     * 可以与当前所有者关联的 NamespaceEphemeralData 对象。
      * The NamespaceEphemeralData objects that can be associated with the current owner.
      */
     private NamespaceEphemeralData selfOwnerInfo;
@@ -99,6 +100,7 @@ public class OwnershipCache {
 
         @Override
         public CompletableFuture<OwnedBundle> asyncLoad(NamespaceBundle namespaceBundle, Executor executor) {
+            //这里所谓的获取锁，实际就是抢占zk上的目录，并写入当前broker信息
             return lockManager.acquireLock(ServiceUnitUtils.path(namespaceBundle), selfOwnerInfo)
                     .thenApply(rl -> {
                         locallyAcquiredLocks.put(namespaceBundle, rl);
@@ -179,6 +181,7 @@ public class OwnershipCache {
     }
 
     /**
+     * 获取 <code>ServiceUnit</code> 的当前所有者或将本地代理设置为所有者（如果不存在）的方法。
      * Method to get the current owner of the <code>ServiceUnit</code> or set the local broker as the owner if absent.
      *
      * @param bundle
@@ -192,13 +195,18 @@ public class OwnershipCache {
                     new RuntimeException("Namespace service does not ready for acquiring ownership"));
         }
 
+        //试图获取bundle的所有权
         LOG.info("Trying to acquire ownership of {}", bundle);
 
+        //ownedBundlesCache.get(bundle)这个方法里会写zk，把对应当前broker的信息写到对应bundle目录上，
+        //eg：get /bookie_test_cluster1/namespace/public/default/0x50000000_0x60000000
+        // {"nativeUrl":"pulsar://10.160.136.123:6650","httpUrl":"http://10.160.136.123:8080","disabled":false,"advertisedListeners":{}}
         // Doing a get() on the ownedBundlesCache will trigger an async metatada write to acquire the lock over the
         // service unit
         return ownedBundlesCache.get(bundle)
                 .thenApply(namespaceBundle -> {
             LOG.info("Successfully acquired ownership of {}", namespaceBundle);
+            //当获取到该bundle的所属权后，执行对应的listenner
             namespaceService.onNamespaceBundleOwned(bundle);
             return selfOwnerInfo;
         });

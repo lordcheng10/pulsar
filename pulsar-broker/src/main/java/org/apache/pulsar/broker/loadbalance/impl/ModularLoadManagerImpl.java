@@ -854,6 +854,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
             .quantile(1.0)
             .register();
 
+    //此方法名还是非常点题，给定资源单元（这里是namespaceBundle），选择（状态最好） broker 进行分配
     /**
      * As the leader broker, find a suitable broker for the assignment of the given bundle.
      *
@@ -867,45 +868,57 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         long startTime = System.nanoTime();
 
         try {
+            // 上文提到的 brokerCandidateCache 终于派上用场了，这里加锁
             synchronized (brokerCandidateCache) {
                 final String bundle = serviceUnit.toString();
+                //检查 bundle 是否已经预分配到 broker 上
                 if (preallocatedBundleToBroker.containsKey(bundle)) {
+                    // 如果已预分配，则返回 broker 地址
                     // If the given bundle is already in preallocated, return the selected broker.
                     return Optional.of(preallocatedBundleToBroker.get(bundle));
                 }
+                //从负载数据中获取 bundleData
                 final BundleData data = loadData.getBundleData().computeIfAbsent(bundle,
                         key -> getBundleDataOrDefault(bundle));
+                //清空broker候选缓存
                 brokerCandidateCache.clear();
+                //这里应用 namespace 策略，从活着的broker列表中选出满足策略的放入brokerCandidateCache中
                 LoadManagerShared.applyNamespacePolicies(serviceUnit, policies, brokerCandidateCache,
                         getAvailableBrokers(),
                         brokerTopicLoadingPredicate);
-
+                //从broker缓存中过滤掉topic数量超过阈值的broker,这个阈值是5000
                 // filter brokers which owns topic higher than threshold
                 LoadManagerShared.filterBrokersWithLargeTopicCount(brokerCandidateCache, loadData,
                         conf.getLoadBalancerBrokerMaxTopics());
 
+                // 根据反亲和性组来把 namespace 分布到主机和 broker 集群上
+                // 根据 anti-affinity-group 将命名空间分配给域和broker
                 // distribute namespaces to domain and brokers according to anti-affinity-group
                 LoadManagerShared.filterAntiAffinityGroupOwnedBrokers(pulsar, serviceUnit.toString(),
                         brokerCandidateCache,
                         brokerToNamespaceToBundleRange, brokerToFailureDomainMap);
+                // 将捆绑包平均分配给候选经纪人
                 // distribute bundles evenly to candidate-brokers
-
+                // 选出候选 broker 集中，包含 namespace 最少的 broker。
                 LoadManagerShared.removeMostServicingBrokersForNamespace(serviceUnit.toString(), brokerCandidateCache,
                         brokerToNamespaceToBundleRange);
                 log.info("{} brokers being considered for assignment of {}", brokerCandidateCache.size(), bundle);
 
+                // 用 broker 过滤器决定最后的 broker 候选集，官方只加了一个方法，就是 broker 版本过滤器（其作用就是 broker 版本，实现了滚动升级）
+                //这里涉及到了版本升级的策略
                 // Use the filter pipeline to finalize broker candidates.
                 try {
                     for (BrokerFilter filter : filterPipeline) {
                         filter.filter(brokerCandidateCache, data, loadData, conf);
                     }
                 } catch (BrokerFilterException x) {
+                    // 如果出现过滤异常，这里重新进行候选 broker ，意味着又回到了最初候选 broker 集
                     // restore the list of brokers to the full set
                     LoadManagerShared.applyNamespacePolicies(serviceUnit, policies, brokerCandidateCache,
                             getAvailableBrokers(),
                             brokerTopicLoadingPredicate);
                 }
-
+                //如果此时broker 候选集为空，又得重新进行候选 broker ，意味着回到了最初候选 broker 集
                 if (brokerCandidateCache.isEmpty()) {
                     // restore the list of brokers to the full set
                     LoadManagerShared.applyNamespacePolicies(serviceUnit, policies, brokerCandidateCache,
@@ -913,6 +926,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                             brokerTopicLoadingPredicate);
                 }
 
+                // 如果可能，再通过一个打分策略选择 broker
                 //通过放置策略来选择要放置的broker
                 // Choose a broker among the potentially smaller filtered list, when possible
                 Optional<String> broker = placementStrategy.selectBroker(brokerCandidateCache, data, loadData, conf);
@@ -921,13 +935,15 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                 }
 
                 if (!broker.isPresent()) {
+                    //此时通过打分选择 broker 如果为空，则直接返回
                     // No brokers available
                     return broker;
                 }
-
+                //从打分选出来的 broker 在进行有一次判断，是否超载
                 final double overloadThreshold = conf.getLoadBalancerBrokerOverloadedThresholdPercentage() / 100.0;
                 final double maxUsage = loadData.getBrokerData().get(broker.get()).getLocalData().getMaxResourceUsage();
                 if (maxUsage > overloadThreshold) {
+                    //所有已过滤的 broker 都已经过载，此时再进行一次选拔，从超载里面选出一个较好的 broker
                     // All brokers that were in the filtered list were overloaded, so check if there is a better broker
                     LoadManagerShared.applyNamespacePolicies(serviceUnit, policies, brokerCandidateCache,
                             getAvailableBrokers(),
@@ -935,12 +951,15 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                     broker = placementStrategy.selectBroker(brokerCandidateCache, data, loadData, conf);
                 }
 
+                //把 bundle 新增到 预分配中
+                // 将新包添加到预分配。
                 // Add new bundle to preallocated.
                 loadData.getBrokerData().get(broker.get()).getPreallocatedBundleData().put(bundle, data);
                 preallocatedBundleToBroker.put(bundle, broker.get());
 
                 final String namespaceName = LoadManagerShared.getNamespaceNameFromBundleName(bundle);
                 final String bundleRange = LoadManagerShared.getBundleRangeFromBundleName(bundle);
+                //更新映射关系，返回经过层层选拔的 broker
                 final ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>> namespaceToBundleRange =
                         brokerToNamespaceToBundleRange
                                 .computeIfAbsent(broker.get(), k -> new ConcurrentOpenHashMap<>());

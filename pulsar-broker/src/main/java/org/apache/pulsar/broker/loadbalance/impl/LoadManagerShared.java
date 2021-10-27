@@ -85,6 +85,8 @@ public class LoadManagerShared {
     }
 
     //应用此 namespace 策略
+    //根据给定的策略确定给定服务单元可用的代理。
+    //经纪人被放入 brokerCandidateCache。
     // Determines the brokers available for the given service unit according to the given policies.
     // The brokers are put into brokerCandidateCache.
     public static void applyNamespacePolicies(final ServiceUnitId serviceUnit,

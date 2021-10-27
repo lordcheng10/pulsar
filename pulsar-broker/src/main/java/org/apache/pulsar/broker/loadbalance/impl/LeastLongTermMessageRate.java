@@ -35,7 +35,7 @@ import org.slf4j.LoggerFactory;
 
 
 /**
- * bundle放置策略
+ * bundle放置策略，根据哪个代理具有最低的长期消息速率来选择代理。
  * */
 /**
  * Placement strategy which selects a broker based on which one has the least long term message rate.
@@ -43,31 +43,42 @@ import org.slf4j.LoggerFactory;
 public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
     private static Logger log = LoggerFactory.getLogger(LeastLongTermMessageRate.class);
 
+    // 维护此列表以减少对象创建。
     // Maintain this list to reduce object creation.
     private ArrayList<String> bestBrokers;
-
+    //最低长期消息率
+    //conf多余的
     public LeastLongTermMessageRate(final ServiceConfiguration conf) {
         bestBrokers = new ArrayList<>();
     }
 
+    // 使用其预先分配的捆绑数据和时间平均数据为经纪人形成分数。
+    // 这是通过将所有预先分配的长期消息速率相加并将它们添加到代理的整体长期消息速率中来完成的，它本身就是每个分配包的长期消息速率的总和。
+    // 任何处于（或高于）过载阈值的代理的得分为 POSITIVE_INFINITY。
     // Form a score for a broker using its preallocated bundle data and time average data.
     // This is done by summing all preallocated long-term message rates and adding them to the broker's overall
     // long-term message rate, which is itself the sum of the long-term message rate of every allocated bundle.
     // Any broker at (or above) the overload threshold will have a score of POSITIVE_INFINITY.
     private static double getScore(final BrokerData brokerData, final ServiceConfiguration conf) {
+        // 过载阈值
         final double overloadThreshold = conf.getLoadBalancerBrokerOverloadedThresholdPercentage() / 100.0;
+        // 最大资源使用率
         final double maxUsage = brokerData.getLocalData().getMaxResourceUsage();
+        // 超过阈值
         if (maxUsage > overloadThreshold) {
             log.warn("Broker {} is overloaded: max usage={}", brokerData.getLocalData().getWebServiceUrl(), maxUsage);
             return Double.POSITIVE_INFINITY;
         }
 
+        // 计算一个broker的预分配bundle消息速率总和
+        //这里的getPreallocatedBundleData是什么
         double totalMessageRate = 0;
         for (BundleData bundleData : brokerData.getPreallocatedBundleData().values()) {
             final TimeAverageMessageData longTermData = bundleData.getLongTermData();
             totalMessageRate += longTermData.getMsgRateIn() + longTermData.getMsgRateOut();
         }
 
+        //计算估计分数:
         // calculate estimated score
         final TimeAverageBrokerData timeAverageData = brokerData.getTimeAverageData();
         final double timeAverageLongTermMessageRate = timeAverageData.getLongTermMsgRateIn()
@@ -98,14 +109,16 @@ public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
     public Optional<String> selectBroker(final Set<String> candidates, final BundleData bundleToAssign,
                                          final LoadData loadData,
                                          final ServiceConfiguration conf) {
+        //给各个broker打分，选出打分最低的broker
         bestBrokers.clear();
         double minScore = Double.POSITIVE_INFINITY;
         // Maintain of list of all the best scoring brokers and then randomly
         // select one of them at the end.
         for (String broker : candidates) {
             final BrokerData brokerData = loadData.getBrokerData().get(broker);
+            //针对每一个候选broker打分
             final double score = getScore(brokerData, conf);
-            if (score == Double.POSITIVE_INFINITY) {
+            if (score == Double.POSITIVE_INFINITY) {//如果等于无穷大，那么就打印下日志
                 final LocalBrokerData localData = brokerData.getLocalData();
                 log.warn(
                         "Broker {} is overloaded: CPU: {}%, MEMORY: {}%, DIRECT MEMORY: {}%, BANDWIDTH IN: {}%, "
@@ -115,6 +128,7 @@ public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
                         localData.getBandwidthOut().percentUsage());
 
             }
+            //打分如果小于最小分数，那么就清空bestBrokers并将当前打分最低的broker重新添加到bestBrokers
             if (score < minScore) {
                 // Clear best brokers since this score beats the other brokers.
                 bestBrokers.clear();
@@ -125,17 +139,22 @@ public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
                 bestBrokers.add(broker);
             }
         }
+
+
         if (bestBrokers.isEmpty()) {
+            // 所有代理都过载了。
+            // 在这种情况下随机分配。
             // All brokers are overloaded.
             // Assign randomly in this case.
             bestBrokers.addAll(candidates);
         }
 
         if (bestBrokers.isEmpty()) {
+            //走到这里肯定经过了bestBrokers.addAll(candidates);，说明candidates就是空
             // If still, it means there are no available brokers at this point
             return Optional.empty();
         }
-
+        //从bestBrokers中随机选一个
         return Optional.of(bestBrokers.get(ThreadLocalRandom.current().nextInt(bestBrokers.size())));
     }
 }

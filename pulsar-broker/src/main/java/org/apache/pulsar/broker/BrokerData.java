@@ -39,6 +39,7 @@ import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 public class BrokerData {
     private LocalBrokerData localData;
     private TimeAverageBrokerData timeAverageData;
+    //预分配的是什么
     private Map<String, BundleData> preallocatedBundleData;
 
     /**

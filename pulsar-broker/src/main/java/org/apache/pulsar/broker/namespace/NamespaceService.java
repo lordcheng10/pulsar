@@ -494,9 +494,10 @@ public class NamespaceService implements AutoCloseable {
                 if (options.isAuthoritative()) {
                     // leader broker already assigned the current broker as owner
                     candidateBroker = pulsar.getSafeWebServiceAddress();
-                } else if (!this.loadManager.get().isCentralized()
+                } else if (!this.loadManager.get().isCentralized() //判断是否是集中式决策
                         || pulsar.getLeaderElectionService().isLeader()//当前 broker 是否领导者
-                        // 如果领导者不是存活的，则回退到用当前 broker 负载均衡器拿到最小负载 broker（简单的说，如果领导者没选举出来或者宕机了，当前的 broker 也执行分配 namespaceBundle 任务）
+                        // 如果领导者不是存活的，则回退到用当前 broker 负载均衡器拿到最小负载 broker（简单的说，如果领导者没选举出来或者宕机了，
+                        //当前的 broker 也执行分配 namespaceBundle 任务）
                         || !currentLeader.isPresent()
 
                         // If leader is not active, fallback to pick the least loaded from current broker loadmanager
@@ -505,12 +506,14 @@ public class NamespaceService implements AutoCloseable {
                     // 通过 namespaceBundle 从负载均衡器拿到最小负载可用 broker
                     Optional<String> availableBroker = getLeastLoadedFromLoadManager(bundle);
                     if (!availableBroker.isPresent()) {
+                        //可用为空，返回空
                         lookupFuture.complete(Optional.empty());
                         return;
                     }
                     candidateBroker = availableBroker.get();
                     authoritativeRedirect = true;
                 } else {
+                    //如果是集中式的分配，那么久转发给leader来进行决策
                     // forward to leader broker to make assignment
                     candidateBroker = currentLeader.get().getServiceUrl();
                 }
@@ -522,11 +525,14 @@ public class NamespaceService implements AutoCloseable {
         }
 
         try {
+            //预防性编码
             checkNotNull(candidateBroker);
-
+            //发现选出的候选 broker 与当前 broker 一致
             if (candidateBroker.equals(pulsar.getSafeWebServiceAddress())) {
+                // 负载管理器决定让当前 broker 试着把 bundle 收归自己拥有
                 // Load manager decided that the local broker should try to become the owner
                 ownershipCache.tryAcquiringOwnership(bundle).thenAccept(ownerInfo -> {
+                    // bundle 正在卸载，抛异常
                     if (ownerInfo.isDisabled()) {
                         if (LOG.isDebugEnabled()) {
                             LOG.debug("Namespace bundle {} is currently being unloaded", bundle);
@@ -534,6 +540,7 @@ public class NamespaceService implements AutoCloseable {
                         lookupFuture.completeExceptionally(new IllegalStateException(
                                 String.format("Namespace bundle %s is currently being unloaded", bundle)));
                     } else {
+                        // 已成功把 bundle 收归当前 broker 所有，那么现在开启一个任务进行预加载 topic 集（原先分配 namespaceBundle 上的 topic 集）
                         // Found owner for the namespace bundle
 
                         if (options.isLoadTopicsInBundle()) {
