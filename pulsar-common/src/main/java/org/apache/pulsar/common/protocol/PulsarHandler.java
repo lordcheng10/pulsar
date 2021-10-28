@@ -88,6 +88,7 @@ public abstract class PulsarHandler extends PulsarDecoder {
     final protected void handlePong(CommandPong pong) {
     }
 
+    //发送ping和pong的心跳
     private void handleKeepAliveTimeout() {
         if (!ctx.channel().isOpen()) {
             return;
@@ -108,6 +109,7 @@ public abstract class PulsarHandler extends PulsarDecoder {
                 log.debug("[{}] Sending ping message", ctx.channel());
             }
             waitingForPingResponse = true;
+            //发送ping
             ctx.writeAndFlush(Commands.newPing());
         } else {
             if (log.isDebugEnabled()) {

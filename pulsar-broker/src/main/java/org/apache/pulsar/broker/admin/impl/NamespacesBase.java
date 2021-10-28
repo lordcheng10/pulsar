@@ -1129,7 +1129,7 @@ public abstract class NamespacesBase extends AdminResource {
         }
         //验证当前节点是否有权限对 global zookeeper 中策略数据进行读写操作
         validatePoliciesReadOnlyAccess();
-
+        //获取支持的split算法
         List<String> supportedNamespaceBundleSplitAlgorithms =
                 pulsar().getConfig().getSupportedNamespaceBundleSplitAlgorithms();
         if (StringUtils.isNotBlank(splitAlgorithmName)
@@ -1149,7 +1149,7 @@ public abstract class NamespacesBase extends AdminResource {
             asyncResponse.resume(e);
             return;
         }
-
+        //这里在实际进行split,自动split采用的是默认的split算法，传过来的splitAlgorithmName未null
         pulsar().getNamespaceService().splitAndOwnBundle(nsBundle, unload,
                 getNamespaceBundleSplitAlgorithmByName(splitAlgorithmName))
                 .thenRun(() -> {

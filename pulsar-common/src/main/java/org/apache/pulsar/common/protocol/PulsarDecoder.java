@@ -110,6 +110,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Received cmd {}", ctx.channel().remoteAddress(), cmd.getType());
             }
+            //只要接收到消息，那么久代表存活
             messageReceived();
 
             System.out.println(System.currentTimeMillis() + " " + cmd.getType());

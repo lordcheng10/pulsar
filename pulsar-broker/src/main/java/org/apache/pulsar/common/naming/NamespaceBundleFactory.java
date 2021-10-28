@@ -224,6 +224,7 @@ public class NamespaceBundleFactory {
         return new NamespaceBundles(nsname, this, localPolicies);
     }
 
+    //简单的说，就是把指定的NamespaceBundle分成numbundles份
     /**
      * Fetches {@link NamespaceBundles} from cache for a given namespace. finds target bundle, split into numBundles and
      * returns new {@link NamespaceBundles} with newly split bundles into it.
@@ -253,9 +254,10 @@ public class NamespaceBundleFactory {
 
         final int numBundles = argNumBundles;
 
+        //bundlesCache.get(nsname): 获取此NamespaceName的所有NamespaceBundle集合
         return bundlesCache.get(nsname).thenApply(sourceBundle -> {
             final int lastIndex = sourceBundle.partitions.length - 1;
-
+            //分割后产生的分区数
             final long[] partitions = new long[sourceBundle.partitions.length + (numBundles - 1)];
             int pos = 0;
             int splitPartition = -1;
@@ -263,27 +265,35 @@ public class NamespaceBundleFactory {
             for (int i = 0; i < lastIndex; i++) {
                 if (sourceBundle.partitions[i] == range.lowerEndpoint()
                         && (range.upperEndpoint() == sourceBundle.partitions[i + 1])) {
+                    //把一个bundle拆分后，会影响上下两个bundle范围，比如：1~3,3~5,5~7 ，如果我们把3~5进行拆分成3~4,4~5,那么原本的partitions数组肯定就得变了，这里splitBoundary就是对应的4中间数
                     splitPartition = i;
                     long maxVal = sourceBundle.partitions[i + 1];
                     long minVal = sourceBundle.partitions[i];
+                    //计算出新分区的间隔大小
                     long segSize = splitBoundary == null ? (maxVal - minVal) / numBundles : splitBoundary - minVal;
                     partitions[pos++] = minVal;
                     long curPartition = minVal + segSize;
+                    //把targetBundle分割成numBundles数（这里是核心）
                     for (int j = 0; j < numBundles - 1; j++) {
                         partitions[pos++] = curPartition;
                         curPartition += segSize;
                     }
                 } else {
+                    //没匹配到的，按照原位置即可
                     partitions[pos++] = sourceBundle.partitions[i];
                 }
             }
+            //放入最后的那个元素，这个就是下限值了，所以直接放
             partitions[pos] = sourceBundle.partitions[lastIndex];
             if (splitPartition != -1) {
+                // 创建一个新NamespaceBundles（相比源NamespaceBundles，只是partitions变化），版本保持不变
                 // keep version of sourceBundle
                 NamespaceBundles splitNsBundles =
                         new NamespaceBundles(nsname, this, sourceBundle.getLocalPolicies(), partitions);
+                // 这是拆分时，多出来的分区
                 List<NamespaceBundle> splitBundles = splitNsBundles.getBundles().subList(splitPartition,
                         (splitPartition + numBundles));
+                //这里返回<该namespace下的所有budles，多出来的bundles>
                 return new ImmutablePair<>(splitNsBundles, splitBundles);
             }
 

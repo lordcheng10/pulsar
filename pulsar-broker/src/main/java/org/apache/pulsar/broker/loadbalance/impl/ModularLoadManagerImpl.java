@@ -615,6 +615,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                             final String bundle = preallocatedIterator.next().getKey();
 
                             if (bundleData.containsKey(bundle)) {
+                                //这里就移除了BrokerData中的预分配结果preallocatedIterator.remove()
                                 preallocatedIterator.remove();
                                 preallocatedBundleToBroker.remove(bundle);
                             }
@@ -782,19 +783,29 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         return true;
     }
 
+    //好了，重头戏来了，checkNamespaceBundleSplit 方法，这里就是检测 NamespaceBundle是否要拆分，下面看看怎么具体运行
     //作为领导者代理，尝试自动检测和拆分热命名空间包。
     /**
      * As the leader broker, attempt to automatically detect and split hot namespace bundles.
      */
     @Override
     public void checkNamespaceBundleSplit() {
-
+       /*首先作预执行检测，只要满足以下情况：
+         1. 没有启用自动拆分 bundle
+         2. pulsar 的领导者选举服务为null
+         3. 当前 broker 不是领导者,则不自动进行 NamespaceBundle 拆分（当然，这里要说的是，系统默认是自动拆分，且有领导者选举服务，只是 当 broker 不是领导者时，此方法调用无用，只有领导者才会执行以下代码）
+       */
         if (!conf.isLoadBalancerAutoBundleSplitEnabled() || pulsar.getLeaderElectionService() == null
                 || !pulsar.getLeaderElectionService().isLeader()) {
             return;
         }
+        //其实这个开关的意思就是，是否要卸载拆分后的bundle，然后借助lookup按照当前负载来重新加载bundle，从而实现负载均衡;
+        //如果关闭了开关，那么只是拆分，但不卸载，这样就完全依赖负载均衡来unload。
+        //负载均衡自动卸载分割后（新增的）bundle开关是否打开（下面详细讲）
         final boolean unloadSplitBundles = pulsar.getConfiguration().isLoadBalancerAutoUnloadSplitBundlesEnabled();
+        //bundle 分割策略
         synchronized (bundleSplitStrategy) {
+            //核心方法，寻找哪些 bundle 需要被拆分
             //基于特定阈值来决定哪些bundle需要被拆分，返回需要拆分的 bundle 集
             final Set<String> bundlesToBeSplit = bundleSplitStrategy.findBundlesToSplit(loadData, pulsar);
             NamespaceBundleFactory namespaceBundleFactory = pulsar.getNamespaceService().getNamespaceBundleFactory();
@@ -802,20 +813,29 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
                 try {
                     final String namespaceName = LoadManagerShared.getNamespaceNameFromBundleName(bundleName);
                     final String bundleRange = LoadManagerShared.getBundleRangeFromBundleName(bundleName);
+                    //判定是否能被拆分，如果不能则进行下一个，否则执行拆分
+                    //判断是否可以被拆分的依据就是： range.upperEndpoint() - range.lowerEndpoint() > 1
                     if (!namespaceBundleFactory
                             .canSplitBundle(namespaceBundleFactory.getBundle(namespaceName, bundleRange))) {
                         continue;
                     }
 
+                    // 移除确保不会再次选择相同的捆绑包,因为下面要split了
+                    //首先移除该broker本地缓存和全局缓存的bundle
                     // Make sure the same bundle is not selected again.
                     loadData.getBundleData().remove(bundleName);
                     localData.getLastStats().remove(bundleName);
+                    // 使 namespaceName 的 bundle 缓存失效（即清理缓存）
+                    //清楚该bundle对应的namespace缓存
                     // Clear namespace bundle-cache
                     this.pulsar.getNamespaceService().getNamespaceBundleFactory()
                             .invalidateBundleCache(NamespaceName.get(namespaceName));
+                    //从zk删除最近的目录
                     deleteBundleDataFromMetadataStore(bundleName);
 
+                    // 调用拆分bundle方法
                     //从这里可以看出，只是发一个namespaceBundle拆分请求给 broker，其请求URL为:http(s)://brokerip:port/{tenant}/{namespace}/{bundle}/split
+                    //注意这里发送的split请求中，指定的split算法名字是null
                     log.info("Load-manager splitting bundle {} and unloading {}", bundleName, unloadSplitBundles);
                     pulsar.getAdminClient().namespaces().splitNamespaceBundle(namespaceName, bundleRange,
                         unloadSplitBundles, null);
@@ -1170,6 +1190,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
 
     private void deleteBundleDataFromMetadataStore(String bundle) {
         try {
+            //删除对应的bundle数据目录：/loadbalance/bundle-data/0x....
             bundlesCache.delete(getBundleDataPath(bundle)).join();
         } catch (Exception e) {
             if (!(e.getCause() instanceof NotFoundException)) {

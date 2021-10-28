@@ -33,7 +33,8 @@ import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
+// 此方法位于 ModularLoadManagerStrategy 接口实现类 LeastLongTermMessageRate 中，
+// 从类名就可以看出长期消息速率最小（策略），简单的选出长期内消息速率最小的 broker，来看看吧
 /**
  * bundle放置策略，根据哪个代理具有最低的长期消息速率来选择代理。
  * */
@@ -52,6 +53,7 @@ public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
         bestBrokers = new ArrayList<>();
     }
 
+    //通过 broker 的负载数据以及系统配置来计分
     // 使用其预先分配的捆绑数据和时间平均数据为经纪人形成分数。
     // 这是通过将所有预先分配的长期消息速率相加并将它们添加到代理的整体长期消息速率中来完成的，它本身就是每个分配包的长期消息速率的总和。
     // 任何处于（或高于）过载阈值的代理的得分为 POSITIVE_INFINITY。
@@ -70,19 +72,21 @@ public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
             return Double.POSITIVE_INFINITY;
         }
 
-        // 计算一个broker的预分配bundle消息速率总和
+        // 计算一个broker的预分配bundle消息速率总和,这个只能在leader里面才有
         //这里的getPreallocatedBundleData是什么
+        //注意这里是算的预分配(还未分配上去的bundle消息速率)
         double totalMessageRate = 0;
         for (BundleData bundleData : brokerData.getPreallocatedBundleData().values()) {
             final TimeAverageMessageData longTermData = bundleData.getLongTermData();
             totalMessageRate += longTermData.getMsgRateIn() + longTermData.getMsgRateOut();
         }
 
-        //计算估计分数:
+        //这里算的是实际一段时间的消息速率
         // calculate estimated score
         final TimeAverageBrokerData timeAverageData = brokerData.getTimeAverageData();
         final double timeAverageLongTermMessageRate = timeAverageData.getLongTermMsgRateIn()
                 + timeAverageData.getLongTermMsgRateOut();
+        //这两部分相加才是预分配完成后，该broker的消息速率,最后以这来进行打分
         final double totalMessageRateEstimate = totalMessageRate + timeAverageLongTermMessageRate;
 
         if (log.isDebugEnabled()) {
@@ -150,6 +154,8 @@ public class LeastLongTermMessageRate implements ModularLoadManagerStrategy {
         }
 
         if (bestBrokers.isEmpty()) {
+            //当返回空时候，服务端会给客户端返回一个异常报错：newLookupErrorResponse(ServerError.ServiceNotReady,
+            //                                        "No broker was available to own " + topicName, requestId)
             //走到这里肯定经过了bestBrokers.addAll(candidates);，说明candidates就是空
             // If still, it means there are no available brokers at this point
             return Optional.empty();

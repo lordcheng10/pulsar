@@ -72,8 +72,7 @@ import org.apache.pulsar.common.policies.data.impl.DispatchRateImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-//拆分 namespaceBundle 过程
-//http接口
+//http接口REST接口处理
 @Path("/namespaces")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -522,6 +521,7 @@ public class Namespaces extends NamespacesBase {
         internalUnloadNamespaceBundle(asyncResponse, bundleRange, authoritative);
     }
 
+    //实际拆分请求
     @PUT
     @Path("/{tenant}/{namespace}/{bundle}/split")
     @ApiOperation(value = "Split a namespace bundle")

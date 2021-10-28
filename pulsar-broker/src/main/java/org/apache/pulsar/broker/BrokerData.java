@@ -39,7 +39,11 @@ import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 public class BrokerData {
     private LocalBrokerData localData;
     private TimeAverageBrokerData timeAverageData;
-    //预分配的是什么
+    //预分配就是当客户端发送lookup请求到leader时候，发现一个未分配的bundle，此时leader会为其找到一个broker，
+    //然后放到预分配的map中，此时因为还没有实际分配，所以叫做预分配，只有当客户端收到leader的分配结果，通过再次重定向发送lookup请求给目标broker后，
+    //目标broker通过请求中的author字段来判断是否是leader给我分配的，是的话，那么就直接负责该bundle并在zk上记录好，从而触发全局broker回调，同步集群整体元数据信息。
+    //但是这个结构有个问题，考虑到Leader将分配结果返回给客户端后，客户端这个时候挂了，那么再次重启后，当再次发送或重定向lookup请求到leader后，还是采用的老的分配策略（可能是几天前的，结合当时负载算出来的broker，此时还用它就不太合理了）
+    //当然这种case很少，即便遇到，产生不均衡后，最后也可以通过自动负载均衡给修复过来，当然最好是避免这种情况
     private Map<String, BundleData> preallocatedBundleData;
 
     /**

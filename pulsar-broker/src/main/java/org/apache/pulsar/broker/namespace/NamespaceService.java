@@ -780,7 +780,16 @@ public class NamespaceService implements AutoCloseable {
         return false;
     }
 
+    //分割属于自己的 namespaceBundle，包装方法
     /**
+     *
+     * 1. 将给定的包分成两个包
+     * 2. 将两个捆绑包的所有权分配给当前经纪人
+     * 3. 使用新创建的包更新策略到 LocalZK
+     * 4.禁用原始包并刷新缓存。
+     *
+     * 它将调用 splitAndOwnBundleOnceAndRetry 来做真正的重试工作，这将重试“retryTimes”。
+     *
      * 1. split the given bundle into two bundles 2. assign ownership of both the bundles to current broker 3. update
      * policies with newly created bundles into LocalZK 4. disable original bundle and refresh the cache.
      *
@@ -794,7 +803,9 @@ public class NamespaceService implements AutoCloseable {
                                                      NamespaceBundleSplitAlgorithm splitAlgorithm) {
 
         final CompletableFuture<Void> unloadFuture = new CompletableFuture<>();
+        //最大重试次数
         final AtomicInteger counter = new AtomicInteger(BUNDLE_SPLIT_RETRY_LIMIT);
+        //它将调用 splitAndOwnBundleOnceAndRetry 来做真正的重试工作，这将重试“retryTimes”。
         splitAndOwnBundleOnceAndRetry(bundle, unload, counter, unloadFuture, splitAlgorithm);
 
         return unloadFuture;
@@ -805,16 +816,20 @@ public class NamespaceService implements AutoCloseable {
                                        AtomicInteger counter,
                                        CompletableFuture<Void> completionFuture,
                                        NamespaceBundleSplitAlgorithm splitAlgorithm) {
+        //调用split分割算法进行分割，这里默认都是使用的按照数字范围均分成两个bundle的方式:RangeEquallyDivideBundleSplitAlgorithm
         splitAlgorithm.getSplitBoundary(this, bundle).whenComplete((splitBoundary, ex) -> {
+            //splitBoundary这个是中间位置数字
             CompletableFuture<List<NamespaceBundle>> updateFuture = new CompletableFuture<>();
             if (ex == null) {
                 try {
+                    //默认把当前的bundle分割成2个bundle（分割算法见下）
                     bundleFactory.splitBundles(bundle,
                         2 /* by default split into 2 */, splitBoundary)
-                            .thenAccept(splittedBundles -> {
+                            .thenAccept(splittedBundles -> {//splittedBundles命名不太好,比如应该取名为：splittedBundlesPair
+                                // 这是拆分后的NamespaceBundles，因为并发写入 zookeeper，更新可能失败
                                 // Split and updateNamespaceBundles. Update may fail because of concurrent write to
                                 // Zookeeper.
-                                if (splittedBundles == null) {
+                                if (splittedBundles == null) {//对拆分后的进行非空校验
                                     String msg = format("bundle %s not found under namespace", bundle.toString());
                                     LOG.warn(msg);
                                     updateFuture.completeExceptionally(new ServiceUnitNotReadyException(msg));
@@ -833,15 +848,20 @@ public class NamespaceService implements AutoCloseable {
                                             splittedBundles.getRight().get(1).getBundleRange());
                                 }
                                 try {
+                                    //分割出来的bundle
+                                    // 试着把拆分后新产生的分区分配给当前 broker
                                     // take ownership of newly split bundles
                                     for (NamespaceBundle sBundle : splittedBundles.getRight()) {
                                         checkNotNull(ownershipCache.tryAcquiringOwnership(sBundle));
                                     }
+                                    // 把拆分后的完整 NamespaceBundles 更新到 local zookeeper。
                                     updateNamespaceBundles(nsname, splittedBundles.getLeft())
                                             .thenRun(() -> {
+                                                // 如果更新成功，则把本地缓存更新
                                                 bundleFactory.invalidateBundleCache(bundle.getNamespaceObject());
                                                 updateFuture.complete(splittedBundles.getRight());
                                             }).exceptionally(ex1 -> {
+                                        //更新 NamespaceName 策略失败
                                         String msg = format("failed to update namespace policies [%s], "
                                                         + "NamespaceBundle: %s due to %s",
                                                 nsname.toString(), bundle.getBundleRange(), ex1.getMessage());
@@ -865,10 +885,12 @@ public class NamespaceService implements AutoCloseable {
                 updateFuture.completeExceptionally(ex);
             }
 
+            //更新动作完成，执行回调
             // If success updateNamespaceBundles, then do invalidateBundleCache and unload.
             // Else retry splitAndOwnBundleOnceAndRetry.
-            updateFuture.whenCompleteAsync((r, t)-> {
+            updateFuture.whenCompleteAsync((r, t)-> {//r是新增的bundle
                 if (t != null) {
+                    //因版本导致异常和重试次数未达到7次，则继续尝试分割bundle任务
                     // retry several times on BadVersion
                     if ((t.getCause() instanceof MetadataStoreException.BadVersionException)
                             && (counter.decrementAndGet() >= 0)) {
@@ -878,6 +900,7 @@ public class NamespaceService implements AutoCloseable {
                     } else if (t instanceof IllegalArgumentException) {
                         completionFuture.completeExceptionally(t);
                     } else {
+                        // 达到重试次数，可能是其他原因导致的拆分bundle失败
                         // Retry enough, or meet other exception
                         String msg2 = format(" %s not success update nsBundles, counter %d, reason %s",
                             bundle.toString(), counter.get(), t.getMessage());
@@ -887,15 +910,18 @@ public class NamespaceService implements AutoCloseable {
                     return;
                 }
 
+                // 拆分bundle任务成功，执行如下操作
                 // success updateNamespaceBundles
                 // disable old bundle in memory
                 getOwnershipCache().updateBundleState(bundle, false)
                         .thenRun(() -> {
+                            //更新 bundle 中的 topic
                             // update bundled_topic cache for load-report-generation
                             pulsar.getBrokerService().refreshTopicToStatsMaps(bundle);
+                            //设置负载数据强制更新标记
                             loadManager.get().setLoadReportForceUpdateFlag();
                             completionFuture.complete(null);
-                            if (unload) {
+                            if (unload) {  //根据开关来决定是否卸载拆分后生成的 namespaceBundles（这样，就可以把拆分后多出来的 namespaceBundle 附加到其他的 broker 上）
                                 // Unload new split bundles, in background. This will not
                                 // affect the split operation which is already safely completed
                                 r.forEach(this::unloadNamespaceBundle);
