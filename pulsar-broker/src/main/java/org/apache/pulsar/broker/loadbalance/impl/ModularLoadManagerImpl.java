@@ -327,6 +327,8 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
             brokersData.listLocks(LoadManager.LOADBALANCE_BROKERS_ROOT)
                     .thenAccept(brokers -> {
                         // 1. 回收已经停机或宕机的 broker 的任何预分配资源
+                        //Broker宕机重分配策略: 宕机只需要回收预分配的bundle就可以了，防止客户端访问到宕机的节点
+                        //似乎没有对启动做均衡处理，只有依赖客户端重连或者服务端达到均衡条件，才可能继续做负载均衡
                         reapDeadBrokerPreallocations(brokers);
                     });
 
