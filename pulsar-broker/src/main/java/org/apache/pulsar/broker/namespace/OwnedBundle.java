@@ -130,6 +130,7 @@ public class OwnedBundle {
         // close topics forcefully
         return pulsar.getNamespaceService().getOwnershipCache()
                 .updateBundleState(this.bundle, false)
+                //这里是unload最核心的逻辑
                 .thenCompose(v -> pulsar.getBrokerService().unloadServiceUnit(bundle, true, timeout, timeoutUnit))
                 .handle((numUnloadedTopics, ex) -> {
                     if (ex != null) {

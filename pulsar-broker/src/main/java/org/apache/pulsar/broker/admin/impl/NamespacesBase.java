@@ -1086,6 +1086,7 @@ public abstract class NamespacesBase extends AdminResource {
                 return;
             }
 
+            //这里才是真正的卸载
             pulsar().getNamespaceService().unloadNamespaceBundle(nsBundle)
                     .thenRun(() -> {
                         log.info("[{}] Successfully unloaded namespace bundle {}", clientAppId(), nsBundle.toString());

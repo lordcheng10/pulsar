@@ -507,6 +507,10 @@ public class Namespaces extends NamespacesBase {
         }
     }
 
+    //所谓的unload，并不是说把topic从bundle中移除(只有split才有可能把topic从bundle中移除)，也不是说一定要把bundle从broker移除，而是关闭该bundle的客户端。
+    //unload bundle更多的意思是把客户端和该bundle的关联'卸载'，然后等着重新加载。
+    //那么在客户端重新lookup的时候，那么broker会更加此时负载来决定，unload的bundle应该分配给哪些broker，那么此时就有可能导致真正的把bundle从broker上unload，但这个是在客户端重新请求的时候触发的
+    //bundle和topic基本上是绑定的，除非split才有可能使得bundle和topic解绑。而bundle和broker之间的绑定关系，不是很稳定，可能随着负载均衡或者unload就会导致bundle和broker之间的解绑
     @PUT
     @Path("/{tenant}/{namespace}/{bundle}/unload")
     @ApiOperation(value = "Unload a namespace bundle")

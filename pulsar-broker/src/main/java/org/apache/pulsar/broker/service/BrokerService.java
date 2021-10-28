@@ -1637,6 +1637,7 @@ public class BrokerService implements Closeable {
 
     public CompletableFuture<Integer> unloadServiceUnit(NamespaceBundle serviceUnit,
             boolean closeWithoutWaitingClientDisconnect, long timeout, TimeUnit unit) {
+        //unload核心逻辑
         CompletableFuture<Integer> future = unloadServiceUnit(serviceUnit, closeWithoutWaitingClientDisconnect);
         ScheduledFuture<?> taskTimeout = executor().schedule(() -> {
             if (!future.isDone()) {
@@ -1667,7 +1668,8 @@ public class BrokerService implements Closeable {
                 // Topic needs to be unloaded
                 log.info("[{}] Unloading topic", topicName);
                 closeFutures.add(topicFuture
-                        .thenCompose(t -> t.isPresent() ? t.get().close(closeWithoutWaitingClientDisconnect)
+                        //t.get().close这个实际就是去关闭producer和consumer客户端
+                        .thenCompose(t -> t.isPresent() ? t.get().close(closeWithoutWaitingClientDisconnect)//closeWithoutWaitingClientDisconnect这个参数决定了，在unload的时候，要不要等client close,unload的时候，这个参数传入是true
                                 : CompletableFuture.completedFuture(null)));
             }
         });
