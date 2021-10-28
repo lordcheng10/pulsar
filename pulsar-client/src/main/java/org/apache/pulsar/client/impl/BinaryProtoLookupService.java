@@ -134,6 +134,7 @@ public class BinaryProtoLookupService implements LookupService {
 
                         // (2) redirect to given address if response is: redirect
                         if (r.redirect) {
+                            //这里在实际重定向
                             findBroker(responseBrokerAddress, r.authoritative, topicName, redirectCount + 1)
                                 .thenAccept(addressFuture::complete).exceptionally((lookupException) -> {
                                 // lookup failed

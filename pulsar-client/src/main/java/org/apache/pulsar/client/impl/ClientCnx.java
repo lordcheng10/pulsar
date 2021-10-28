@@ -541,7 +541,7 @@ public class ClientCnx extends PulsarHandler {
         if (log.isDebugEnabled()) {
             log.debug("Received Broker lookup response: {}", lookupResult.getResponse());
         }
-
+        //获取请求ID
         long requestId = lookupResult.getRequestId();
         CompletableFuture<LookupDataResult> requestFuture = getAndRemovePendingLookupRequest(requestId);
 

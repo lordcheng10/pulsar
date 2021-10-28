@@ -317,6 +317,7 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         loadSheddingPipeline.add(createLoadSheddingStrategy());
     }
 
+    //看起来是所有事件的变更都到这里了，所以才会专门去判断zk的path是否是以LoadManager.LOADBALANCE_BROKERS_ROOT开头的
     //当/loadbalance/brokers目录下变更时，就会触发更新，也就是说上报的负载数据，是通过监听回调的方式来更新到leader的缓存中的
     @Override
     public void accept(Notification t) {
@@ -506,6 +507,9 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
         if (log.isDebugEnabled()) {
             log.debug("Updating broker and bundle data for loadreport");
         }
+        //下面这是三个方法调用是有先后顺序的，因为后面的要用到前面的结果
+
+
         //这个方法实际就是更新loadData中的brokerData
         updateAllBrokerData();
         //这个方法实际就是更新loadData中的bundleData

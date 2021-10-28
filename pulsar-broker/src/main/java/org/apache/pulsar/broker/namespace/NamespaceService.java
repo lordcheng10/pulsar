@@ -180,8 +180,8 @@ public class NamespaceService implements AutoCloseable {
     public CompletableFuture<Optional<LookupResult>> getBrokerServiceUrlAsync(TopicName topic, LookupOptions options) {
         long startTime = System.nanoTime();
 
-        CompletableFuture<Optional<LookupResult>> future = getBundleAsync(topic)
-                .thenCompose(bundle -> findBrokerServiceUrl(bundle, options));
+        CompletableFuture<Optional<LookupResult>> future = getBundleAsync(topic)//topic名根据hash算法找bundle
+                .thenCompose(bundle -> findBrokerServiceUrl(bundle, options));//根据bundle找对应的broker
 
         future.thenAccept(optResult -> {
             lookupLatency.observe(System.nanoTime() - startTime, TimeUnit.NANOSECONDS);
@@ -266,6 +266,7 @@ public class NamespaceService implements AutoCloseable {
                 .get(pulsar.getConfiguration().getZooKeeperOperationTimeoutSeconds(), SECONDS);
     }
 
+    //这个是内部的web service 地址
     private CompletableFuture<Optional<URL>> internalGetWebServiceUrl(NamespaceBundle bundle, LookupOptions options) {
         //到达这里，终于知道这个方法的用意了，每次，就是通过 namespaceBundle 找 broker 位置，类似于服务发现的意思
         return findBrokerServiceUrl(bundle, options).thenApply(lookupResult -> {
@@ -404,6 +405,7 @@ public class NamespaceService implements AutoCloseable {
                         // 现在，无 broker 拥有 namespaceBundle，这时候，尝试动态分配给候选 broker（这时候，上一章节更新的候选 broker 集终于要派上用场了）
                         // Now, no one owns the namespace yet. Hence, we will try to dynamically assign it
                         pulsar.getExecutor().execute(() -> {
+                            //未bundle寻找对应broker，主要逻辑在这个
                             searchForCandidateBroker(bundle, future, options);
                         });
                     }
@@ -440,7 +442,7 @@ public class NamespaceService implements AutoCloseable {
                 future.completeExceptionally(exception);
                 return null;
             });
-            //如果执行完，则移除相应的
+            //如果执行完，则移除相应的bundle，这里为什么要移除啊  部署刚加入吗 就要移除
             future.whenComplete((r, t) -> pulsar.getExecutor().execute(
                 () -> targetMap.remove(bundle)
             ));
@@ -564,6 +566,7 @@ public class NamespaceService implements AutoCloseable {
                                 return;
                             }
                         } else {
+                            //返回当前 broker 的地址信息
                             lookupFuture.complete(Optional.of(new LookupResult(ownerInfo)));
                             return;
                         }
@@ -576,15 +579,17 @@ public class NamespaceService implements AutoCloseable {
                 });
 
             } else {
+                // 负载管理器决定把 bundle 重定向其他的 broker 上
                 // Load managed decider some other broker should try to acquire ownership
 
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("Redirecting to broker {} to acquire ownership of bundle {}", candidateBroker, bundle);
                 }
 
+                // 获取 candidateBroker 详细地址信息，返回
                 // Now setting the redirect url
                 createLookupResult(candidateBroker, authoritativeRedirect, options.getAdvertisedListenerName())
-                        .thenAccept(lookupResult -> lookupFuture.complete(Optional.of(lookupResult)))
+                        .thenAccept(lookupResult -> lookupFuture.complete(Optional.of(lookupResult))) //lookupFuture中有一些动作信息，在这里会触发
                         .exceptionally(ex -> {
                             lookupFuture.completeExceptionally(ex);
                             return null;
@@ -596,7 +601,7 @@ public class NamespaceService implements AutoCloseable {
             lookupFuture.completeExceptionally(e);
         }
     }
-
+    //这个方法就是，查找给定broker的url，然后返回，其中对应的url是 Type.RedirectUrl重定向类型
     protected CompletableFuture<LookupResult> createLookupResult(String candidateBroker, boolean authoritativeRedirect,
                                                                  final String advertisedListenerName)
             throws Exception {
@@ -608,16 +613,21 @@ public class NamespaceService implements AutoCloseable {
             String path = String.format("%s/%s:%s", LoadManager.LOADBALANCE_BROKERS_ROOT, uri.getHost(),
                     uri.getPort());
 
-            localBrokerDataCache.get(path).thenAccept(reportData -> {
-                if (reportData.isPresent()) {
+            //这里localBrokerDataCache.get(path)实际会去读对应zk上的数据
+            localBrokerDataCache.get(path).thenAccept(reportData -> {//reportData是从zk上获取到的数据
+                if (reportData.isPresent()) {//如果数据存在
+                    //lookupData名字取得太让人误会了
                     LocalBrokerData lookupData = (LocalBrokerData) reportData.get();
-                    if (StringUtils.isNotBlank(advertisedListenerName)) {
+                    if (StringUtils.isNotBlank(advertisedListenerName)) {//看是否配置了advertisedListenerName
+                        //如果配置了就获取对外保留的的advertisedListenerName名字
                         AdvertisedListener listener = lookupData.getAdvertisedListeners().get(advertisedListenerName);
                         if (listener == null) {
+                            //从读取到的数据中没有，就抛异常
                             lookupFuture.completeExceptionally(
                                     new PulsarServerException(
                                             "the broker do not have " + advertisedListenerName + " listener"));
                         } else {
+                            //构建url地址然后返回
                             URI urlTls = listener.getBrokerServiceUrlTls();
                             lookupFuture.complete(new LookupResult(lookupData.getWebServiceUrl(),
                                     lookupData.getWebServiceUrlTls(), listener.getBrokerServiceUrl().toString(),
@@ -629,6 +639,7 @@ public class NamespaceService implements AutoCloseable {
                                 lookupData.getPulsarServiceUrlTls(), authoritativeRedirect));
                     }
                 } else {
+                    //否则的话就是不存在该路径
                     lookupFuture.completeExceptionally(new MetadataStoreException.NotFoundException(path));
                 }
             }).exceptionally(ex -> {

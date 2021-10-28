@@ -359,6 +359,7 @@ public class ConsumerImpl<T> extends ConsumerBase<T> implements ConnectionHandle
 
         topicNameWithoutPartition = topicName.getPartitionedTopicName();
 
+        //这里
         grabCnx();
     }
 

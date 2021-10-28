@@ -94,7 +94,7 @@ public class NamespaceBundles {
             lowerBound = upperBound;
         }
     }
-
+    //根据hash算法，计算出topic对应的bundle
     public NamespaceBundle findBundle(TopicName topicName) {
         checkArgument(this.nsname.equals(topicName.getNamespaceObject()));
         long hashCode = factory.getLongHashCode(topicName.toString());

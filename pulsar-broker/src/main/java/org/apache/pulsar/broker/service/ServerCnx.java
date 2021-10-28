@@ -427,6 +427,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             getPrincipal(), getAuthenticationData(),
                             requestId, advertisedListenerName).handle((lookupResponse, ex) -> {
                                 if (ex == null) {
+                                    //没有异常就回response
                                     ctx.writeAndFlush(lookupResponse);
                                 } else {
                                     // it should never happen

@@ -273,6 +273,7 @@ public class TopicLookupBase extends PulsarWebResource {
                         .advertisedListenerName(advertisedListenerName)
                         .loadTopicsInBundle(true)
                         .build();
+                //这里回寻找对应的bundle和broker
                 pulsarService.getNamespaceService().getBrokerServiceUrlAsync(topicName, options)
                         .thenAccept(lookupResult -> {
 
@@ -285,9 +286,10 @@ public class TopicLookupBase extends PulsarWebResource {
                                         "No broker was available to own " + topicName, requestId));
                                 return;
                             }
-
+                            //找到结果后对结果进行处理
                             LookupData lookupData = lookupResult.get().getLookupData();
                             if (lookupResult.get().isRedirect()) {
+                                //如果是重定向的结果，那么就回LookupType.Redirect类型
                                 boolean newAuthoritative = lookupResult.get().isAuthoritativeRedirect();
                                 lookupfuture.complete(
                                         newLookupResponse(lookupData.getBrokerUrl(), lookupData.getBrokerUrlTls(),
@@ -297,7 +299,7 @@ public class TopicLookupBase extends PulsarWebResource {
                                 // url, so that the advertised address configuration is not relevant anymore.
                                 boolean redirectThroughServiceUrl = pulsarService.getConfiguration()
                                         .isRunningStandalone();
-
+                                //如果不是重定向，而就是该broker，那么就回LookupType.Connect
                                 lookupfuture.complete(newLookupResponse(lookupData.getBrokerUrl(),
                                         lookupData.getBrokerUrlTls(), true /* authoritative */, LookupType.Connect,
                                         requestId, redirectThroughServiceUrl));
