@@ -67,6 +67,7 @@ public class ConnectionHandler {
         }
 
         try {
+            //getConnection会发lookup请求
             state.client.getConnection(state.topic) //
                     .thenAccept(cnx -> connection.connectionOpened(cnx)) //
                     .exceptionally(this::handleConnectionError);

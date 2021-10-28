@@ -290,6 +290,9 @@ public class TopicLookupBase extends PulsarWebResource {
                             LookupData lookupData = lookupResult.get().getLookupData();
                             if (lookupResult.get().isRedirect()) {
                                 //如果是重定向的结果，那么就回LookupType.Redirect类型
+                                //注意这里在lookupResult中有一个字段isAuthoritativeRedirect，这个字段代表是否授予找到节点该topic的访问权限，
+                                //简单来说，就是是否确定把这个topic分给它了，这个信息会发给客户端，然后通过客户端发给转发的目标broker，从而实现leader的分配结果同步给目标broker，
+                                //然后再通过目标broker在zk上写入数据，触发回调，来更新整个集群所有broker内部的元数据信息
                                 boolean newAuthoritative = lookupResult.get().isAuthoritativeRedirect();
                                 lookupfuture.complete(
                                         newLookupResponse(lookupData.getBrokerUrl(), lookupData.getBrokerUrlTls(),

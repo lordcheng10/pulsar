@@ -472,6 +472,8 @@ public class NamespaceService implements AutoCloseable {
             return;
         }
 
+        //author这个字段，就是通过判断是否是leader来设置true的，当转发给了leader进行决策的时候，leader返回客户端授权一点是true，这样客户端再把该字段发给目标broker(在look up请求中携带)，
+        //目标broker就知道是leader分配给我了，然后我在写到zk，触发全局回调，从而更新集群中所有broker的元数据信息
         boolean authoritativeRedirect = les.isLeader();
 
         try {
@@ -494,6 +496,9 @@ public class NamespaceService implements AutoCloseable {
                 Optional<LeaderBroker> currentLeader = pulsar.getLeaderElectionService().getCurrentLeader();
 
                 if (options.isAuthoritative()) {
+                    //通过options.isAuthoritative来判断，该请求是否是被leader节点进行转发过来的，如果是，那么这里就不用再找了，直接用当前节点来返回，也就是说正常一个lookup请求最多会请求3个节点，转发两次请求
+                    //其中options.isAuthoritative是从请求中出来的
+                    //领导经纪人已将当前经纪人指定为所有者
                     // leader broker already assigned the current broker as owner
                     candidateBroker = pulsar.getSafeWebServiceAddress();
                 } else if (!this.loadManager.get().isCentralized() //判断是否是集中式决策

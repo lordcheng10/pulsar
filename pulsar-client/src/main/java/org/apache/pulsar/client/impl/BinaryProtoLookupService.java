@@ -134,7 +134,8 @@ public class BinaryProtoLookupService implements LookupService {
 
                         // (2) redirect to given address if response is: redirect
                         if (r.redirect) {
-                            //这里在实际重定向
+                            //这里在实际重定向,其中r.authoritative是服务端返回的字段，这个字段在构建重定向lookup请求的时候，会带上，
+                            //正常情况r.authoritative未true，这样这次重定向对应的broker就是该topic的owner了，通过r.authoritative这个字段为true来告诉目标topic leader最终的分配结果
                             findBroker(responseBrokerAddress, r.authoritative, topicName, redirectCount + 1)
                                 .thenAccept(addressFuture::complete).exceptionally((lookupException) -> {
                                 // lookup failed
