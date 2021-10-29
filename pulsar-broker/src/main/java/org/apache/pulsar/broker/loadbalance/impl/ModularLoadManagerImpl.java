@@ -113,10 +113,12 @@ public class ModularLoadManagerImpl implements ModularLoadManager, Consumer<Noti
     public static final double DEFAULT_MESSAGE_THROUGHPUT = 50000;
 
     //为观察长期数据而保留的有效样本数。
+    //TODO-采样数完全可以作为配置项
     // The number of effective samples to keep for observing long term data.
     public static final int NUM_LONG_SAMPLES = 1000;
 
     //为观察短期数据而保留的有效样本数。
+    //TODO-采样数完全可以作为配置项
     // The number of effective samples to keep for observing short term data.
     public static final int NUM_SHORT_SAMPLES = 10;
 

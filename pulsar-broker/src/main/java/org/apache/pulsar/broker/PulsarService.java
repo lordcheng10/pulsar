@@ -1030,6 +1030,7 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             LOG.info("Starting load balancer");
             if (this.loadReportTask == null) {
                 long loadReportMinInterval = LoadManagerShared.LOAD_REPORT_UPDATE_MINIMUM_INTERVAL;
+                //TODO-默认5秒的上报时间，5秒内能上报完吗？如果不能上报完，那么负载均衡策略再好都没用
                 this.loadReportTask = this.loadManagerExecutor.scheduleAtFixedRate(
                         new LoadReportUpdaterTask(loadManager), loadReportMinInterval, loadReportMinInterval,
                         TimeUnit.MILLISECONDS);

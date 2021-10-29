@@ -63,34 +63,48 @@ public class BundleSplitterTask implements BundleSplitStrategy {
     public Set<String> findBundlesToSplit(final LoadData loadData, final PulsarService pulsar) {
         bundleCache.clear();
         final ServiceConfiguration conf = pulsar.getConfiguration();
+        //命名空间中包的最大数量
+        //如果一个bundle里面某一个namespace在整个集群的bundle总数超过阈值了，那么该namespace所涉及的bundle就不能再进行split了，
+        //为啥要做这个限制呢，感觉如果一个namespace下topic太多了，甚至可以split到一个bundle一个topic呀？
         int maxBundleCount = conf.getLoadBalancerNamespaceMaximumBundles();
+        //任意bundle上最大topic数
         long maxBundleTopics = conf.getLoadBalancerNamespaceBundleMaxTopics();
+        //任意bundle上最大会话数
         long maxBundleSessions = conf.getLoadBalancerNamespaceBundleMaxSessions();
+        //任意bundle上最大消息速率
         long maxBundleMsgRate = conf.getLoadBalancerNamespaceBundleMaxMsgRate();
+        //任意bundle上最大带宽（包括扇入扇出）
         long maxBundleBandwidth = conf.getLoadBalancerNamespaceBundleMaxBandwidthMbytes() * LoadManagerShared.MIBI;
+        //先按照每个主机来进行迭代
         loadData.getBrokerData().forEach((broker, brokerData) -> {
             LocalBrokerData localData = brokerData.getLocalData();
+            //一个主机下，所有的 NamespaceBundle 负载数据迭代
             for (final Map.Entry<String, NamespaceBundleStats> entry : localData.getLastStats().entrySet()) {
+                //这里是一个 bundle ，并且对应的状态
                 final String bundle = entry.getKey();
                 final NamespaceBundleStats stats = entry.getValue();
+                //如果只有一个topic，那继续看下一个bundle
                 if (stats.topics == 1) {
                     log.info("namespace bundle {} only have 1 topic", bundle);
                     continue;
                 }
                 double totalMessageRate = 0;
                 double totalMessageThroughput = 0;
+                // 读取 bundleData 数据，测试是否包含 bundle，如果有，则获取长周期数据，否则忽略
                 // Attempt to consider long-term message data, otherwise effectively ignore.
                 if (loadData.getBundleData().containsKey(bundle)) {
                     final TimeAverageMessageData longTermData = loadData.getBundleData().get(bundle).getLongTermData();
                     totalMessageRate = longTermData.totalMsgRate();
                     totalMessageThroughput = longTermData.totalMsgThroughput();
                 }
+                // 比较是否超过配置中定义的阈值，只要任意一个超过阈值，则将可能被拆分
                 if (stats.topics > maxBundleTopics || stats.consumerCount + stats.producerCount > maxBundleSessions
                         || totalMessageRate > maxBundleMsgRate || totalMessageThroughput > maxBundleBandwidth) {
                     final String namespace = LoadManagerShared.getNamespaceNameFromBundleName(bundle);
-                    try {
+                    try {//读取当前 namespaceName 被分割数
                         final int bundleCount = pulsar.getNamespaceService()
                                 .getBundleCount(NamespaceName.get(namespace));
+                        // 如果分割数小于阈值，则可以尝试分割，否则给出警告信息
                         if (bundleCount < maxBundleCount) {
                             bundleCache.add(bundle);
                         } else {

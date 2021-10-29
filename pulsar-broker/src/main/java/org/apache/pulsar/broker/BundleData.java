@@ -31,6 +31,8 @@ public class BundleData {
     // and the bundle update period.
     private TimeAverageMessageData shortTermData;
 
+    //这里的longTermData构建的时候是输入采样数，默认是1000，然后broker上报周期是5秒默认，所以整个时间跨度是5000秒
+    //那么问题来了什么时候用短期数据什么时候用长期
     // Long term data for this bundle. The time frame of this data is determined
     // by the number of long term samples
     // and the bundle update period.
@@ -72,6 +74,7 @@ public class BundleData {
         longTermData = new TimeAverageMessageData(numLongSamples, defaultStats);
     }
 
+    //更新的周期，取决于数据上报周期间隔
     /**
      * Update the historical data for this bundle.
      *

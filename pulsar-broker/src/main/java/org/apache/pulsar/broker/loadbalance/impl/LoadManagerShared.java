@@ -75,6 +75,7 @@ public class LoadManagerShared {
         }
     };
 
+    //TODO-上报时间也可以配置才对
     // update LoadReport at most every 5 seconds
     public static final long LOAD_REPORT_UPDATE_MINIMUM_INTERVAL = TimeUnit.SECONDS.toMillis(5);
 
