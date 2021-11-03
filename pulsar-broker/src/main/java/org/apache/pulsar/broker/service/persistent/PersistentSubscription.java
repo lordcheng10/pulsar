@@ -370,8 +370,9 @@ public class PersistentSubscription implements Subscription {
     public void acknowledgeMessage(List<Position> positions, AckType ackType, Map<String, Long> properties) {
         Position previousMarkDeletePosition = cursor.getMarkDeletedPosition();
 
-        if (ackType == AckType.Cumulative) {
+        if (ackType == AckType.Cumulative) {//累计确认
 
+            //positions个数如果
             if (positions.size() != 1) {
                 log.warn("[{}][{}] Invalid cumulative ack received with multiple message ids.", topicName, subName);
                 return;
@@ -381,13 +382,15 @@ public class PersistentSubscription implements Subscription {
             if (log.isDebugEnabled()) {
                 log.debug("[{}][{}] Cumulative ack on {}", topicName, subName, position);
             }
+            //异步标记mark delete
             cursor.asyncMarkDelete(position, mergeCursorProperties(properties),
                     markDeleteCallback, previousMarkDeletePosition);
 
-        } else {
+        } else {//单独确认
             if (log.isDebugEnabled()) {
                 log.debug("[{}][{}] Individual acks on {}", topicName, subName, positions);
             }
+            //异步删除
             cursor.asyncDelete(positions, deleteCallback, previousMarkDeletePosition);
             if (topic.getBrokerService().getPulsar().getConfig().isTransactionCoordinatorEnabled()) {
                 positions.forEach(position -> {

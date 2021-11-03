@@ -1582,7 +1582,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         PositionImpl oldMarkDeletePosition = markDeletePosition;
 
-        if (!newMarkDeletePosition.equals(oldMarkDeletePosition)) {
+        if (!newMarkDeletePosition.equals(oldMarkDeletePosition)) {//新的标记删除位置是否等于老的，如果不是的话，那么下面的处理就要跳过一些entry
             long skippedEntries = 0;
             if (newMarkDeletePosition.getLedgerId() == oldMarkDeletePosition.getLedgerId()
                     && newMarkDeletePosition.getEntryId() == oldMarkDeletePosition.getEntryId() + 1) {
@@ -1617,12 +1617,15 @@ public class ManagedCursorImpl implements ManagedCursor {
             MSG_CONSUMED_COUNTER_UPDATER.addAndGet(this, skippedEntries);
         }
 
+        //更新标记删除的位置
         // markDelete-position and clear out deletedMsgSet
         markDeletePosition = newMarkDeletePosition;
+        //从单独确认上去删除到当前标记删除的位置
         individualDeletedMessages.removeAtMost(markDeletePosition.getLedgerId(), markDeletePosition.getEntryId());
 
+        //更新读的位置
         READ_POSITION_UPDATER.updateAndGet(this, currentReadPosition -> {
-            if (currentReadPosition.compareTo(markDeletePosition) <= 0) {
+            if (currentReadPosition.compareTo(markDeletePosition) <= 0) {//如果读的位置小于了标记删除位置，那么就更新读取位置为当前的标记删除位置
                 // If the position that is mark-deleted is past the read position, it
                 // means that the client has skipped some entries. We need to move
                 // read position forward
@@ -1632,11 +1635,12 @@ public class ManagedCursorImpl implements ManagedCursor {
                             currentReadPosition, newReadPosition, markDeletePosition);
                 }
                 return newReadPosition;
-            } else {
+            } else {//如果读取的位置大于更新后的标记删除位置，那么
                 return currentReadPosition;
             }
         });
 
+        //返回新的标记删除位置
         return newMarkDeletePosition;
     }
 
@@ -1656,7 +1660,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                     .CursorAlreadyClosedException("Cursor was already closed"), ctx);
             return;
         }
-
+        //如果是reset的话，就不用往下走了
         if (RESET_CURSOR_IN_PROGRESS_UPDATER.get(this) == TRUE) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] cursor reset in progress - ignoring mark delete on position [{}] for cursor [{}]",
@@ -1673,9 +1677,10 @@ public class ManagedCursorImpl implements ManagedCursor {
             log.debug("[{}] Mark delete cursor {} up to position: {}", ledger.getName(), name, position);
         }
 
+        //强制转化下position
         PositionImpl newPosition = (PositionImpl) position;
 
-        if (config.isDeletionAtBatchIndexLevelEnabled() && batchDeletedIndexes != null) {
+        if (config.isDeletionAtBatchIndexLevelEnabled() && batchDeletedIndexes != null) {//是否开启了batch ack
             if (newPosition.ackSet != null) {
                 batchDeletedIndexes.put(newPosition, BitSetRecyclable.create().resetWords(newPosition.ackSet));
                 newPosition = ledger.getPreviousPosition(newPosition);
@@ -1688,7 +1693,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             newPosition.ackSet = null;
         }
 
-        if (((PositionImpl) ledger.getLastConfirmedEntry()).compareTo(newPosition) < 0) {
+        if (((PositionImpl) ledger.getLastConfirmedEntry()).compareTo(newPosition) < 0) {//如果ack的位置比最大的位置还要大，那么做下面的处理
             boolean shouldCursorMoveForward = false;
             try {
                 long ledgerEntries = ledger.getLedgerInfo(markDeletePosition.getLedgerId()).get().getEntries();
@@ -1715,6 +1720,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         lock.writeLock().lock();
         try {
+            //设置ack和position位置
             newPosition = setAcknowledgedPosition(newPosition);
         } catch (IllegalArgumentException e) {
             callback.markDeleteFailed(getManagedLedgerException(e), ctx);
@@ -1724,23 +1730,25 @@ public class ManagedCursorImpl implements ManagedCursor {
         }
 
         // Apply rate limiting to mark-delete operations
-        if (markDeleteLimiter != null && !markDeleteLimiter.tryAcquire()) {
+        if (markDeleteLimiter != null && !markDeleteLimiter.tryAcquire()) {//这里有一个标记限速,默认是不开启的,如果开启的话，markDeleteLimiter.tryAcquire这个并不会阻塞
             isDirty = true;
             lastMarkDeleteEntry = new MarkDeleteEntry(newPosition, properties, null, null);
             callback.markDeleteComplete(ctx);
             return;
         }
+        //内部异步标记删除
         internalAsyncMarkDelete(newPosition, properties, callback, ctx);
     }
 
     protected void internalAsyncMarkDelete(final PositionImpl newPosition, Map<String, Long> properties,
             final MarkDeleteCallback callback, final Object ctx) {
         ledger.mbean.addMarkDeleteOp();
-
+        //创建一个md的entry
         MarkDeleteEntry mdEntry = new MarkDeleteEntry(newPosition, properties, callback, ctx);
 
         // We cannot write to the ledger during the switch, need to wait until the new metadata ledger is available
-        synchronized (pendingMarkDeleteOps) {
+        synchronized (pendingMarkDeleteOps) {//这把锁有点大,每个leadger有个cursor
+            //当我们等待队列互斥时，状态可能已经改变
             // The state might have changed while we were waiting on the queue mutex
             switch (STATE_UPDATER.get(this)) {
             case Closed:
@@ -1757,10 +1765,12 @@ public class ManagedCursorImpl implements ManagedCursor {
                 break;
 
             case Open:
+                //这个才是正常的，如果阻塞了，这里回把该entry挂起，否则就立即执行
                 if (PENDING_READ_OPS_UPDATER.get(this) > 0) {
                     // Wait until no read operation are pending
                     pendingMarkDeleteOps.add(mdEntry);
                 } else {
+                    //这里才是核心的
                     // Execute the mark delete immediately
                     internalMarkDelete(mdEntry);
                 }
@@ -1774,14 +1784,18 @@ public class ManagedCursorImpl implements ManagedCursor {
         }
     }
 
+    //这里是核心的标记删除处理逻辑
     void internalMarkDelete(final MarkDeleteEntry mdEntry) {
+        // 计数器用于标记所有已提交给 BK 且未提交的待处理标记删除请求
+        // 还没有完成。 虽然我们有未完成的请求，但我们无法关闭当前分类帐，因此切换到新分类帐
+        // 分类帐被推迟到计数器变为 0 时。
         // The counter is used to mark all the pending mark-delete request that were submitted to BK and that are not
         // yet finished. While we have outstanding requests we cannot close the current ledger, so the switch to new
         // ledger is postponed to when the counter goes to 0.
         PENDING_MARK_DELETED_SUBMITTED_COUNT_UPDATER.incrementAndGet(this);
 
         lastMarkDeleteEntry = mdEntry;
-
+        //持久化cursor到leader
         persistPositionToLedger(cursorLedger, mdEntry, new VoidCallback() {
             @Override
             public void operationComplete() {
@@ -1927,7 +1941,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                         ledger.getName(), name, positions, individualDeletedMessages, markDeletePosition);
             }
 
-            for (Position pos : positions) {
+            for (Position pos : positions) {//遍历每个position
                 PositionImpl position  = (PositionImpl) checkNotNull(pos);
                 if (((PositionImpl) ledger.getLastConfirmedEntry()).compareTo(position) < 0) {
                     if (log.isDebugEnabled()) {

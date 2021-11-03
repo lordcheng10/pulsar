@@ -183,52 +183,80 @@ import org.slf4j.LoggerFactory;
 public class PulsarService implements AutoCloseable, ShutdownService {
     private static final Logger LOG = LoggerFactory.getLogger(PulsarService.class);
     private static final double GRACEFUL_SHUTDOWN_TIMEOUT_RATIO_OF_TOTAL_TIMEOUT = 0.5d;
+    //服务配置
     private ServiceConfiguration config = null;
     private NamespaceService nsService = null;
+    //Ledger 客户端工厂类（用于创建Ledger 客户端）
     private ManagedLedgerStorage managedLedgerClientFactory = null;
+    //领导者选举服务
     private LeaderElectionService leaderElectionService = null;
+    //Broker 服务
     private BrokerService brokerService = null;
+    //Web服务，处理Http请求用
     private WebService webService = null;
+    //WebSocket服务，用于支持WebSocket协议
     private WebSocketService webSocketService = null;
     private TopicPoliciesService topicPoliciesService = TopicPoliciesService.DISABLED;
+    //Bookeeper 客户端工厂
     private BookKeeperClientFactory bkClientFactory;
+    //压缩器
     private Compactor compactor;
     private ResourceUsageTransportManager resourceUsageTransportManager;
     private ResourceGroupService resourceGroupServiceManager;
-
+    //调度线程池（pulsar核心线程池）
     private final ScheduledExecutorService executor;
+    //调度线程池（用于ZK缓存更新回调）
     private final ScheduledExecutorService cacheExecutor;
-
+    //顺序执行线程池
     private OrderedExecutor orderedExecutor;
+    //调度线程池（用于负载管理使用，定时更新、上报系统负载信息）
     private final ScheduledExecutorService loadManagerExecutor;
+    //调度线程池 （用于压缩）
     private ScheduledExecutorService compactorExecutor;
+    //顺序调度器 （卸载服务使用）
     private OrderedScheduler offloaderScheduler;
     private OffloadersCache offloadersCache = new OffloadersCache();
     private LedgerOffloader defaultOffloader;
     private Map<NamespaceName, LedgerOffloader> ledgerOffloaderMap = new ConcurrentHashMap<>();
+    //负载报告任务
     private ScheduledFuture<?> loadReportTask = null;
+    //负载卸载任务
     private ScheduledFuture<?> loadSheddingTask = null;
+    //负载资源配额任务
     private ScheduledFuture<?> loadResourceQuotaTask = null;
+    //负载管理器（原子引用）
     private final AtomicReference<LoadManager> loadManager = new AtomicReference<>();
+    //Pulsar Admin 客户端
     private PulsarAdmin adminClient = null;
+    //Pulsar 客户端
     private PulsarClient client = null;
+    //Zookeeper 客户端工厂
     private ZooKeeperClientFactory zkClientFactory = null;
+    //绑定地址
     private final String bindAddress;
+    //通知地址
     private final String advertisedAddress;
+    //web服务地址（http用）
     private String webServiceAddress;
+    //web服务地址（https用）
     private String webServiceAddressTls;
+    //broker服务url（原生协议TCP）
     private String brokerServiceUrl;
+    //broker服务url（原生协议TCP+TLS）
     private String brokerServiceUrlTls;
+    //broker协议版本
     private final String brokerVersion;
+    //Schema注册服务
     private SchemaStorage schemaStorage = null;
     private SchemaRegistryService schemaRegistryService = null;
     private final WorkerConfig workerConfig;
+    //工作者服务（支持函数式计算框架）
     private final Optional<WorkerService> functionWorkerService;
     private ProtocolHandlers protocolHandlers = null;
 
     private final Consumer<Integer> processTerminator;
     protected final EventLoopGroup ioEventLoopGroup;
-
+    //指标生成器
     private MetricsGenerator metricsGenerator;
 
     private TransactionMetadataStoreService transactionMetadataStoreService;
@@ -257,22 +285,24 @@ public class PulsarService implements AutoCloseable, ShutdownService {
     public enum State {
         Init, Started, Closing, Closed
     }
-
+    //Pulsar 状态
     private volatile State state;
-
+    // 互斥锁（用于启动、关闭）
     private final ReentrantLock mutex = new ReentrantLock();
+    // 监视 Pulsar 是否已关闭
     private final Condition isClosedCondition = mutex.newCondition();
     private volatile CompletableFuture<Void> closeFuture;
     // key is listener name , value is pulsar address and pulsar ssl address
     private Map<String, AdvertisedListener> advertisedListeners;
 
+    //构造方法 只有服务配置参数
     public PulsarService(ServiceConfiguration config) {
         this(config, Optional.empty(), (exitCode) -> {
                 LOG.info("Process termination requested with code {}. "
                          + "Ignoring, as this constructor is intended for tests. ", exitCode);
             });
     }
-
+    //构造方法，增加可选函数工作者服务
     public PulsarService(ServiceConfiguration config, Optional<WorkerService> functionWorkerService,
                          Consumer<Integer> processTerminator) {
         this(config, new WorkerConfig(), functionWorkerService, processTerminator);
@@ -282,17 +312,22 @@ public class PulsarService implements AutoCloseable, ShutdownService {
                          WorkerConfig workerConfig,
                          Optional<WorkerService> functionWorkerService,
                          Consumer<Integer> processTerminator) {
+        // 验证当前配置是否可以
         // Validate correctness of configuration
         PulsarConfigurationLoader.isComplete(config);
         // validate `advertisedAddress`, `advertisedListeners`, `internalListenerName`
         this.advertisedListeners = MultipleListenerValidator.validateAndAnalysisAdvertisedListener(config);
         this.advertisedAddress = ServiceConfigurationUtils.getAppliedAdvertisedAddress(config, false);
+        //设置当前状态为初始化
         state = State.Init;
+        //如果绑定地址没设置，则取主机名
         // use `internalListenerName` listener as `advertisedAddress`
         this.bindAddress = ServiceConfigurationUtils.getDefaultOrConfiguredAddress(config.getBindAddress());
+        //加载版本信息
         this.brokerVersion = PulsarVersion.getVersion();
         this.config = config;
         this.processTerminator = processTerminator;
+        //创建负载管理线程池
         this.loadManagerExecutor = Executors
                 .newSingleThreadScheduledExecutor(new DefaultThreadFactory("pulsar-load-manager"));
         this.workerConfig = workerConfig;
@@ -665,10 +700,14 @@ public class PulsarService implements AutoCloseable, ShutdownService {
             this.addWebServerHandlers(webService, metricsServlet, this.config);
             this.webService.start();
 
+            //设置http相关ip和端口
             // Refresh addresses, since the port might have been dynamically assigned
             this.webServiceAddress = webAddress(config);
+            //设置https相关ip和端口
             this.webServiceAddressTls = webAddressTls(config);
+            //设置pulsar://ip:port
             this.brokerServiceUrl = brokerUrl(config);
+            //设置pulsar+ssl://ip:port
             this.brokerServiceUrlTls = brokerUrlTls(config);
 
             if (null != this.webSocketService) {

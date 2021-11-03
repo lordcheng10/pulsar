@@ -92,29 +92,44 @@ public class PulsarWorkerService implements WorkerService {
         PulsarClient newPulsarClient(String pulsarServiceUrl, WorkerConfig workerConfig);
 
     }
-
+    //工作者配置
     private WorkerConfig workerConfig;
-
+    //Pulsar 客户端
     private PulsarClient client;
+    //函数运行时管理器
     private FunctionRuntimeManager functionRuntimeManager;
+    //函数元数据管理器
     private FunctionMetaDataManager functionMetaDataManager;
+    //集群服务协调器
     private ClusterServiceCoordinator clusterServiceCoordinator;
+    // DistributedLog Namespace 用于存储函数jars
     // dlog namespace for storing function jars in bookkeeper
     private Namespace dlogNamespace;
+    // 存储客户端，函数用于访问状态存储器
     // storage client for accessing state storage for functions
     private StorageAdminClient stateStoreAdminClient;
+    //成员管理器
     private MembershipManager membershipManager;
+    //调度管理器
     private SchedulerManager schedulerManager;
+    //是否已初始化
     private volatile boolean isInitialized = false;
+    //用于状态更新的定时服务
     private ScheduledExecutorService statsUpdater;
+    //认证服务
     private AuthenticationService authenticationService;
     private AuthorizationService authorizationService;
+    //连接管理器
     private ConnectorsManager connectorsManager;
     private FunctionsManager functionsManager;
+    //Pulsar admin 客户端
     private PulsarAdmin brokerAdmin;
+    //函数管理端
     private PulsarAdmin functionAdmin;
+    //指标生成器
     private MetricsGenerator metricsGenerator;
     @VisibleForTesting
+    //log存储路径
     private URI dlogUri;
     private LeaderService leaderService;
     private FunctionAssignmentTailer functionAssignmentTailer;
@@ -188,6 +203,7 @@ public class PulsarWorkerService implements WorkerService {
         );
     }
 
+    //初始化线程池
     @VisibleForTesting
     public void init(WorkerConfig workerConfig,
                      URI dlogUri,

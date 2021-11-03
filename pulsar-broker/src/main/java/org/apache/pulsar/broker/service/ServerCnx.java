@@ -1426,18 +1426,27 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     @Override
     protected void handleAck(CommandAck ack) {
         checkArgument(state == State.Connected);
+        //获取consumer
         CompletableFuture<Consumer> consumerFuture = consumers.get(ack.getConsumerId());
+        //是否有request id
         final boolean hasRequestId = ack.hasRequestId();
+        //获取requestId
         final long requestId = hasRequestId ? ack.getRequestId() : 0;
+        //获取consumerId
         final long consumerId = ack.getConsumerId();
 
+        //当consumerFuture不等于null并且consumerFuture已经完成，并且consumerFuture没有异常，才会进行ack处理
+        //TODO-当consumerFuture有异常或consumerFuture没完成的时候，会丢弃该ack请求，应该打印一条日志把
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
+            //ACK处理的主要逻辑在这里messageAcked
             consumerFuture.getNow(null).messageAcked(ack).thenRun(() -> {
+                        //这里就是回response了
                         if (hasRequestId) {
                             ctx.writeAndFlush(Commands.newAckResponse(
                                     requestId, null, null, consumerId));
                         }
                     }).exceptionally(e -> {
+                        //异常的时候，回复异常的response
                         if (hasRequestId) {
                             ctx.writeAndFlush(Commands.newAckResponse(requestId,
                                     BrokerServiceException.getClientErrorCode(e),

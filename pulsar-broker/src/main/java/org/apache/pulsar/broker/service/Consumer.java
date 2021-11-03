@@ -331,26 +331,34 @@ public class Consumer {
     }
 
     public CompletableFuture<Void> messageAcked(CommandAck ack) {
+        //更新ack时间
         this.lastAckedTimestamp = System.currentTimeMillis();
         Map<String, Long> properties = Collections.emptyMap();
-        if (ack.getPropertiesCount() > 0) {
+        if (ack.getPropertiesCount() > 0) {//判断是否携带了ack属性
             properties = ack.getPropertiesList().stream()
                 .collect(Collectors.toMap(KeyLongValue::getKey, KeyLongValue::getValue));
         }
 
+        //看是否是累计ack，累计ack应该对应的是fail over或exclude这两种模式
         if (ack.getAckType() == AckType.Cumulative) {
+            //看本次ack的消息数是否不等于1,既然是fail over或exclude模式，那么ack确认的消息就应该是1条，如果不是1条那么就有问题
+            //考虑ack.getMessageIdsCount()==0 会不会有问题
             if (ack.getMessageIdsCount() != 1) {
                 log.warn("[{}] [{}] Received multi-message ack", subscription, consumerId);
             }
 
+            //走到这里的话，本应该是累计确认，但订阅模式又是share模式，换句话说，从订阅模式看又是单条确认方式，那么自然这里应该有一个警告日志，甚至需要考虑，会不会有问题
             if (Subscription.isIndividualAckMode(subType)) {
                 log.warn("[{}] [{}] Received cumulative ack on shared subscription, ignoring",
                         subscription, consumerId);
             }
+            //看position位置
             PositionImpl position = PositionImpl.earliest;
             if (ack.getMessageIdsCount() == 1) {
+                //如果ack的消息只有一条，才会执行下面的逻辑
+                //获取ack请求中的messageId数据,这里的0是位置
                 MessageIdData msgId = ack.getMessageIdAt(0);
-                if (msgId.getAckSetsCount() > 0) {
+                if (msgId.getAckSetsCount() > 0) {//一个batch里面可能有多条消息，这里对应的应该是一个batch里面的确认信息
                     long[] ackSets = new long[msgId.getAckSetsCount()];
                     for (int j = 0; j < msgId.getAckSetsCount(); j++) {
                         ackSets[j] = msgId.getAckSetAt(j);
@@ -360,32 +368,35 @@ public class Consumer {
                     position = PositionImpl.get(msgId.getLedgerId(), msgId.getEntryId());
                 }
             }
-            if (ack.hasTxnidMostBits() && ack.hasTxnidLeastBits()) {
+            if (ack.hasTxnidMostBits() && ack.hasTxnidLeastBits()) {//是否有事务逻辑
                 List<PositionImpl> positionsAcked = Collections.singletonList(position);
                 return transactionCumulativeAcknowledge(ack.getTxnidMostBits(),
                         ack.getTxnidLeastBits(), positionsAcked);
             } else {
                 List<Position> positionsAcked = Collections.singletonList(position);
+                //这里是ack处理的核心逻辑
                 subscription.acknowledgeMessage(positionsAcked, AckType.Cumulative, properties);
                 return CompletableFuture.completedFuture(null);
             }
-        } else {
-            if (ack.hasTxnidLeastBits() && ack.hasTxnidMostBits()) {
+        } else {//否则是单独的ack
+            if (ack.hasTxnidLeastBits() && ack.hasTxnidMostBits()) {//看是否有用事务
                 return individualAckWithTransaction(ack);
             } else {
+                //这里是最常用的逻辑
                 return individualAckNormal(ack, properties);
             }
         }
     }
 
+    //此方法用于个人 ack 不携带交易
     //this method is for individual ack not carry the transaction
     private CompletableFuture<Void> individualAckNormal(CommandAck ack, Map<String, Long> properties) {
         List<Position> positionsAcked = new ArrayList<>();
 
-        for (int i = 0; i < ack.getMessageIdsCount(); i++) {
+        for (int i = 0; i < ack.getMessageIdsCount(); i++) {//一条条消息进行确认
             MessageIdData msgId = ack.getMessageIdAt(i);
             PositionImpl position;
-            if (msgId.getAckSetsCount() > 0) {
+            if (msgId.getAckSetsCount() > 0) {//batch ack，默认是关闭的
                 long[] ackSets = new long[msgId.getAckSetsCount()];
                 for (int j = 0; j < msgId.getAckSetsCount(); j++) {
                     ackSets[j] = msgId.getAckSetAt(j);
@@ -403,10 +414,13 @@ public class Consumer {
             }
             positionsAcked.add(position);
 
+            //检查能够移除的等待ack的处理
             checkCanRemovePendingAcksAndHandle(position, msgId);
 
+            //检查确认验证错误
             checkAckValidationError(ack, position);
         }
+        //批量确认
         subscription.acknowledgeMessage(positionsAcked, AckType.Individual, properties);
         CompletableFuture<Void> completableFuture = new CompletableFuture<>();
         completableFuture.complete(null);

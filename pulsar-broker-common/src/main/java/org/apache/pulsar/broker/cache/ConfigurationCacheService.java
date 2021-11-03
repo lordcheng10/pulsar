@@ -19,6 +19,7 @@
 package org.apache.pulsar.broker.cache;
 
 /**
+ * ConfigurationCacheService 只是为了兼容性而保留，因为它在 AuthorizationProvider 接口中公开。
  * ConfigurationCacheService is only kept for compatibility as it was exposed in AuthorizationProvider interface.
  */
 @Deprecated

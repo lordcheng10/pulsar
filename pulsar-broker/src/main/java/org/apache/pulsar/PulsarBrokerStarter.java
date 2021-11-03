@@ -74,6 +74,7 @@ public class PulsarBrokerStarter {
         }
     }
 
+    //命令列表，这里就是支持的所有命令
     @VisibleForTesting
     @Parameters(commandDescription = "Options")
     private static class StarterArguments {
@@ -106,6 +107,7 @@ public class PulsarBrokerStarter {
         private boolean generateDocs = false;
     }
 
+    //通用配置加载器
     private static ServerConfiguration readBookieConfFile(String bookieConfigFile) throws IllegalArgumentException {
         ServerConfiguration bookieConf = new ServerConfiguration();
         try {
@@ -132,12 +134,19 @@ public class PulsarBrokerStarter {
     }
 
     private static class BrokerStarter {
+        //服务配置文件类
         private final ServiceConfiguration brokerConfig;
+        //Pulsar 服务类
         private final PulsarService pulsarService;
+        //Bookkeeper 客户端
         private final BookieServer bookieServer;
+        //Bookeeper 自动恢复服务
         private final AutoRecoveryMain autoRecoveryMain;
+        //Bookeeper 状态提供服务
         private final StatsProvider bookieStatsProvider;
+        //服务器配置类
         private final ServerConfiguration bookieConfig;
+        //函数式工作者服务
         private final WorkerService functionsWorkerService;
         private final WorkerConfig workerConfig;
 
@@ -146,6 +155,7 @@ public class PulsarBrokerStarter {
             JCommander jcommander = new JCommander(starterArguments);
             jcommander.setProgramName("PulsarBrokerStarter");
 
+            // JCommander 组件解析命令行
             // parse args by JCommander
             jcommander.parse(args);
             if (starterArguments.help) {
@@ -160,6 +170,7 @@ public class PulsarBrokerStarter {
                 System.exit(-1);
             }
 
+            // 初始化 broker 配置文件
             // init broker config
             if (isBlank(starterArguments.brokerConfigFile)) {
                 jcommander.usage();
@@ -186,17 +197,23 @@ public class PulsarBrokerStarter {
                         + "must contains the default namespace bundle split algorithm");
             }
 
+            // 初始化 functions worker ，判定是否启用函数工作者服务
+            // 默认是不开启的
             // init functions worker
             if (starterArguments.runFunctionsWorker || brokerConfig.isFunctionsWorkerEnabled()) {
+                //初始化函数工作者配置文件
                 workerConfig = PulsarService.initializeWorkerConfigFromBrokerConfig(
                     brokerConfig, starterArguments.fnWorkerConfigFile
                 );
+                // 配置工作者与本地 broker 通信
                 functionsWorkerService = WorkerServiceLoader.load(workerConfig);
             } else {
+                //意味着不启用
                 workerConfig = null;
                 functionsWorkerService = null;
             }
 
+            // 初始化 pulsar 服务
             // init pulsar service
             pulsarService = new PulsarService(brokerConfig,
                                               workerConfig,
@@ -207,24 +224,27 @@ public class PulsarBrokerStarter {
                                                   Runtime.getRuntime().halt(exitCode);
                                               });
 
+            // 如果在命令行中没有运行 bookie （命令），则尝试从 pulsar 配置文件中读取
             // if no argument to run bookie in cmd line, read from pulsar config
             if (!argsContains(args, "-rb") && !argsContains(args, "--run-bookie")) {
                 checkState(!starterArguments.runBookie,
                         "runBookie should be false if has no argument specified");
                 starterArguments.runBookie = brokerConfig.isEnableRunBookieTogether();
             }
+            // 加载顺序同上，表示是否启用 bookie 自动恢复服务
             if (!argsContains(args, "-ra") && !argsContains(args, "--run-bookie-autorecovery")) {
                 checkState(!starterArguments.runBookieAutoRecovery,
                         "runBookieAutoRecovery should be false if has no argument specified");
                 starterArguments.runBookieAutoRecovery = brokerConfig.isEnableRunBookieAutoRecoveryTogether();
             }
 
+            // 从这里可以看出，要么运行 bookie（读写） 服务，要么运行 bookie 自动恢复服务
             if ((starterArguments.runBookie || starterArguments.runBookieAutoRecovery)
                 && isBlank(starterArguments.bookieConfigFile)) {
                 jcommander.usage();
                 throw new IllegalArgumentException("No configuration file for Bookie");
             }
-
+            // 初始化 bookie 状态提供者
             // init stats provider
             if (starterArguments.runBookie || starterArguments.runBookieAutoRecovery) {
                 checkState(isNotBlank(starterArguments.bookieConfigFile),
@@ -237,6 +257,7 @@ public class PulsarBrokerStarter {
                 bookieStatsProvider = null;
             }
 
+            // 如果配置文件设置当前服务器运行 bookie 服务，则初始化 bookie 服务器
             // init bookie server
             if (starterArguments.runBookie) {
                 checkNotNull(bookieConfig, "No ServerConfiguration for Bookie");
@@ -247,6 +268,7 @@ public class PulsarBrokerStarter {
                 bookieServer = null;
             }
 
+            // 如果设置 bookie 自动恢复标志，则初始化 bookie 自动恢复服务
             // init bookie AutorecoveryMain
             if (starterArguments.runBookieAutoRecovery) {
                 checkNotNull(bookieConfig, "No ServerConfiguration for Bookie Autorecovery");
@@ -256,6 +278,7 @@ public class PulsarBrokerStarter {
             }
         }
 
+        //bookieStatsProvider 、bookieServer 、autoRecoveryMain 三个组件，如果不为空，则将会启动， pulsarService 作为核心服务必须启动。具体各个组件服务的初始化和启动过程
         public void start() throws Exception {
             if (bookieStatsProvider != null) {
                 bookieStatsProvider.start(bookieConfig);
@@ -274,6 +297,8 @@ public class PulsarBrokerStarter {
             log.info("PulsarService started.");
         }
 
+        //此方法主线程有提到，用于阻塞主线程，防止主线程退出，实现主要是信号量，等待JVM触发关闭方法，然后信号被触发， 与此同时，bookieServer 与 autoRecoveryMain 都将会关闭，这样主线程不再阻塞，执行完即退出。
+        //BrokerStarter 阻塞方法（即等待关闭指令）
         public void join() throws InterruptedException {
             pulsarService.waitUntilClosed();
 
@@ -291,6 +316,7 @@ public class PulsarBrokerStarter {
             }
         }
 
+        //此方法主线程同样有提到，其在JVM关闭钩子中调用的，确保所有正使用的组件优雅有序退出。
         public void shutdown() throws Exception {
             if (null != functionsWorkerService) {
                 functionsWorkerService.stop();
@@ -316,17 +342,30 @@ public class PulsarBrokerStarter {
     }
 
 
+    //构造方法主要执行如下功能：
+    //命令解析
+    //配置文件加载与验证
+    //服务初始化
+
+    //主要是 BrokerStarter 唱主角，而主线程只做了如下操作：
+    //设置线程异常退出时执行的方法（这里是打印日志）
+    //创建 BrokerStarter 实例，并把命令行参数放入（解析命令）
+    //安装当JVM退出时钩子，即 BrokerStarter 关闭
+    //调用 BrokerStarter 开始方法
+    //等待 BrokerStarter 退出
     public static void main(String[] args) throws Exception {
         DateFormat dateFormat = new SimpleDateFormat(
             FixedDateFormat.FixedFormat.ISO8601_OFFSET_DATE_TIME_HHMM.getPattern());
+        //设置线程异常未catch情况下默认处理方法
         Thread.setDefaultUncaughtExceptionHandler((thread, exception) -> {
             System.out.println(String.format("%s [%s] error Uncaught exception in thread %s: %s",
                     dateFormat.format(new Date()), thread.getContextClassLoader(),
                     thread.getName(), exception.getMessage()));
             exception.printStackTrace(System.out);
         });
-
+        //创建 broker 启动器实例
         BrokerStarter starter = new BrokerStarter(args);
+        //安装JVM退出时钩子，即调用 broker 启动器关闭
         Runtime.getRuntime().addShutdownHook(
             new Thread(() -> {
                 try {
@@ -347,12 +386,14 @@ public class PulsarBrokerStarter {
         });
 
         try {
+            //调用启动器启动
             starter.start();
         } catch (Throwable t) {
             log.error("Failed to start pulsar service.", t);
             LogManager.shutdown();
             Runtime.getRuntime().halt(1);
         } finally {
+            //等待启动器退出
             starter.join();
         }
     }
