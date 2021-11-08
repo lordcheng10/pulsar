@@ -37,6 +37,7 @@ public class ClientConfiguration implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    //Pulsar Client 配置项
     private final ClientConfigurationData confData = new ClientConfigurationData();
 
     /**

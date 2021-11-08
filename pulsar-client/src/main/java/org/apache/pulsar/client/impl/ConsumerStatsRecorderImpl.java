@@ -41,6 +41,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import io.netty.util.Timeout;
 import io.netty.util.TimerTask;
 
+//统计的目的是就是为了打印输出出来
 public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
 
     private static final long serialVersionUID = 1L;
@@ -120,6 +121,7 @@ public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
             log.error("Failed to dump config info", e);
         }
 
+        //周期统计
         stat = (timeout) -> {
             if (timeout.isCancelled() || !(consumer instanceof ConsumerImpl)) {
                 return;
@@ -143,6 +145,7 @@ public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
                 totalAcksSent.add(currentNumAcksSent);
                 totalAcksFailed.add(currentNumAcksFailed);
 
+                //receivedMsgsRate是每分钟平方的接受速率
                 receivedMsgsRate = currentNumMsgsReceived / elapsed;
                 receivedBytesRate = currentNumBytesReceived / elapsed;
                 if ((currentNumMsgsReceived | currentNumBytesReceived | currentNumReceiveFailed | currentNumAcksSent
@@ -162,6 +165,7 @@ public class ConsumerStatsRecorderImpl implements ConsumerStatsRecorder {
                 log.error("[{}] [{}] [{}]: {}", consumerImpl.getTopic(), consumerImpl.subscription
                         , consumerImpl.consumerName, e.getMessage());
             } finally {
+                //一次次的周期统计，统计后直接打印出来
                 // schedule the next stat info
                 statTimeout = pulsarClient.timer().newTimeout(stat, statsIntervalSeconds, TimeUnit.SECONDS);
             }

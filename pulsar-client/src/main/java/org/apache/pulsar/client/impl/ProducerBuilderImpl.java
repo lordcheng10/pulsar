@@ -59,6 +59,7 @@ public class ProducerBuilderImpl<T> implements ProducerBuilder<T> {
     private Schema<T> schema;
     private List<ProducerInterceptor> interceptorList;
 
+    // 2. 切换 ProducerBuilderImpl<T> 类，构造方法
     public ProducerBuilderImpl(PulsarClientImpl client, Schema<T> schema) {
         this(client, new ProducerConfigurationData(), schema);
     }
@@ -83,6 +84,7 @@ public class ProducerBuilderImpl<T> implements ProducerBuilder<T> {
         return new ProducerBuilderImpl<>(client, conf.clone(), schema);
     }
 
+    // 3. 切换 ProducerBuilderImpl<T> 类，同步创建一个生产者
     @Override
     public Producer<T> create() throws PulsarClientException {
         try {
@@ -104,11 +106,14 @@ public class ProducerBuilderImpl<T> implements ProducerBuilder<T> {
 
         try {
             //设置消息的partitioner策略
+            //设置消息路由模式，有3种
+            //默认为轮询
             setMessageRoutingMode();
         } catch(PulsarClientException pce) {
             return FutureUtil.failedFuture(pce);
         }
 
+        // 4. 切换到 PulsarClientImpl 类 ，异步创建生产者实例。
         return interceptorList == null || interceptorList.size() == 0 ?
                 client.createProducerAsync(conf, schema, null) :
                 client.createProducerAsync(conf, schema, new ProducerInterceptors(interceptorList));

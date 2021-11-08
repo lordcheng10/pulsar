@@ -2615,6 +2615,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         checkNotNull(lh);
         byte[] data = pi.toByteArray();
+        //这里才是真正持久化的地方
         lh.asyncAddEntry(data, (rc, lh1, entryId, ctx) -> {
             if (rc == BKException.Code.OK) {
                 if (log.isDebugEnabled()) {

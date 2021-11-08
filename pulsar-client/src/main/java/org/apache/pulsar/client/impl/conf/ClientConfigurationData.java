@@ -50,10 +50,12 @@ import org.apache.pulsar.client.util.Secret;
 public class ClientConfigurationData implements Serializable, Cloneable {
     private static final long serialVersionUID = 1L;
 
+    //broker或discovery-service或pulsar-proxy地址
     @ApiModelProperty(
             name = "serviceUrl",
             value = "Pulsar cluster HTTP URL to connect to a broker."
     )
+    //这里可以根据实际需求，动态提供serviceUrl
     private String serviceUrl;
     @ApiModelProperty(
             name = "serviceUrlProvider",
@@ -62,6 +64,7 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     @JsonIgnore
     private transient ServiceUrlProvider serviceUrlProvider;
 
+    //认证接口，默认是禁用的
     @ApiModelProperty(
             name = "authentication",
             value = "Authentication settings of the client."
@@ -89,6 +92,7 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     @Secret
     private Map<String, String> authParamMap;
 
+    //操作超时时间
     @ApiModelProperty(
             name = "operationTimeoutMs",
             value = "Client operation timeout (in millisecond)."
@@ -101,24 +105,29 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     )
     private long lookupTimeoutMs = -1;
 
+    //状态收集时间间隔
+    //状态收集是什么意思
     @ApiModelProperty(
             name = "statsIntervalSeconds",
             value = " Interval to print client stats (in second)."
     )
     private long statsIntervalSeconds = 60;
 
+    //生产者网络IO线程数
     @ApiModelProperty(
             name = "numIoThreads",
             value = "Number of IO threads."
     )
     private int numIoThreads = 1;
 
+    //消费者订阅线程数
     @ApiModelProperty(
             name = "numListenerThreads",
             value = "Number of consumer listener threads."
     )
     private int numListenerThreads = 1;
 
+    //每个broker（与客户端）连接数
     @ApiModelProperty(
             name = "connectionsPerBroker",
             value = "Number of connections established between the client and each Broker."
@@ -126,35 +135,42 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     )
     private int connectionsPerBroker = 1;
 
+    //是否延迟发送（Nagle算法，不延迟，意味着立即发送）
     @ApiModelProperty(
             name = "useTcpNoDelay",
             value = "Whether to use TCP NoDelay option."
     )
     private boolean useTcpNoDelay = true;
 
+    //是否用TLS
     @ApiModelProperty(
             name = "useTls",
             value = "Whether to use TLS."
     )
     private boolean useTls = false;
 
+    //TLS受信任证书路径
     @ApiModelProperty(
             name = "tlsTrustCertsFilePath",
             value = "Path to the trusted TLS certificate file."
     )
     private String tlsTrustCertsFilePath = "";
 
+    //TLS是否允许不安全连接
     @ApiModelProperty(
             name = "tlsAllowInsecureConnection",
             value = "Whether the client accepts untrusted TLS certificates from the broker."
     )
     private boolean tlsAllowInsecureConnection = false;
 
+    //TLS是否启用主机名校验
     @ApiModelProperty(
             name = "tlsHostnameVerificationEnable",
             value = "Whether the hostname is validated when the proxy creates a TLS connection with brokers."
     )
     private boolean tlsHostnameVerificationEnable = false;
+
+    //Lookup请求并发数
     @ApiModelProperty(
             name = "concurrentLookupRequest",
             value = "The number of concurrent lookup requests that can be sent on each broker connection. "
@@ -162,6 +178,7 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     )
     private int concurrentLookupRequest = 5000;
 
+    //最大Lookup请求数
     @ApiModelProperty(
             name = "maxLookupRequest",
             value = "Maximum number of lookup requests allowed on "
@@ -175,6 +192,7 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     )
     private int maxLookupRedirects = 20;
 
+    //每个连接最大拒绝请求数（？是不是每个连接最大请求数超过N时，则拒绝发送）
     @ApiModelProperty(
             name = "maxNumberOfRejectedRequestPerConnection",
             value = "Maximum number of rejected requests of a broker in a certain time frame (30 seconds) "
@@ -183,12 +201,14 @@ public class ClientConfigurationData implements Serializable, Cloneable {
     )
     private int maxNumberOfRejectedRequestPerConnection = 50;
 
+    //保活间隔时间
     @ApiModelProperty(
             name = "keepAliveIntervalSeconds",
             value = "Seconds of keeping alive interval for each client broker connection."
     )
     private int keepAliveIntervalSeconds = 30;
 
+    //连接超时时间
     @ApiModelProperty(
             name = "connectionTimeoutMs",
             value = "Duration of waiting for a connection to a broker to be established."

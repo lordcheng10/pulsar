@@ -70,6 +70,7 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
     private static long DEFAULT_ACK_TIMEOUT_MILLIS_FOR_DEAD_LETTER = 30000L;
 
 
+    // ConsumerBuilderImpl 构造方法
     public ConsumerBuilderImpl(PulsarClientImpl client, Schema<T> schema) {
         this(client, new ConsumerConfigurationData<T>(), schema);
     }
@@ -91,6 +92,8 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
         return new ConsumerBuilderImpl<>(client, conf.clone(), schema);
     }
 
+    // 2. 消费者开始订阅 ConsumerBuilderImpl
+    // 这里实际上，调用的是异步订阅方法
     @Override
     public Consumer<T> subscribe() throws PulsarClientException {
         try {
@@ -102,11 +105,12 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
 
     @Override
     public CompletableFuture<Consumer<T>> subscribeAsync() {
+        //检查 Topic 是否有效
         if (conf.getTopicNames().isEmpty() && conf.getTopicsPattern() == null) {
             return FutureUtil
                     .failedFuture(new InvalidConfigurationException("Topic name must be set on the consumer builder"));
         }
-
+        //检查订阅名不能为空
         if (StringUtils.isBlank(conf.getSubscriptionName())) {
             return FutureUtil.failedFuture(
                     new InvalidConfigurationException("Subscription name must be set on the consumer builder"));
@@ -116,6 +120,7 @@ public class ConsumerBuilderImpl<T> implements ConsumerBuilder<T> {
             return FutureUtil.failedFuture(
                     new InvalidConfigurationException("KeySharedPolicy must set with KeyShared subscription"));
         }
+        //读取压缩特性仅仅被用订阅持久化 Topic，并且订阅类型为独占或故障转移模式
         if(conf.isRetryEnable() && conf.getTopicNames().size() > 0 ) {
             TopicName topicFirst = TopicName.get(conf.getTopicNames().iterator().next());
             String retryLetterTopic = topicFirst + "-" + conf.getSubscriptionName() + RetryMessageUtil.RETRY_GROUP_TOPIC_SUFFIX;

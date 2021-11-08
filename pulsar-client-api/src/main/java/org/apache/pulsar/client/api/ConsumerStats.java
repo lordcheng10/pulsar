@@ -23,6 +23,9 @@ import java.util.Map;
 import org.apache.pulsar.common.classification.InterfaceAudience;
 import org.apache.pulsar.common.classification.InterfaceStability;
 
+//客户记录的消费者统计数据。
+//所有的统计数据都是相对于上次记录期间的。 统计数据刷新的间隔配置为
+//  * {@link ClientBuilder#statsInterval(long, java.util.concurrent.TimeUnit)}，默认为 1 分钟。
 /**
  * Consumer statistics recorded by client.
  *

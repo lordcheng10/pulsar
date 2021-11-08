@@ -23,6 +23,17 @@ import java.util.concurrent.CompletableFuture;
 
 import org.apache.pulsar.client.impl.v1.PulsarClientV1Impl;
 
+
+/**
+*
+ * 这里的生产者、消费者、读取者创建构造者实例方法签名都是一样的，分为两类：
+ *
+ * 默认Schema为BYTES。
+ *
+ * 自定义Schema，创建者指定Schema。
+ *
+ * 然后构造者都有一个默认实现方法xx create() throws PulsarClientException，分别来创建生产者、消费者、读取者实例，并完成实例的初始化，而此方法最终调用的为createXXAsync系列方法。下面，将讲解核心方法的实现。
+* */
 /**
  * Class that provides a client interface to Pulsar.
  * <p>

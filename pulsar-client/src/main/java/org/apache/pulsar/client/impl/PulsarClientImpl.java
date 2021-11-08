@@ -88,15 +88,27 @@ import org.apache.pulsar.common.util.netty.EventLoopUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * PulsarClientImpl 是个有状态的管理类，主要功能如下:
+ *
+ * 实现PulsarClient接口
+ * 管理生产者、消费者的生命周期
+ * 提供一些公共服务，如LookupService
+ * */
 public class PulsarClientImpl implements PulsarClient {
 
     private static final Logger log = LoggerFactory.getLogger(PulsarClientImpl.class);
 
+    //客户端配置数据
     protected final ClientConfigurationData conf;
+    //查找服务
     private LookupService lookup;
+    //连接池
     private final ConnectionPool cnxPool;
+    //定时器
     private final Timer timer;
     private boolean needStopTimer;
+    //线程池提供者
     private final ExecutorProvider externalExecutorProvider;
     private final ExecutorProvider internalExecutorService;
     private final boolean createdEventLoopGroup;
@@ -106,10 +118,14 @@ public class PulsarClientImpl implements PulsarClient {
         Open, Closing, Closed
     }
 
+    //客户端状态
     private final AtomicReference<State> state = new AtomicReference<>();
+    //生产者对象池
     private final Set<ProducerBase<?>> producers;
+    //消费者对象池
     private final Set<ConsumerBase<?>> consumers;
 
+    //生产者ID、消费者ID、请求ID生成器
     private final AtomicLong producerIdGenerator = new AtomicLong();
     private final AtomicLong consumerIdGenerator = new AtomicLong();
     private final AtomicLong requestIdGenerator
@@ -132,10 +148,12 @@ public class PulsarClientImpl implements PulsarClient {
     @Getter
     private TransactionCoordinatorClientImpl tcClient;
 
+    //构造方法1 根据配置创建EventLoopGroup
     public PulsarClientImpl(ClientConfigurationData conf) throws PulsarClientException {
         this(conf, getEventLoopGroup(conf), true);
     }
 
+    //构造方法2 根据配置创建连接池
     public PulsarClientImpl(ClientConfigurationData conf, EventLoopGroup eventLoopGroup) throws PulsarClientException {
         this(conf, eventLoopGroup, new ConnectionPool(conf, eventLoopGroup), null, false, true);
     }
@@ -160,6 +178,7 @@ public class PulsarClientImpl implements PulsarClient {
         try {
             this.createdEventLoopGroup = createdEventLoopGroup;
             this.createdCnxPool = createdCnxPool;
+            //配置、serverUrl、eventLoopGroup均不能为空
             if (conf == null || isBlank(conf.getServiceUrl()) || eventLoopGroup == null) {
                 throw new PulsarClientException.InvalidConfigurationException("Invalid client configuration");
             }
@@ -167,16 +186,19 @@ public class PulsarClientImpl implements PulsarClient {
             setAuth(conf);
             this.conf = conf;
             clientClock = conf.getClock();
+            //启动认证方法
             conf.getAuthentication().start();
             this.cnxPool = cnxPool;
             externalExecutorProvider = new ExecutorProvider(conf.getNumListenerThreads(), "pulsar-external-listener");
             internalExecutorService = new ExecutorProvider(conf.getNumIoThreads(), "pulsar-client-internal");
+            //根据协议选择使用哪种方式提供查找服务
             if (conf.getServiceUrl().startsWith("http")) {
                 lookup = new HttpLookupService(conf, eventLoopGroup);
             } else {
                 lookup = new BinaryProtoLookupService(this, conf.getServiceUrl(), conf.getListenerName(), conf.isUseTls(), externalExecutorProvider.getExecutor());
             }
             if (timer == null) {
+                //定时器
                 this.timer = new HashedWheelTimer(getThreadFactory("pulsar-timer"), 1, TimeUnit.MILLISECONDS);
                 needStopTimer = true;
             } else {
@@ -196,6 +218,7 @@ public class PulsarClientImpl implements PulsarClient {
             }
 
             memoryLimitController = new MemoryLimitController(conf.getMemoryLimitBytes());
+            //设置状态为打开
             state.set(State.Open);
         } catch (Throwable t) {
             shutdown();
@@ -240,6 +263,7 @@ public class PulsarClientImpl implements PulsarClient {
         return new ProducerBuilderImpl<>(this, schema);
     }
 
+    // 1. 消费者构造者实例（PulsarClientImpl 类）。
     @Override
     public ConsumerBuilder<byte[]> newConsumer() {
         return new ConsumerBuilderImpl<>(this, Schema.BYTES);
@@ -268,30 +292,35 @@ public class PulsarClientImpl implements PulsarClient {
         return createProducerAsync(conf, schema, null);
     }
 
+    // 4. 切换到 PulsarClientImpl 类 ，异步创建生产者实例。
     @SuppressWarnings("rawtypes")
     public <T> CompletableFuture<Producer<T>> createProducerAsync(ProducerConfigurationData conf, Schema<T> schema,
                                                                   ProducerInterceptors interceptors) {
+        //配置为空
         if (conf == null) {
             return FutureUtil.failedFuture(
                 new PulsarClientException.InvalidConfigurationException("Producer configuration undefined"));
         }
 
+        //如果Schema为自动消费者Schema实例，由于这里是生产者，故抛异常
         if (schema instanceof AutoConsumeSchema) {
             return FutureUtil.failedFuture(
                 new PulsarClientException.InvalidConfigurationException("AutoConsumeSchema is only used by consumers to detect schemas automatically"));
         }
 
+        //Pulsar 客户端是否初始化完成，如果状态不是Open，则抛异常：客户端已关闭。
         if (state.get() != State.Open) {
             return FutureUtil.failedFuture(new PulsarClientException.AlreadyClosedException("Client already closed : state = " + state.get()));
         }
 
         String topic = conf.getTopicName();
-
+        //对Topic进行格式校验
         if (!TopicName.isValid(topic)) {
             return FutureUtil.failedFuture(
                 new PulsarClientException.InvalidTopicNameException("Invalid topic name: '" + topic + "'"));
         }
 
+        //自动获取Schema
         if (schema instanceof AutoProduceBytesSchema) {
             //如果开启自动获取producerschema，那么就会发送getSchema请求
             AutoProduceBytesSchema autoProduceBytesSchema = (AutoProduceBytesSchema) schema;
@@ -300,6 +329,7 @@ public class PulsarClientImpl implements PulsarClient {
                 return createProducerAsync(topic, conf, schema, interceptors);
             }
             //否则的话，就发送getSchema请求去获取
+            //这里就是查找服务，通过Topic查询注册的Schema，如果没注册，则默认Schema.BYTES
             return lookup.getSchema(TopicName.get(conf.getTopicName()))
                     .thenCompose(schemaInfoOptional -> {
                         if (schemaInfoOptional.isPresent()) {
@@ -323,6 +353,7 @@ public class PulsarClientImpl implements PulsarClient {
                                                                    Schema<T> schema,
                                                                    ProducerInterceptors interceptors) {
         CompletableFuture<Producer<T>> producerCreatedFuture = new CompletableFuture<>();
+        //通过查找服务获取Topic元数据，这里主要是确定Topic是否分区，以此来确定用哪个底层生产者实例
         //3.发送PARTITIONED_METADATA请求，收到PARTITIONED_METADATA_RESPONSE
         //那么这里就有个问题了，pulsar的metadata是怎么存储的，或者说broker之间是如何同步metadata的，难道每次请求metadata都是broker从zk读了之后返回给客户端的吗（即便加了cache，如果集群全部重启，第一次读会不会对zk压力比较大）
         getPartitionedTopicMetadata(topic).thenAccept(metadata -> {

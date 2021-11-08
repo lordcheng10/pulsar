@@ -58,16 +58,21 @@ import org.apache.pulsar.common.util.netty.EventLoopUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 主要是管理客户端与broker或proxy的连接
+ * */
 public class ConnectionPool implements Closeable {
+    //核心容器，用于存客户端与broker或proxy的连接
     protected final ConcurrentHashMap<InetSocketAddress, ConcurrentMap<Integer, CompletableFuture<ClientCnx>>> pool;
 
     private final Bootstrap bootstrap;
     private final PulsarChannelInitializer channelInitializerHandler;
     private final ClientConfigurationData clientConfig;
     private final EventLoopGroup eventLoopGroup;
+    //每个主机最大连接
     private final int maxConnectionsPerHosts;
     private final boolean isSniProxy;
-
+    //域名解析器
     protected final DnsNameResolver dnsResolver;
 
     public ConnectionPool(ClientConfigurationData conf, EventLoopGroup eventLoopGroup) throws PulsarClientException {
@@ -126,6 +131,7 @@ public class ConnectionPool implements Closeable {
         }));
     }
 
+    //就一个核心方法，原型如下：
     /**
      * Get a connection from the pool.
      * <p>

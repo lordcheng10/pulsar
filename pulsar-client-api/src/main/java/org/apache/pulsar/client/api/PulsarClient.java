@@ -26,6 +26,16 @@ import org.apache.pulsar.client.internal.DefaultImplementation;
 import org.apache.pulsar.common.classification.InterfaceAudience;
 import org.apache.pulsar.common.classification.InterfaceStability;
 
+/***
+ *
+ * 这里的生产者、消费者、读取者创建构造者实例方法签名都是一样的，分为两类：
+ *
+ * 默认Schema为BYTES。
+ *
+ * 自定义Schema，创建者指定Schema。
+ *
+ * 然后构造者都有一个默认实现方法xx create() throws PulsarClientException，分别来创建生产者、消费者、读取者实例，并完成实例的初始化，而此方法最终调用的为createXXAsync系列方法。下面，将讲解核心方法的实现。
+ * */
 /**
  * Class that provides a client interface to Pulsar.
  *
@@ -44,6 +54,7 @@ import org.apache.pulsar.common.classification.InterfaceStability;
 @InterfaceStability.Stable
 public interface PulsarClient extends Closeable {
 
+    // 默认构造器模式实现，用于新建给定配置的Pulsar实例
     /**
      * Get a new builder instance that can used to configure and build a {@link PulsarClient} instance.
      *
@@ -55,6 +66,8 @@ public interface PulsarClient extends Closeable {
         return DefaultImplementation.getDefaultImplementation().newClientBuilder();
     }
 
+    //创建生产者构造器，其用于创建给定配置的生产者，默认生产数据类型为字节数组
+    // 1. 创建生产者构造者实例（PulsarClientImpl类）。
     /**
      * Create a producer builder that can be used to configure
      * and construct a producer with default {@link Schema.BYTES}.
@@ -74,6 +87,7 @@ public interface PulsarClient extends Closeable {
      */
     ProducerBuilder<byte[]> newProducer();
 
+    //同上，这里强生产数据泛型，并可指定系统序列化方式
     /**
      * Create a producer builder that can be used to configure
      * and construct a producer with the specified schema.
@@ -96,6 +110,7 @@ public interface PulsarClient extends Closeable {
      */
     <T> ProducerBuilder<T> newProducer(Schema<T> schema);
 
+    //创建消费者构造器，其用于创建给定配置订阅特定Topic的消费者，默认消费数据类型为字节数组
     /**
      * Create a consumer builder with no schema ({@link Schema.BYTES}) for subscribing to
      * one or more topics.
@@ -119,6 +134,7 @@ public interface PulsarClient extends Closeable {
      */
     ConsumerBuilder<byte[]> newConsumer();
 
+    //同上，这里强调消费数据泛型，并可指定系统反序列化方式
     /**
      * Create a consumer builder with a specific schema for subscribing on a specific topic
      *
@@ -146,6 +162,7 @@ public interface PulsarClient extends Closeable {
      */
     <T> ConsumerBuilder<T> newConsumer(Schema<T> schema);
 
+    //创建读取者构造器，其用于创建给定配置读取特定Topic的读取者，默认读取数据类型为字节数组（它与消费者的区别在于，它不需要向broker发送Ack消息）
     /**
      * Create a topic reader builder with no schema ({@link Schema.BYTES}) to read from the specified topic.
      *
@@ -183,6 +200,7 @@ public interface PulsarClient extends Closeable {
      */
     ReaderBuilder<byte[]> newReader();
 
+    //同上，这里强调读取数据为泛型，并可指定系统反序列化方式
     /**
      * Create a topic reader builder with a specific {@link Schema}) to read from the specified topic.
      *
@@ -222,6 +240,7 @@ public interface PulsarClient extends Closeable {
      */
     <T> ReaderBuilder<T> newReader(Schema<T> schema);
 
+    //更新客户端服务URL
     /**
      * Update the service URL this client is using.
      *
@@ -235,6 +254,7 @@ public interface PulsarClient extends Closeable {
      */
     void updateServiceUrl(String serviceUrl) throws PulsarClientException;
 
+    //获取指定Topic的分区信息
     /**
      * Get the list of partitions for a given topic.
      *
@@ -252,6 +272,7 @@ public interface PulsarClient extends Closeable {
      */
     CompletableFuture<List<String>> getPartitionsForTopic(String topic);
 
+    //和平关闭PulsarClient，释放所有资源
     /**
      * Close the PulsarClient and release all the resources.
      *
@@ -265,6 +286,7 @@ public interface PulsarClient extends Closeable {
     @Override
     void close() throws PulsarClientException;
 
+    //异步，同上
     /**
      * Asynchronously close the PulsarClient and release all the resources.
      *
@@ -277,6 +299,7 @@ public interface PulsarClient extends Closeable {
      */
     CompletableFuture<Void> closeAsync();
 
+    //立即关闭客户端，不管资源是否被释放
     /**
      * Perform immediate shutdown of PulsarClient.
      *
