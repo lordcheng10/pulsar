@@ -301,6 +301,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         }
     }
 
+    //当有抛异常的时候，会走到这里来处理
+    //大于下日志，更新下状态，然后就把 ctx.close了？不应该是长链接，
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         if (state != State.Failed) {
@@ -1427,6 +1429,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
             Consumer consumer = consumerFuture.getNow(null);
             if (consumer != null) {
+                //推送消息给consumer客户端的核心逻辑在这里
                 consumer.flowPermits(flow.getMessagePermits());
             } else {
                 log.info("[{}] Couldn't find consumer {}", remoteAddress, flow.getConsumerId());

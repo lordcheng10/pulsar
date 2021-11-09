@@ -526,13 +526,17 @@ public class Consumer {
     }
 
     public void flowPermits(int additionalNumberOfMessages) {
+        //客户端告诉可推送的消息数，需要大于0，才可以推送，否则就直接抛出IllegalArgumentException异常，对于异常的处理在这里进行ServerCnx.exceptionCaught
+        //往外抛异常后怎么处理呢
         checkArgument(additionalNumberOfMessages > 0);
 
+        //如果未ack的消息数，超过了最大消息数，那么就不推送消息给客户端，就算不推送是不是也应该告诉客户端以下呀
         // block shared consumer when unacked-messages reaches limit
         if (shouldBlockConsumerOnUnackMsgs() && unackedMessages >= maxUnackedMessages) {
             blockedConsumerOnUnackedMsgs = true;
         }
         int oldPermits;
+        //当nack的数量超过阈值后，block的意思就是不回response了？那客户端不会超时吗 这个可以实验下
         if (!blockedConsumerOnUnackedMsgs) {
             oldPermits = MESSAGE_PERMITS_UPDATER.getAndAdd(this, additionalNumberOfMessages);
             if (log.isDebugEnabled()) {
