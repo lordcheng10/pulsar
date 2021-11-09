@@ -381,7 +381,7 @@ public abstract class PulsarWebResource {
 
         CompletableFuture<ClusterData> clusterDataFuture = new CompletableFuture<>();
 
-        if (!isValidCluster(pulsar, cluster)) {
+        if (!isValidCluster(pulsar, cluster)) {//如果不是有效的集群
             try {
                 // this code should only happen with a v1 namespace format prop/cluster/namespaces
                 if (!pulsar.getConfiguration().getClusterName().equals(cluster)) {

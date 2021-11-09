@@ -198,6 +198,7 @@ public class BrokerService implements Closeable {
     private final OrderedExecutor topicOrderedExecutor;
     // offline topic backlog cache
     private final ConcurrentOpenHashMap<TopicName, PersistentOfflineTopicStats> offlineTopicStatCache;
+    //动态配置
     private static final ConcurrentOpenHashMap<String, ConfigField> dynamicConfigurationMap =
             prepareDynamicConfigurationMap();
     private final ConcurrentOpenHashMap<String, Consumer<?>> configRegisteredListeners;
@@ -287,6 +288,7 @@ public class BrokerService implements Closeable {
         this.authorizationService = new AuthorizationService(
                 pulsar.getConfiguration(), pulsar().getPulsarResources());
 
+        //这里就是注册到zk上，去监听配置
         pulsar.getLocalMetadataStore().registerListener(this::handleMetadataChanges);
         pulsar.getConfigurationMetadataStore().registerListener(this::handleMetadataChanges);
 
@@ -1791,6 +1793,7 @@ public class BrokerService implements Closeable {
                 });
     }
 
+    //当有更新的时候,这里回触发
     private void handleDynamicConfigurationUpdates() {
         pulsar().getPulsarResources().getDynamicConfigResources().getDynamicConfigurationAsync()
                 .thenAccept(optMap -> {
@@ -1805,6 +1808,7 @@ public class BrokerService implements Closeable {
                             Consumer listener = configRegisteredListeners.get(configKey);
                             try {
                                 Object existingValue = configField.get(pulsar.getConfiguration());
+                                //通过反射来设置，动态配置的值
                                 configField.set(pulsar.getConfiguration(), newValue);
                                 log.info("Successfully updated configuration {}/{}", configKey,
                                         data.get(configKey));
@@ -2189,6 +2193,7 @@ public class BrokerService implements Closeable {
         return true;
     }
 
+    //这里决定了动态配置逻辑
     private static ConcurrentOpenHashMap<String, ConfigField> prepareDynamicConfigurationMap() {
         ConcurrentOpenHashMap<String, ConfigField> dynamicConfigurationMap = new ConcurrentOpenHashMap<>();
         for (Field field : ServiceConfiguration.class.getDeclaredFields()) {

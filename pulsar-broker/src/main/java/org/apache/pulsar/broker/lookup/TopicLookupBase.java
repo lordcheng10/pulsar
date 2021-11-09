@@ -207,6 +207,7 @@ public class TopicLookupBase extends PulsarWebResource {
         final CompletableFuture<ByteBuf> lookupfuture = new CompletableFuture<>();
         final String cluster = topicName.getCluster();
 
+        //验证集群
         // (1) validate cluster
         getClusterDataIfDifferentCluster(pulsarService, cluster, clientAppId).thenAccept(differentClusterData -> {
 

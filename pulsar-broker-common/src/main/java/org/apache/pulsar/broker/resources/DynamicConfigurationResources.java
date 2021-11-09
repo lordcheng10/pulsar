@@ -27,6 +27,7 @@ import java.util.function.Function;
 import org.apache.pulsar.metadata.api.MetadataStore;
 import org.apache.pulsar.metadata.api.MetadataStoreException;
 
+//动态配置source
 public class DynamicConfigurationResources extends BaseResources<Map<String, String>> {
 
     private static final String BROKER_SERVICE_CONFIGURATION_PATH = "/admin/configuration";
