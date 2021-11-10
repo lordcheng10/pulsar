@@ -136,6 +136,7 @@ class OpReadEntry implements ReadEntriesCallback {
     void checkReadCompletion() {
         if (entries.size() < count && cursor.hasMoreEntries() &&
                 ((PositionImpl) cursor.getReadPosition()).compareTo(maxPosition) < 0) {
+            //如果还需要读数据，那么久继续读
             // We still have more entries to read from the next ledger, schedule a new async operation
             if (nextReadPosition.getLedgerId() != readPosition.getLedgerId()) {
                 cursor.ledger.startReadOperationOnLedger(nextReadPosition, OpReadEntry.this);
@@ -147,6 +148,7 @@ class OpReadEntry implements ReadEntriesCallback {
                 cursor.ledger.asyncReadEntries(OpReadEntry.this);
             }));
         } else {
+            //否则就完成了，直接完成
             // The reading was already completed, release resources and trigger callback
             try {
                 cursor.readOperationCompleted();

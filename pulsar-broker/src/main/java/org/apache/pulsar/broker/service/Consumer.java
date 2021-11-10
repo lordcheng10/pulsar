@@ -537,12 +537,15 @@ public class Consumer {
         }
         int oldPermits;
         //当nack的数量超过阈值后，block的意思就是不回response了？那客户端不会超时吗 这个可以实验下
+        //实现过后发现，客户端根本没有超时一说，客户端发送flow请求，服务端可以不回response，只要客户端不去计时，然后做超时处理就可以了。为什么客户端可以不管服务端是否返回response，因为它有专门的心跳来探活，只要活着，我告诉你我可以接收的消息数，你可以不推送消息，没关系。
+        //但有个不好的地方，这样客户端就不知道现在是什么情况，看起来就只是接收不到消息，但完全不知道是因为服务端给block了，这样只有去找服务端查问题。
         if (!blockedConsumerOnUnackedMsgs) {
             oldPermits = MESSAGE_PERMITS_UPDATER.getAndAdd(this, additionalNumberOfMessages);
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "
                         + "for consumer", topicName, subscription, additionalNumberOfMessages, consumerId);
             }
+            //这里才是推送消息的核心
             subscription.consumerFlow(this, additionalNumberOfMessages);
         } else {
             oldPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndAdd(this, additionalNumberOfMessages);

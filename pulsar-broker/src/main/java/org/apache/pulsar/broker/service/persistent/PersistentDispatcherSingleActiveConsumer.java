@@ -106,6 +106,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             return;
         }
 
+        // 如果订阅类型为Failover，则延迟回滚游标并读取更多条目以防止消息重复
         // If subscription type is Failover, delay rewinding cursor and
         // reading more entries in order to prevent message duplication
 
@@ -113,8 +114,10 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             return;
         }
 
+        //这个任务看起来是，重放所有已经推送出去，但还没有确认的消息，如果正在执行该任务，那么正常的推送任务就需要忽略
         readOnActiveConsumerTask = topic.getBrokerService().executor().schedule(() -> {
             if (log.isDebugEnabled()) {
+                //将光标后退到标记删除位置，可重放所有已读但尚未标记删除的消息。
                 log.debug("[{}] Rewind cursor and read more entries after {} ms delay", name,
                         serviceConfig.getActiveConsumerFailoverDelayTimeMillis());
             }
@@ -147,6 +150,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
     }
 
     public synchronized void internalReadEntriesComplete(final List<Entry> entries, Object obj) {
+        //读消息成功后，会通过回调调用这里，进行推送消息
         Consumer readConsumer = (Consumer) obj;
         if (log.isDebugEnabled()) {
             log.debug("[{}-{}] Got messages: {}", name, readConsumer, entries.size());
@@ -246,31 +250,35 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
 
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //开始推送,将推送任务交给broker的顺序线程池，该线程池是所有topic共享的
         topic.getBrokerService().getTopicOrderedExecutor().executeOrdered(topicName, SafeRun.safeRun(() -> {
+            //这里才是真正的推送逻辑
             internalConsumerFlow(consumer, additionalNumberOfMessages);
         }));
     }
 
     private synchronized void internalConsumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //havePendingRead代表是否前面已经有推送任务了，如果有了，那么就算了,只有在调用readMoreEntries方法的时候，才会设置为true
         if (havePendingRead) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Ignoring flow control message since we already have a pending read req", name,
                         consumer);
             }
-        } else if (ACTIVE_CONSUMER_UPDATER.get(this) != consumer) {
+        } else if (ACTIVE_CONSUMER_UPDATER.get(this) != consumer) {//否则的话看下对应推送的consumer是否是当前活跃的consumer,如果不是也会忽略推送
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Ignoring flow control message since consumer is not active partition consumer", name,
                         consumer);
             }
-        } else if (readOnActiveConsumerTask != null) {
+        } else if (readOnActiveConsumerTask != null) {//如果目前有回放任务，那么直接忽略，不推送，等回放任务把未确认的消息重新推送完
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Ignoring flow control message since consumer is waiting for cursor to be rewinded",
                         name, consumer);
             }
-        } else {
+        } else {//否则才会真的开始推送消息
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Trigger new read after receiving flow control message", name, consumer);
             }
+            //这里是推送消息
             readMoreEntries(consumer);
         }
     }
@@ -319,35 +327,46 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
 
     @Override
     protected void readMoreEntries(Consumer consumer) {
+        // 当所有消费者都与代理断开连接时，消费者可以为空。
+        // 因此，如果当前没有活动的消费者，则跳过读取更多条目。
         // consumer can be null when all consumers are disconnected from broker.
         // so skip reading more entries if currently there is no active consumer.
         if (null == consumer) {
             return;
         }
 
+        //首先看下当前consumer是否有可以接收消息的buffer，如果没有的话，就直接忽略，否则继续进行下一步
         if (consumer.getAvailablePermits() > 0) {
+            //计算可读取的数据量<消息数，bytes大小>
             Pair<Integer, Long> calculateResult = calculateToRead(consumer);
+            //要读取的消息数
             int messagesToRead = calculateResult.getLeft();
+            //要读取的bytes大小
             long bytesToRead = calculateResult.getRight();
 
             if (-1 == messagesToRead || bytesToRead == -1) {
+                // 跳过读取，因为主题/调度程序已超过调度率。
                 // Skip read as topic/dispatcher has exceed the dispatch rate.
                 return;
             }
 
+            //开始调度读取数据
             // Schedule read
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Schedule read of {} messages", name, consumer, messagesToRead);
             }
             havePendingRead = true;
+            //判断该consumer是否是要从compact的topic中读取数据
             if (consumer.readCompacted()) {
                 topic.getCompactedTopic().asyncReadEntriesOrWait(cursor, messagesToRead, isFirstRead,
                         this, consumer);
             } else {
+                //这里才是正常读取消息进行推送的地方
                 cursor.asyncReadEntriesOrWait(messagesToRead,
                         bytesToRead, this, consumer, topic.getMaxReadPosition());
             }
         } else {
+            //该consumer没有可接收的buffer了，所以这里直接忽略推送
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Consumer buffer is full, pause reading", name, consumer);
             }
@@ -355,7 +374,10 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
     }
 
     protected Pair<Integer, Long> calculateToRead(Consumer consumer) {
+        //这里获取该consumer可接收的消息数
         int availablePermits = consumer.getAvailablePermits();
+        // 如果连接当前不可写，我们无论如何都会发出读取请求，但针对单个消息。 这里的目的是继续使用请求作为通知机制，同时避免读取和发送大量消息，这些消息在写入套接字之前需要等待。
+        //如果不可写，那么久只写一条消息，用来探活
         if (!consumer.isWritable()) {
             // If the connection is not currently writable, we issue the read request anyway, but for a single
             // message. The intent here is to keep use the request as a notification mechanism while avoiding to
@@ -364,18 +386,27 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             availablePermits = 1;
         }
 
+        //从可读的消息数和最大可读的消息数上，取最大值.默认一次最多只可以推送100条消息
         int messagesToRead = Math.min(availablePermits, readBatchSize);
+        //一次可推送的最大数据量，默认是5M
         long bytesToRead = serviceConfig.getDispatcherMaxReadSizeBytes();
+        //如果开启精准调度流控，调整记录读取，也就是计算单条消息的平均大小
         // if turn of precise dispatcher flow control, adjust the records to read
         if (consumer.isPreciseDispatcherFlowControl()) {
+            //平均每个entry包含的消息数，正常一个entry就一条消息，这里刚开始默认是1000，代表一个entry包含1000条消息
             int avgMessagesPerEntry = consumer.getAvgMessagesPerEntry();
+            //这里是看，最少要推送多少个entry
             messagesToRead = Math.min((int) Math.ceil(availablePermits * 1.0 / avgMessagesPerEntry), readBatchSize);
         }
 
+        // 仅在以下情况下进行节流：
+        //(1) 游标未处于活动状态（或启用了 Throttle-nonBacklogConsumer 的标志） bcz active-cursor 从缓存而不是簿记员中读取消息
+        //(2) 如果主题已达到消息速率阈值：然后安排读取 在 MESSAGE_RATE_BACKOFF_MS 之后
         // throttle only if: (1) cursor is not active (or flag for throttle-nonBacklogConsumer is enabled) bcz
         // active-cursor reads message from cache rather from bookkeeper (2) if topic has reached message-rate
         // threshold: then schedule the read after MESSAGE_RATE_BACKOFF_MS
         if (serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled() || !cursor.isActive()) {
+            //当开启了积压限流或cursor不是活跃的
             if (topic.getDispatchRateLimiter().isPresent()
                     && topic.getDispatchRateLimiter().get().isDispatchRateLimitingEnabled()) {
                 DispatchRateLimiter topicRateLimiter = topic.getDispatchRateLimiter().get();
@@ -443,6 +474,7 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             }
         }
 
+        //如果 messagesToRead 为 0 或更少，则将其更正为 1 以防止 IllegalArgumentException
         // If messagesToRead is 0 or less, correct it to 1 to prevent IllegalArgumentException
         return Pair.of(Math.max(messagesToRead, 1), Math.max(bytesToRead, 1));
     }

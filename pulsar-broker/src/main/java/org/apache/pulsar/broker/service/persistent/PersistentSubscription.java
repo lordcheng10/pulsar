@@ -358,7 +358,10 @@ public class PersistentSubscription implements Subscription {
 
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //统计下推送消息的时间戳,这个是订阅维度的，相当于kafka中的group维度
         this.lastConsumedFlowTimestamp = System.currentTimeMillis();
+        //这里是推送消息最核心的逻辑
+        //dispatcher有好几个实现类
         dispatcher.consumerFlow(consumer, additionalNumberOfMessages);
     }
 

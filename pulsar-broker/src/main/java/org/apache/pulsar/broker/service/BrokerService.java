@@ -1241,6 +1241,7 @@ public class BrokerService implements Closeable, ZooKeeperCacheListener<Policies
 
             managedLedgerConfig.setCreateIfMissing(createIfMissing);
 
+            //创建持久化topic的时候，这里会将对应的brokerserver传入进去
             // Once we have the configuration, we can proceed with the async open operation
             managedLedgerFactory.asyncOpen(topicName.getPersistenceNamingEncoding(), managedLedgerConfig,
                     new OpenLedgerCallback() {

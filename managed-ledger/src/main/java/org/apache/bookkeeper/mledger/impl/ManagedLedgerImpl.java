@@ -359,6 +359,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                                 log.debug("[{}] Opened ledger {}: {}", name, id, BKException.getMessage(rc));
                             }
                             if (rc == BKException.Code.OK) {
+                                //看起来是在这里加载的
                                 LedgerInfo info = LedgerInfo.newBuilder().setLedgerId(id)
                                         .setEntries(lh.getLastAddConfirmed() + 1).setSize(lh.getLength())
                                         .setTimestamp(clock.millis()).build();
@@ -1679,17 +1680,20 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     void asyncReadEntries(OpReadEntry opReadEntry) {
+        //获取当前状态
         final State state = STATE_UPDATER.get(this);
+        //如果当前状态是fenced或者closed，那么就直接调用callback
         if (state == State.Fenced || state == State.Closed) {
             opReadEntry.readEntriesFailed(new ManagedLedgerFencedException(), opReadEntry.ctx);
             return;
         }
-
+        //获取当前读取的ledger
         long ledgerId = opReadEntry.readPosition.getLedgerId();
 
         LedgerHandle currentLedger = this.currentLedger;
 
         if (currentLedger != null && ledgerId == currentLedger.getId()) {
+            // 当前的写入账本不在缓存中（因为我们不希望它被自动驱逐），并且我们不能对同一个账本使用 2 个不同的账本句柄（读和写）。
             // Current writing ledger is not in the cache (since we don't want
             // it to be automatically evicted), and we cannot use 2 different
             // ledger handles (read & write)for the same ledger.
@@ -1704,6 +1708,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 return;
             }
 
+            //这里会根据ledger id来找到对应的ledger，然后进行读数据
             // Get a ledger handle to read from
             getLedgerHandle(ledgerId).thenAccept(ledger -> internalReadFromLedger(ledger, opReadEntry)).exceptionally(ex -> {
                 log.error("[{}] Error opening ledger for reading at position {} - {}", name, opReadEntry.readPosition,
@@ -1728,6 +1733,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     }
 
     CompletableFuture<ReadHandle> getLedgerHandle(long ledgerId) {
+        //从缓存中获取ReadHandle，ReadHandle提供读取消息的方式
         CompletableFuture<ReadHandle> ledgerHandle = ledgerCache.get(ledgerId);
         if (ledgerHandle != null) {
             return ledgerHandle;
@@ -1735,6 +1741,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
 
         // If not present try again and create if necessary
         return ledgerCache.computeIfAbsent(ledgerId, lid -> {
+            //如果cache里面没有就
             // Open the ledger for reading if it was not already opened
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Asynchronously opening ledger {} for read", name, ledgerId);
@@ -1895,6 +1902,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             log.debug("[{}] Reading entries from ledger {} - first={} last={}", name, ledger.getId(), firstEntry,
                     lastEntry);
         }
+        //这里才开始在读
         asyncReadEntry(ledger, firstEntry, lastEntry, false, opReadEntry, opReadEntry.ctx);
     }
 
@@ -1914,7 +1922,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
 
     protected void asyncReadEntry(ReadHandle ledger, long firstEntry, long lastEntry, boolean isSlowestReader,
             OpReadEntry opReadEntry, Object ctx) {
-        if (config.getReadEntryTimeoutSeconds() > 0) {
+        if (config.getReadEntryTimeoutSeconds() > 0) {//默认值为0，不超时？
             // set readOpCount to uniquely validate if ReadEntryCallbackWrapper is already recycled
             long readOpCount = READ_OP_COUNT_UPDATER.incrementAndGet(this);
             long createdTime = System.nanoTime();
@@ -1923,6 +1931,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             lastReadCallback = readCallback;
             entryCache.asyncReadEntry(ledger, firstEntry, lastEntry, isSlowestReader, readCallback, readOpCount);
         } else {
+            //这个方法才是真正读取消息
             entryCache.asyncReadEntry(ledger, firstEntry, lastEntry, isSlowestReader, opReadEntry, ctx);
         }
     }
@@ -3089,31 +3098,44 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
      * @return the count of entries
      */
     long getNumberOfEntries(Range<PositionImpl> range) {
+        //下限
         PositionImpl fromPosition = range.lowerEndpoint();
         boolean fromIncluded = range.lowerBoundType() == BoundType.CLOSED;
+        //上限
         PositionImpl toPosition = range.upperEndpoint();
         boolean toIncluded = range.upperBoundType() == BoundType.CLOSED;
 
         if (fromPosition.getLedgerId() == toPosition.getLedgerId()) {
+            //如果ledger相同，那么就说明读和写都在同一个ledger上
             // If the 2 positions are in the same ledger
             long count = toPosition.getEntryId() - fromPosition.getEntryId() - 1;
+            //如果包含下限边界，那么+1
             count += fromIncluded ? 1 : 0;
+            //如果包含上限边界，那么+1
             count += toIncluded ? 1 : 0;
+            //这样就计算出entry数了
             return count;
         } else {
+            //否则是在不同ledger上
             long count = 0;
+            // 如果 from & to 指向不同的账本，那么我们需要： 1. 添加 toPosition 指向的账本中的条目
             // If the from & to are pointing to different ledgers, then we need to :
             // 1. Add the entries in the ledger pointed by toPosition
+            //一个ledger中的entryId是依次递增的？从0开始计数？看起来是的
             count += toPosition.getEntryId();
+            //如果包含下限，那么再+1
             count += toIncluded ? 1 : 0;
 
+            // 2. 添加fromPosition指向的账本中的条目
             // 2. Add the entries in the ledger pointed by fromPosition
-            LedgerInfo li = ledgers.get(fromPosition.getLedgerId());
+            LedgerInfo li = ledgers.get(fromPosition.getLedgerId());//获取该ledger上的entry,ledgers是一个map，里面记录了每个ledger中对应的ledgerInfo，那么broker刚启动的时候，需要加载下？
+            //LedgerInfo包含了ledgerI的、消息数、总size、时间戳(应该是最后修改时间)
             if (li != null) {
                 count += li.getEntries() - (fromPosition.getEntryId() + 1);
                 count += fromIncluded ? 1 : 0;
             }
 
+            // 3. 在两者之间添加整个分类帐条目
             // 3. Add the whole ledgers entries in between
             for (LedgerInfo ls : ledgers.subMap(fromPosition.getLedgerId(), false, toPosition.getLedgerId(), false)
                     .values()) {

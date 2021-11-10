@@ -607,6 +607,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     @Override
     public void asyncReadEntries(final int numberOfEntriesToRead, final ReadEntriesCallback callback,
             final Object ctx, PositionImpl maxPosition) {
+        //size限制没有
         asyncReadEntries(numberOfEntriesToRead, NO_MAX_SIZE_LIMIT, callback, ctx, maxPosition);
     }
 
@@ -614,16 +615,19 @@ public class ManagedCursorImpl implements ManagedCursor {
     public void asyncReadEntries(int numberOfEntriesToRead, long maxSizeBytes, ReadEntriesCallback callback,
                                  Object ctx, PositionImpl maxPosition) {
         checkArgument(numberOfEntriesToRead > 0);
+        //如果已经关闭了，那么久直接掉回调
         if (isClosed()) {
             callback.readEntriesFailed(new ManagedLedgerException
                     .CursorAlreadyClosedException("Cursor was already closed"), ctx);
             return;
         }
 
+        //将size换算成消息
         int numOfEntriesToRead = applyMaxSizeCap(numberOfEntriesToRead, maxSizeBytes);
 
         PENDING_READ_OPS_UPDATER.incrementAndGet(this);
         OpReadEntry op = OpReadEntry.create(this, readPosition, numOfEntriesToRead, callback, ctx, maxPosition);
+        //这里是最核心的推送
         ledger.asyncReadEntries(op);
     }
 
@@ -745,21 +749,26 @@ public class ManagedCursorImpl implements ManagedCursor {
     @Override
     public void asyncReadEntriesOrWait(int maxEntries, long maxSizeBytes, ReadEntriesCallback callback, Object ctx,
                                        PositionImpl maxPosition) {
+        //首先看下最大消息数是否大于0
         checkArgument(maxEntries > 0);
+        //如果是已经关闭了，那么这里直接调用readEntriesFailed
         if (isClosed()) {
             callback.readEntriesFailed(new CursorAlreadyClosedException("Cursor was already closed"), ctx);
             return;
         }
 
+        //将size换算成消息数
         int numberOfEntriesToRead = applyMaxSizeCap(maxEntries, maxSizeBytes);
 
-        if (hasMoreEntries()) {
+        if (hasMoreEntries()) {//如果有可读的消息，那么就立即读取消息
             // If we have available entries, we can read them immediately
             if (log.isDebugEnabled()) {
                 log.debug("[{}] [{}] Read entries immediately", ledger.getName(), name);
             }
+            //这里是核心的推送消息逻辑
             asyncReadEntries(numberOfEntriesToRead, callback, ctx, maxPosition);
         } else {
+            //没有可读的消息时，做下面的处理:延迟读
             OpReadEntry op = OpReadEntry.create(this, readPosition, numberOfEntriesToRead, callback,
                     ctx, maxPosition);
 
@@ -780,6 +789,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                         .schedule(() -> checkForNewEntries(op, callback, ctx),
                                 config.getNewEntriesCheckDelayInMillis(), TimeUnit.MILLISECONDS);
             } else {
+                //如果没有延迟检查，那么就直接检查，没有就返回
                 // If there's no delay, check directly from the same thread
                 checkForNewEntries(op, callback, ctx);
             }
@@ -830,7 +840,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                 // entries.
                 // If the managed ledger was indeed terminated, we need to notify the cursor
                 callback.readEntriesFailed(new NoMoreEntriesToReadException("Topic was terminated"), ctx);
-            }
+            }//否则就算了，啥都不推送？
         } catch (Throwable t) {
             callback.readEntriesFailed(new ManagedLedgerException(t), ctx);
         }
@@ -854,6 +864,10 @@ public class ManagedCursorImpl implements ManagedCursor {
 
     @Override
     public boolean hasMoreEntries() {
+        // 如果写者和读者在同一个账本上，我们只需要比较条目 id 即可知道我们是否有更多条目。
+        // 如果它们在不同的分类账上，我们有两种情况：
+        // * 指向有效条目的 Writer --> 应该返回 true，因为我们有可用的条目
+        // * Writer 指向“无效”条目 -1（意味着该分类帐中没有条目）--> 需要检查 reader 是否位于前一个分类帐中的最后一个条目
         // If writer and reader are on the same ledger, we just need to compare the entry id to know if we have more
         // entries.
         // If they are on different ledgers we have 2 cases :
@@ -865,6 +879,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         if (writerPosition.getEntryId() != -1) {
             return readPosition.compareTo(writerPosition) <= 0;
         } else {
+            // 回退到检查条目的数量以确保我们在分类帐中的最后一个条目并且没有分类帐在中间
             // Fall back to checking the number of entries to ensure we are at the last entry in ledger and no ledgers
             // are in the middle
             return getNumberOfEntries() > 0;
@@ -874,12 +889,15 @@ public class ManagedCursorImpl implements ManagedCursor {
     @Override
     public long getNumberOfEntries() {
         if (readPosition.compareTo(ledger.getLastPosition().getNext()) > 0) {
+            //如果读的位置大于写位置，那么就返回0，表示没有可读的消息
             if (log.isDebugEnabled()) {
                 log.debug("[{}] [{}] Read position {} is ahead of last position {}. There are no entries to read",
                         ledger.getName(), name, readPosition, ledger.getLastPosition());
             }
             return 0;
         } else {
+            //否则读小于写，就计算下可读的消息数
+            //Range.closedOpen表示左闭右开
             return getNumberOfEntries(Range.closedOpen(readPosition, ledger.getLastPosition().getNext()));
         }
     }
@@ -1315,6 +1333,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     }
 
     protected long getNumberOfEntries(Range<PositionImpl> range) {
+        //获取该范围所有的entries
         long allEntries = ledger.getNumberOfEntries(range);
 
         if (log.isDebugEnabled()) {

@@ -700,6 +700,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
                     + "update dispatch-rate relatively to publish-rate: "
                     + "throttle-dispatch-rate = (publish-rate + configured dispatch-rate) ")
     private boolean dispatchThrottlingRateRelativeToPublishRate = false;
+    //对于已经赶上已发布消息且没有积压的消费者，默认调度节流被禁用。 这也为非积压消费者启用了调度限制。
     @FieldContext(
         dynamic = true,
         category = CATEGORY_POLICIES,
