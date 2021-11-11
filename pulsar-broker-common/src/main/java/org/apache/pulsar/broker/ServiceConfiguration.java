@@ -2043,6 +2043,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
     )
     private String managedLedgerOffloadDriver = null;
 
+    //没有被使用
     @FieldContext(
         category = CATEGORY_STORAGE_OFFLOADING,
         doc = "Maximum number of thread pool threads for ledger offloading"
