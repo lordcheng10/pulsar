@@ -193,7 +193,9 @@ public class BrokerService implements Closeable {
             multiLayerTopicsMap;
     private int numberOfNamespaceBundles = 0;
 
+    //Boss NioEventLoopGrou 建立连接，并分发channnel
     private final EventLoopGroup acceptorGroup;
+    //参考：https://juejin.cn/post/6844903712435994631#heading-15，从channel中读写数据
     private final EventLoopGroup workerGroup;
     private final OrderedExecutor topicOrderedExecutor;
     // offline topic backlog cache
@@ -280,6 +282,7 @@ public class BrokerService implements Closeable {
                 .name("broker-topic-workers").build();
         final DefaultThreadFactory acceptorThreadFactory = new DefaultThreadFactory("pulsar-acceptor");
 
+        //boosGroup,用于Accetpt连接建立事件并分发请求
         this.acceptorGroup = EventLoopUtil.newEventLoopGroup(
                 pulsar.getConfiguration().getNumAcceptorThreads(), false, acceptorThreadFactory);
         this.workerGroup = eventLoopGroup;
@@ -384,13 +387,16 @@ public class BrokerService implements Closeable {
         log.info("Successfully bind protocol `{}` on {}", protocol, address);
     }
 
+    //这里是nety的开始
     private ServerBootstrap defaultServerBootstrap() {
         ServerBootstrap bootstrap = new ServerBootstrap();
         bootstrap.childOption(ChannelOption.ALLOCATOR, PulsarByteBufAllocator.DEFAULT);
+        //这里就在注册接收和工作线程组
         bootstrap.group(acceptorGroup, workerGroup);
         bootstrap.childOption(ChannelOption.TCP_NODELAY, true);
         bootstrap.childOption(ChannelOption.RCVBUF_ALLOCATOR,
             new AdaptiveRecvByteBufAllocator(1024, 16 * 1024, 1 * 1024 * 1024));
+        //设置服务端的ServerSocketChannel实现类
         bootstrap.channel(EventLoopUtil.getServerSocketChannelClass(workerGroup));
         EventLoopUtil.enableTriggeredMode(bootstrap);
         return bootstrap;

@@ -172,6 +172,8 @@ public class ServiceConfiguration implements PulsarConfiguration {
             doc = "Enable or disable the proxy protocol.")
     private boolean haProxyProtocolEnabled;
 
+
+    //处理连接请求线程
     @FieldContext(
             category = CATEGORY_SERVER,
             doc = "Number of threads to use for Netty Acceptor."

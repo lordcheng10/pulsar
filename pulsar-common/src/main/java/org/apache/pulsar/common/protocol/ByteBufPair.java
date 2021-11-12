@@ -110,6 +110,7 @@ public final class ByteBufPair extends AbstractReferenceCounted {
     public static final Encoder ENCODER = new Encoder();
     public static final CopyingEncoder COPYING_ENCODER = new CopyingEncoder();
 
+    //出站处理
     @Sharable
     @SuppressWarnings("checkstyle:JavadocType")
     public static class Encoder extends ChannelOutboundHandlerAdapter {

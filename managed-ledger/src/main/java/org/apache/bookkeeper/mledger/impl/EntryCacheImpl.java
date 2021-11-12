@@ -293,6 +293,7 @@ public class EntryCacheImpl implements EntryCache {
 
         } else {
             if (!cachedEntries.isEmpty()) {
+                //这里其实就是引用计数减1，当减为0的时候就直接释放掉
                 cachedEntries.forEach(entry -> entry.release());
             }
 

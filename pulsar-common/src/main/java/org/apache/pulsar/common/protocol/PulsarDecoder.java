@@ -81,6 +81,8 @@ import org.apache.pulsar.common.intercept.InterceptException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
+//用于进站处理
 /**
  * Basic implementation of the channel handler to process inbound Pulsar data.
  */
