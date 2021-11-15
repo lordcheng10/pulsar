@@ -525,22 +525,32 @@ public class Consumer {
         }
     }
 
+    //flowPermits:流动许可证
+    //additionalNumberOfMessages:额外的消息数
     public void flowPermits(int additionalNumberOfMessages) {
+        //检查客户端允许的消息数，是否大于0
         checkArgument(additionalNumberOfMessages > 0);
 
+        // 当未确认的消息达到限制时阻止共享消费者,为什么只针对share的消费模式呢？因为share的消费模式不是累计确认，比较消耗资源,所以需要限制最大未确认的ack数
+        // 在 UnackedMsgs 上阻止消费者
         // block shared consumer when unacked-messages reaches limit
         if (shouldBlockConsumerOnUnackMsgs() && unackedMessages >= maxUnackedMessages) {
             blockedConsumerOnUnackedMsgs = true;
         }
+        //该consumer累计的可以推送的消息，实际就是还没推送完和需要推送的消息数
         int oldPermits;
         if (!blockedConsumerOnUnackedMsgs) {
+            //获取还没完成推送的消息数
             oldPermits = MESSAGE_PERMITS_UPDATER.getAndAdd(this, additionalNumberOfMessages);
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "
                         + "for consumer {}", topicName, subscription, additionalNumberOfMessages, consumerId);
             }
+
+            //这里是真正推送消息的地方
             subscription.consumerFlow(this, additionalNumberOfMessages);
         } else {
+            //统计block了的消息数
             oldPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndAdd(this, additionalNumberOfMessages);
         }
 

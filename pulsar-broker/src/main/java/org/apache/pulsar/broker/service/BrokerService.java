@@ -204,6 +204,7 @@ public class BrokerService implements Closeable {
 
     private final EventLoopGroup acceptorGroup;
     private final EventLoopGroup workerGroup;
+    //flow请求的处理会用到它
     private final OrderedExecutor topicOrderedExecutor;
     // offline topic backlog cache
     private final ConcurrentOpenHashMap<TopicName, PersistentOfflineTopicStats> offlineTopicStatCache;

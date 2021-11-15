@@ -364,7 +364,9 @@ public class PersistentSubscription implements Subscription {
 
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //更新上次推送的时间戳
         this.lastConsumedFlowTimestamp = System.currentTimeMillis();
+        //推送消息
         dispatcher.consumerFlow(consumer, additionalNumberOfMessages);
     }
 

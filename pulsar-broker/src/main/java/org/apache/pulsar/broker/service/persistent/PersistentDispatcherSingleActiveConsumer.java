@@ -248,7 +248,10 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
 
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //consumer里面持有topic的引用，那意思是一个consumer不能有多个topic了？如果一个consumer对应多个，在服务端就得拆成多个consumer来对应
+        //这里的顺序执行线程池，实际就是把同一个topic的读放入同一个线程处理，
         topic.getBrokerService().getTopicOrderedExecutor().executeOrdered(topicName, SafeRun.safeRun(() -> {
+            // 读数据
             internalConsumerFlow(consumer);
         }));
     }
@@ -327,7 +330,8 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             return;
         }
 
-        if (consumer.getAvailablePermits() > 0) {
+        if (consumer.getAvailablePermits() > 0) {//可读的消息数
+            //可读的消息数
             Pair<Integer, Long> calculateResult = calculateToRead(consumer);
             int messagesToRead = calculateResult.getLeft();
             long bytesToRead = calculateResult.getRight();
@@ -357,8 +361,11 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
     }
 
     protected Pair<Integer, Long> calculateToRead(Consumer consumer) {
+        //获取可接收的消息数
         int availablePermits = consumer.getAvailablePermits();
+        //判断该consumer是否可写,实际是看对应的channel连接是否可写
         if (!consumer.isWritable()) {
+            // 如果不可写，那么久置为1
             // If the connection is not currently writable, we issue the read request anyway, but for a single
             // message. The intent here is to keep use the request as a notification mechanism while avoiding to
             // read and dispatch a big batch of messages which will need to wait before getting written to the
@@ -366,20 +373,31 @@ public class PersistentDispatcherSingleActiveConsumer extends AbstractDispatcher
             availablePermits = 1;
         }
 
+        //默认最多读取的entry数
         int messagesToRead = Math.min(availablePermits, readBatchSize);
+        //一次最大可读的数据，默认是5M，如果单条消息就大于5M，怎么办呢,那会至少都要读一条
         long bytesToRead = serviceConfig.getDispatcherMaxReadSizeBytes();
+        //如果开启精准调度流控，调整记录读取
         // if turn of precise dispatcher flow control, adjust the records to read
         if (consumer.isPreciseDispatcherFlowControl()) {
+            //获取平均每个entry包含的消息数
             int avgMessagesPerEntry = consumer.getAvgMessagesPerEntry();
+            //这里是计算有多少个entry
             messagesToRead = Math.min((int) Math.ceil(availablePermits * 1.0 / avgMessagesPerEntry), readBatchSize);
         }
 
+        //isDispatchThrottlingOnNonBacklogConsumerEnabled开关是控制是否对没有lag的消费者也进行限速
+        // cursor.isActive判断cursor是否活跃,cursor是干嘛的啊
+        // 仅在以下情况下进行节流：(1) 游标未激活（或启用了用于 Throttle-nonBacklogConsumer 的标志） bcz
+        // 如果主题已达到消息速率，则主动游标从缓存而不是簿记员（2）中读取消息
+        // 阈值：然后在 MESSAGE_RATE_BACKOFF_MS 之后安排读取
         // throttle only if: (1) cursor is not active (or flag for throttle-nonBacklogConsumer is enabled) bcz
         // active-cursor reads message from cache rather from bookkeeper (2) if topic has reached message-rate
         // threshold: then schedule the read after MESSAGE_RATE_BACKOFF_MS
         if (serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled() || !cursor.isActive()) {
             if (topic.getDispatchRateLimiter().isPresent()
                     && topic.getDispatchRateLimiter().get().isDispatchRateLimitingEnabled()) {
+                //判断该topic是否限速开启
                 DispatchRateLimiter topicRateLimiter = topic.getDispatchRateLimiter().get();
                 if (!topicRateLimiter.hasMessageDispatchPermit()) {
                     if (log.isDebugEnabled()) {

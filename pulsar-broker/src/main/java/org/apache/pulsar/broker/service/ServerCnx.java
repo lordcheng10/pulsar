@@ -1440,22 +1440,31 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleFlow(CommandFlow flow) {
+        //检查连接状态
         checkArgument(state == State.Connected);
+        //看是否开启了debug，如果开启了，就输出debug日志
         if (log.isDebugEnabled()) {
             log.debug("[{}] Received flow from consumer {} permits: {}", remoteAddress, flow.getConsumerId(),
                     flow.getMessagePermits());
         }
 
+        //获取consumer
         CompletableFuture<Consumer> consumerFuture = consumers.get(flow.getConsumerId());
 
+        //看是否成功注册了consumer，如果该consumer还没注册完成，或者根本就没有该consumer,或者之前注册consumer异常了，那么就直接不管，但看起来直接不管有点不妥
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
+            //获取consumer
             Consumer consumer = consumerFuture.getNow(null);
             if (consumer != null) {
+                //获取到了，那么就给对应consumer推送消息
+                //getMessagePermits是客户端告诉客户端可以接受的消息数,
+                //getMessagePermits名字翻译过来：获取消息许可，也就是说获取客户端的许可，服务端要推送消息给客户端，自然要获得客户端的许可
                 consumer.flowPermits(flow.getMessagePermits());
             } else {
+                //没有获取到对应的consumer
                 log.info("[{}] Couldn't find consumer {}", remoteAddress, flow.getConsumerId());
             }
-        }
+        }//else不应该做点啥吗
     }
 
     @Override

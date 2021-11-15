@@ -37,6 +37,7 @@ import org.apache.bookkeeper.mledger.AsyncCallbacks.SkipEntriesCallback;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 
 /**
+ * ManagedCursor 是 ManagedLedger 中的持久化游标。
  * A ManagedCursor is a persisted cursor inside a ManagedLedger.
  *
  * <p/>The ManagedCursor is used to read from the ManagedLedger and to signal when the consumer is done with the
