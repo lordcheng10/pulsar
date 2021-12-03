@@ -1,0 +1,4 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Mon Nov 22 20:38:49 CST 2021
+plexus-compiler-api-2.8.4.jar>maven-public-plugin=
+plexus-compiler-api-2.8.4.pom>maven-public-plugin=

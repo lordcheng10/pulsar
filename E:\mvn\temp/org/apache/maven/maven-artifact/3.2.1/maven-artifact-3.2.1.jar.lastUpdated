@@ -1,0 +1,5 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Mon Nov 22 20:19:02 CST 2021
+@default-maven-public-plugin-https\://mirrors.tencent.com/nexus/repository/maven-public/.lastUpdated=1637583542490
+https\://mirrors.tencent.com/nexus/repository/maven-public/.error=Could not transfer artifact org.apache.maven\:maven-artifact\:jar\:3.2.1 from/to maven-public-plugin (https\://mirrors.tencent.com/nexus/repository/maven-public/)\: transfer failed for https\://mirrors.tencent.com/nexus/repository/maven-public/org/apache/maven/maven-artifact/3.2.1/maven-artifact-3.2.1.jar
+https\://mirrors.tencent.com/repository/maven/tencent_public/.lastUpdated=1637583542964

@@ -1,0 +1,4 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Mon Nov 22 20:27:33 CST 2021
+maven-plugin-registry-2.2.1.jar>maven-public-plugin=
+maven-plugin-registry-2.2.1.pom>maven-public-plugin=

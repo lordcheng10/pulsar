@@ -608,7 +608,9 @@ public class PulsarService implements AutoCloseable {
                         + "authenticationEnabled=true when authorization is enabled with authorizationEnabled=true.");
             }
 
+            //初始化zookeeper
             localMetadataStore = createLocalMetadataStore();
+            //coordinate服务,用来选leader的
             coordinationService = new CoordinationServiceImpl(localMetadataStore);
 
             configurationMetadataStore = createConfigurationMetadataStore();

@@ -1,0 +1,5 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Mon Nov 22 20:38:36 CST 2021
+hamcrest-core-1.3.pom>maven_public=
+hamcrest-core-1.3.jar>maven_public=
+hamcrest-core-1.3.jar>maven-public-plugin=

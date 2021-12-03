@@ -1,0 +1,9 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Mon Nov 22 20:21:43 CST 2021
+https\://mirrors.tencent.com/repository/maven/tencent_public/.error=
+https\://mirrors.tencent.com/repository/maven/thirdparty/.error=
+https\://repo.maven.apache.org/maven2/.lastUpdated=1637583703876
+https\://mirrors.tencent.com/repository/maven/thirdparty/.lastUpdated=1637583660530
+@default-maven-public-plugin-https\://mirrors.tencent.com/nexus/repository/maven-public/.lastUpdated=1637583542494
+https\://mirrors.tencent.com/nexus/repository/maven-public/.error=Could not transfer artifact com.google.code.findbugs\:jsr305\:jar\:1.3.9 from/to maven-public-plugin (https\://mirrors.tencent.com/nexus/repository/maven-public/)\: transfer failed for https\://mirrors.tencent.com/nexus/repository/maven-public/com/google/code/findbugs/jsr305/1.3.9/jsr305-1.3.9.jar
+https\://mirrors.tencent.com/repository/maven/tencent_public/.lastUpdated=1637583542965
