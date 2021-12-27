@@ -273,6 +273,7 @@ public class PersistentTopic extends AbstractTopic
                 String remoteCluster = PersistentReplicator.getRemoteCluster(cursor.getName());
                 boolean isReplicatorStarted = false;
                 try {
+                    //这里会添加对应的集群同步任务
                     isReplicatorStarted = addReplicationCluster(remoteCluster, cursor, localCluster);
                 } catch (Exception e) {
                     log.warn("[{}] failed to start replication", topic, e);
@@ -611,7 +612,9 @@ public class PersistentTopic extends AbstractTopic
         return foundRemote.get();
     }
 
+    //这里回开启replica producer
     public CompletableFuture<Void> startReplProducers() {
+        // 从策略中读取 repl-cluster 以避免重新启动处于断开连接和关闭过程中的复制器
         // read repl-cluster from policies to avoid restart of replicator which are in process of disconnect and close
         return brokerService.pulsar().getPulsarResources().getNamespaceResources()
                 .getPoliciesAsync(TopicName.get(topic).getNamespaceObject())
@@ -1373,6 +1376,7 @@ public class PersistentTopic extends AbstractTopic
 
                     List<CompletableFuture<Void>> futures = Lists.newArrayList();
 
+                    // 检查缺失的复制子
                     // Check for missing replicators
                     for (String cluster : configuredClusters) {
                         if (cluster.equals(localCluster)) {
@@ -1380,6 +1384,7 @@ public class PersistentTopic extends AbstractTopic
                         }
 
                         if (!replicators.containsKey(cluster)) {
+                            // 添加replicator
                             futures.add(startReplicator(cluster));
                         }
                     }
@@ -1510,6 +1515,7 @@ public class PersistentTopic extends AbstractTopic
                 });
     }
 
+    // 启动replicator
     CompletableFuture<Void> startReplicator(String remoteCluster) {
         log.info("[{}] Starting replicator to remote: {}", topic, remoteCluster);
         final CompletableFuture<Void> future = new CompletableFuture<>();
@@ -1538,6 +1544,7 @@ public class PersistentTopic extends AbstractTopic
         return future;
     }
 
+    //添加该topic对应集群的数据同步
     protected boolean addReplicationCluster(String remoteCluster, ManagedCursor cursor, String localCluster) {
         AtomicBoolean isReplicatorStarted = new AtomicBoolean(true);
         replicators.computeIfAbsent(remoteCluster, r -> {
@@ -2369,6 +2376,7 @@ public class PersistentTopic extends AbstractTopic
         return retentionTime < 0 || (System.nanoTime() - lastActive) < retentionTime;
     }
 
+    // 这里应该是监听zk目录，当有变更的时候，会触发，比如增加了某个namespace的replica
     @Override
     public CompletableFuture<Void> onPoliciesUpdate(Policies data) {
         if (log.isDebugEnabled()) {
@@ -2428,6 +2436,7 @@ public class PersistentTopic extends AbstractTopic
                 replicator.getRateLimiter().ifPresent(DispatchRateLimiter::updateDispatchRate)
         );
         checkMessageExpiry();
+        // 检查replica复制
         CompletableFuture<Void> replicationFuture = checkReplicationAndRetryOnFailure();
         CompletableFuture<Void> dedupFuture = checkDeduplicationStatus();
         CompletableFuture<Void> persistentPoliciesFuture = checkPersistencePolicies();

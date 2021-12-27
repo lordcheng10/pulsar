@@ -1758,6 +1758,7 @@ public class BrokerService implements Closeable {
     }
 
 
+    // 监听metadata信息变更
     private void handleMetadataChanges(Notification n) {
         if (n.getType() == NotificationType.Modified && NamespaceResources.pathIsFromNamespace(n.getPath())) {
             NamespaceName ns = NamespaceResources.namespaceFromPath(n.getPath());

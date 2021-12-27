@@ -127,21 +127,27 @@ public class PersistentReplicator extends AbstractReplicator
 
     @Override
     protected void readEntries(org.apache.pulsar.client.api.Producer<byte[]> producer) {
+        // 倒回光标以确保再次读取重新启动时发送的所有未确认消息
         // Rewind the cursor to be sure to read again all non-acked messages sent while restarting
         cursor.rewind();
 
+        // 取消正在挂起的读请求
         cursor.cancelPendingReadRequest();
+        //有挂起的请求标志设置未false
         HAVE_PENDING_READ_UPDATER.set(this, FALSE);
         this.producer = (ProducerImpl) producer;
 
         if (STATE_UPDATER.compareAndSet(this, State.Starting, State.Started)) {
+            // 将状态从正在启动更新未启动成功，首先重置backoff
             log.info("[{}][{} -> {}] Created replicator producer", topicName, localCluster, remoteCluster);
             backOff.reset();
             // activate cursor: so, entries can be cached
             this.cursor.setActive();
+            // 这里开始读数据
             // read entries
             readMoreEntries();
         } else {
+            // 如果不是正在启动，那么就直接关闭producer
             log.info(
                     "[{}][{} -> {}] Replicator was stopped while creating the producer."
                             + " Closing it. Replicator state: {}",
@@ -171,14 +177,16 @@ public class PersistentReplicator extends AbstractReplicator
     }
 
     /**
+     * 计算读取条目的可用许可。
      * Calculate available permits for read entries.
      *
      * @return
-     *   0:  Producer queue is full, no permits.
-     *  -1:  Rate Limiter reaches limit.
-     *  >0:  available permits for read entries.
+     *   0:  Producer queue is full, no permits. 生产者队列已满，没有许可证。
+     *  -1:  Rate Limiter reaches limit. 速率限制器达到限制。
+     *  >0:  available permits for read entries. 读取条目的可用许可。
      */
     private int getAvailablePermits() {
+        // 用配置的queue size减去pendding阻塞的message数就可以得到可以读取的条目数
         int availablePermits = producerQueueSize - PENDING_MESSAGES_UPDATER.get(this);
 
         // return 0, if Producer queue is full, it will pause read entries.
@@ -217,9 +225,11 @@ public class PersistentReplicator extends AbstractReplicator
     }
 
     protected void readMoreEntries() {
+        // 可获得的permit
         int availablePermits = getAvailablePermits();
 
         if (availablePermits > 0) {
+            // 只有大于0才可以读
             int messagesToRead = Math.min(availablePermits, readBatchSize);
             if (!isWritable()) {
                 if (log.isDebugEnabled()) {
@@ -239,6 +249,7 @@ public class PersistentReplicator extends AbstractReplicator
                     log.debug("[{}][{} -> {}] Schedule read of {} messages", topicName, localCluster, remoteCluster,
                             messagesToRead);
                 }
+                //这里开始读
                 cursor.asyncReadEntriesOrWait(messagesToRead, readMaxSizeBytes, this,
                         null, PositionImpl.latest);
             } else {
@@ -363,6 +374,7 @@ public class PersistentReplicator extends AbstractReplicator
 
                 getSchemaInfo(msg).thenAccept(schemaInfo -> {
                     msg.setSchemaInfoForReplicator(schemaInfo);
+                    //读出来的数据，在回调方法里，会通过producer发送出去
                     producer.sendAsync(msg, ProducerSendCallback.create(this, entry, msg));
                 }).exceptionally(ex -> {
                     log.error("[{}][{} -> {}] Failed to get schema from local cluster", topicName,

@@ -46,7 +46,7 @@ public abstract class AbstractReplicator {
 
     protected volatile ProducerImpl producer;
     public static final String REPL_PRODUCER_NAME_DELIMITER = "-->";
-
+    // replicationProducerQueueSize设置的queue size
     protected final int producerQueueSize;
     protected final ProducerBuilder<byte[]> producerBuilder;
 
@@ -71,6 +71,7 @@ public abstract class AbstractReplicator {
         this.replicatorPrefix = replicatorPrefix;
         this.localCluster = localCluster.intern();
         this.remoteCluster = remoteCluster.intern();
+        //看起来是producer往远端集群推送消息的方式，我觉得应该是fetch远端写本地好一些
         this.replicationClient = (PulsarClientImpl) brokerService.getReplicationClient(remoteCluster);
         this.client = (PulsarClientImpl) brokerService.pulsar().getClient();
         this.producer = null;
@@ -98,37 +99,42 @@ public abstract class AbstractReplicator {
         return remoteCluster;
     }
 
+    // 此方法需要与断开同步，否则如果断开连接，然后 startProducer 最终结果可以是断开连接。
     // This method needs to be synchronized with disconnects else if there is a disconnect followed by startProducer
     // the end result can be disconnect.
     public synchronized void startProducer() {
-        if (STATE_UPDATER.get(this) == State.Stopping) {
+        if (STATE_UPDATER.get(this) == State.Stopping) {// 如果是正在关闭阶段，那么也会启动producer
+            // 等待时间
             long waitTimeMs = backOff.next();
             if (log.isDebugEnabled()) {
                 log.debug(
                         "[{}][{} -> {}] waiting for producer to close before attempting to reconnect, retrying in {} s",
                         topicName, localCluster, remoteCluster, waitTimeMs / 1000.0);
             }
+            // delay多久才启动，这里应该是重试间隔
             // BackOff before retrying
             brokerService.executor().schedule(this::startProducer, waitTimeMs, TimeUnit.MILLISECONDS);
             return;
         }
+
         State state = STATE_UPDATER.get(this);
-        if (!STATE_UPDATER.compareAndSet(this, State.Stopped, State.Starting)) {
-            if (state == State.Started) {
+        if (!STATE_UPDATER.compareAndSet(this, State.Stopped, State.Starting)) {// 从stopped到正在启动阶段
+            if (state == State.Started) {//如果已经启动了，那么久不用管了
                 // Already running
                 if (log.isDebugEnabled()) {
                     log.debug("[{}][{} -> {}] Replicator was already running", topicName, localCluster, remoteCluster);
                 }
-            } else {
+            } else {//否则就正在启动阶段
                 log.info("[{}][{} -> {}] Replicator already being started. Replicator state: {}", topicName,
                         localCluster, remoteCluster, state);
             }
-
+            // 这里都会直接返回
             return;
         }
 
         log.info("[{}][{} -> {}] Starting replicator", topicName, localCluster, remoteCluster);
         producerBuilder.createAsync().thenAccept(producer -> {
+            // 这里会读数据，然后通过producer来写数据
             readEntries(producer);
         }).exceptionally(ex -> {
             if (STATE_UPDATER.compareAndSet(this, State.Starting, State.Stopped)) {
