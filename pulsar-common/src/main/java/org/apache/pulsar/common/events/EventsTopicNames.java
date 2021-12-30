@@ -39,11 +39,13 @@ public class EventsTopicNames {
     public static final String TRANSACTION_BUFFER_SNAPSHOT = "__transaction_buffer_snapshot";
 
     /**
+     * 上面声明的所有本地主题名称的集合。
      * The set of all local topic names declared above.
      */
     public static final Set<String> EVENTS_TOPIC_NAMES =
             Collections.unmodifiableSet(Sets.newHashSet(NAMESPACE_EVENTS_LOCAL_NAME, TRANSACTION_BUFFER_SNAPSHOT));
 
+    // 检查该topic名是否是事件名，实际就是检查该topic是否是系统topic
     public static boolean checkTopicIsEventsNames(TopicName topicName) {
         return EVENTS_TOPIC_NAMES.contains(TopicName.get(topicName.getPartitionedTopicName()).getLocalName());
     }

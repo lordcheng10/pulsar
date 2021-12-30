@@ -124,6 +124,8 @@ public interface Topic {
     void removeProducer(Producer producer);
 
     /**
+     * 等待 TransactionBuffer 完全恢复。
+     * TB 完全恢复后拍摄快照。
      * Wait TransactionBuffer Recovers completely.
      * Take snapshot after TB Recovers completely.
      * @param isTxnEnabled

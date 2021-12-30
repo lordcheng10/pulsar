@@ -1236,31 +1236,40 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
             log.info("[{}][{}] Creating producer. producerId={}", remoteAddress, topicName, producerId);
 
+            //  获取或创建topic
             service.getOrCreateTopic(topicName.toString()).thenAccept((Topic topic) -> {
+                // 在创建生产者之前，检查是否超过了主题的积压配额，以达到基于大小的限制和基于时间的限制
                 // Before creating producer, check if backlog quota exceeded
                 // on topic for size based limit and time based limit
                 for (BacklogQuota.BacklogQuotaType backlogQuotaType : BacklogQuota.BacklogQuotaType.values()) {
                     if (topic.isBacklogQuotaExceeded(producerName, backlogQuotaType)) {
+                        //判读该producer积压是否超了，注意这里用的是producerName
                         IllegalStateException illegalStateException = new IllegalStateException(
                                 "Cannot create producer on topic with backlog quota exceeded");
+                        // retention策略
                         BacklogQuota.RetentionPolicy retentionPolicy = topic
                                 .getBacklogQuota(backlogQuotaType).getPolicy();
                         if (retentionPolicy == BacklogQuota.RetentionPolicy.producer_request_hold) {
+                            //这个是恢复ProducerBlockedQuotaExceededError和ProducerBlockedQuotaExceededException不太一样
                             commandSender.sendErrorResponse(requestId,
                                     ServerError.ProducerBlockedQuotaExceededError,
                                     illegalStateException.getMessage());
                         } else if (retentionPolicy == BacklogQuota.RetentionPolicy.producer_exception) {
+                            // 发送ProducerBlockedQuotaExceededException
                             commandSender.sendErrorResponse(requestId,
                                     ServerError.ProducerBlockedQuotaExceededException,
                                     illegalStateException.getMessage());
                         }
+                        //如果超了，最终会将该producer移除掉
                         producerFuture.completeExceptionally(illegalStateException);
                         producers.remove(producerId, producerFuture);
                         return;
                     }
                 }
+                // 检查生产者是否会发布加密消息
                 // Check whether the producer will publish encrypted messages or not
                 if ((topic.isEncryptionRequired() || encryptionRequireOnProducer) && !isEncrypted) {
+                    // 如果该topic要求要发送加密消息，或者这个producer要求加密，但该写入又没有加密，这样会报错
                     String msg = String.format("Encryption is required in %s", topicName);
                     log.warn("[{}] {}", remoteAddress, msg);
                     commandSender.sendErrorResponse(requestId, ServerError.MetadataError, msg);
@@ -1268,10 +1277,11 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     return;
                 }
 
+                //如果需要，禁用 Tcp 无延迟
                 disableTcpNoDelayIfNeeded(topicName.toString(), producerName);
-
+                //尝试添加schema，并返回schema
                 CompletableFuture<SchemaVersion> schemaVersionFuture = tryAddSchema(topic, schema);
-
+                // 如果添加schema异常了，那么恢复错误
                 schemaVersionFuture.exceptionally(exception -> {
                     String message = exception.getMessage();
                     if (exception.getCause() != null) {
@@ -1283,13 +1293,16 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     producers.remove(producerId, producerFuture);
                     return null;
                 });
-
+                //获取到schema后，开始构建producer并添加到该topic中: buildProducerAndAddTopic
                 schemaVersionFuture.thenAccept(schemaVersion -> {
+                    //如果这里开启了事务的话，那么会做一些检查
                     topic.checkIfTransactionBufferRecoverCompletely(isTxnEnabled).thenAccept(future -> {
+                        // 直接构建producer
                         buildProducerAndAddTopic(topic, producerId, producerName, requestId, isEncrypted,
                                 metadata, schemaVersion, epoch, userProvidedProducerName, topicName,
                                 producerAccessMode, topicEpoch, producerFuture);
                     }).exceptionally(exception -> {
+                        //异常就直接回复了
                         Throwable cause = exception.getCause();
                         log.error("producerId {}, requestId {} : TransactionBuffer recover failed",
                                 producerId, requestId, exception);
@@ -1311,37 +1324,44 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             remoteAddress, topicName, producerId, exception);
                 }
 
+                // 如果客户端超时，则未来将在后续关闭时完成。 仅在尚未完成时将错误发送回客户端。
                 // If client timed out, the future would have been completed
                 // by subsequent close. Send error back to
                 // client, only if not completed already.
                 if (producerFuture.completeExceptionally(exception)) {
+                    // 发送错误
                     commandSender.sendErrorResponse(requestId,
                             BrokerServiceException.getClientErrorCode(cause), cause.getMessage());
                 }
+                //如果有异常的话就移除producer
                 producers.remove(producerId, producerFuture);
                 return null;
             });
             return null;
         }).exceptionally(ex -> {
+            //没权限异常
             logAuthException(remoteAddress, "producer", getPrincipal(), Optional.of(topicName), ex);
             commandSender.sendErrorResponse(requestId, ServerError.AuthorizationError, ex.getMessage());
             return null;
         });
     }
 
+    // 构建producer并将其添加到对应topic中
     private void buildProducerAndAddTopic(Topic topic, long producerId, String producerName, long requestId,
                              boolean isEncrypted, Map<String, String> metadata, SchemaVersion schemaVersion, long epoch,
                              boolean userProvidedProducerName, TopicName topicName,
                              ProducerAccessMode producerAccessMode,
                              Optional<Long> topicEpoch, CompletableFuture<Producer> producerFuture){
         CompletableFuture<Void> producerQueuedFuture = new CompletableFuture<>();
+        //构建producer
         Producer producer = new Producer(topic, ServerCnx.this, producerId, producerName,
                 getPrincipal(), isEncrypted, metadata, schemaVersion, epoch,
                 userProvidedProducerName, producerAccessMode, topicEpoch);
-
+        // 添加producer
         topic.addProducer(producer, producerQueuedFuture).thenAccept(newTopicEpoch -> {
             if (isActive()) {
                 if (producerFuture.complete(producer)) {
+                    //创建成功就直接恢复
                     log.info("[{}] Created new producer: {}", remoteAddress, producer);
                     commandSender.sendProducerSuccessResponse(requestId, producerName,
                             producer.getLastSequenceId(), producer.getSchemaVersion(),
@@ -1352,6 +1372,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                     }
                     return;
                 } else {
+                    //如果complete都没让其完成，那么久close
                     // The producer's future was completed before by
                     // a close command
                     producer.closeNow(true);
@@ -1360,6 +1381,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                             remoteAddress, producer);
                 }
             } else {
+                //如果连接都被关闭了，那么久直接关闭producer
                 producer.closeNow(true);
                 log.info("[{}] Cleared producer created after connection was closed: {}",
                         remoteAddress, producer);
@@ -1367,7 +1389,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                         new IllegalStateException(
                                 "Producer created after connection was closed"));
             }
-
+            //移除producer
             producers.remove(producerId, producerFuture);
         }).exceptionally(ex -> {
             log.error("[{}] Failed to add producer to topic {}: producerId={}, {}",
@@ -1382,6 +1404,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         });
 
         producerQueuedFuture.thenRun(() -> {
+            // 如果生产者排队等待，我们将立即收到需要传递给客户端的通知
             // If the producer is queued waiting, we will get an immediate notification
             // that we need to pass to client
             if (isActive()) {
@@ -2628,6 +2651,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     }
 
     private void disableTcpNoDelayIfNeeded(String topic, String producerName) {
+        // 如果producer name是以    private String replicatorPrefix = "pulsar.repl";开头的
         if (producerName != null && producerName.startsWith(replicatorPrefix)) {
             // Re-enable nagle algorithm on connections used for replication purposes
             try {

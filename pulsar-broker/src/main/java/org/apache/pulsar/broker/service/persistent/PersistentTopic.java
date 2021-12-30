@@ -2485,7 +2485,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     }
 
     /**
-     *
+     * 这里获取backlog quota
      * @return Backlog quota for topic
      */
     @Override
@@ -2494,18 +2494,21 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     }
 
     /**
-     *
+     * 阻止生产者创建因为配额超出了
      * @return quota exceeded status for blocking producer creation
      */
     @Override
     public boolean isBacklogQuotaExceeded(String producerName, BacklogQuota.BacklogQuotaType backlogQuotaType) {
+        // 获取backlog quota
         BacklogQuota backlogQuota = getBacklogQuota(backlogQuotaType);
 
         if (backlogQuota != null) {
+            // 如果backlogQuota配置了，那么久看retention策略
             BacklogQuota.RetentionPolicy retentionPolicy = backlogQuota.getPolicy();
 
             if ((retentionPolicy == BacklogQuota.RetentionPolicy.producer_request_hold
                     || retentionPolicy == BacklogQuota.RetentionPolicy.producer_exception)) {
+                // 看是否超了: backlog size和时间维度
                 if (backlogQuotaType == BacklogQuota.BacklogQuotaType.destination_storage && isSizeBacklogExceeded()
                 || backlogQuotaType == BacklogQuota.BacklogQuotaType.message_age && isTimeBacklogExceeded()){
                     log.info("[{}] Backlog quota exceeded. Cannot create producer [{}]", this.getName(), producerName);
@@ -2519,6 +2522,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
     }
 
     /**
+     * 根据大小限制确定是否需要对主题执行积压配额
      * @return determine if backlog quota enforcement needs to be done for topic based on size limit
      */
     public boolean isSizeBacklogExceeded() {

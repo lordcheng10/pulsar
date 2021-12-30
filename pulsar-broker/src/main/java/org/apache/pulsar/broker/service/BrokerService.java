@@ -900,21 +900,27 @@ public class BrokerService implements Closeable {
     }
 
     public CompletableFuture<Topic> getOrCreateTopic(final String topic) {
+        // 获取或创建topic，这里会判断是否有权限
         return getTopic(topic, isAllowAutoTopicCreation(topic)).thenApply(Optional::get);
     }
 
     public CompletableFuture<Optional<Topic>> getTopic(final String topic, boolean createIfMissing) {
         try {
+            // 获取topic future
             CompletableFuture<Optional<Topic>> topicFuture = topics.get(topic);
             if (topicFuture != null) {
+                //如果topicFuture不为null，那么就存在，然后判断下topicFuture是否完成(不管是异常的完成还是正常的完成)，如果是正常完成，还需要看topic对象是否存在
                 if (topicFuture.isCompletedExceptionally()
                         || (topicFuture.isDone() && !topicFuture.getNow(Optional.empty()).isPresent())) {
+                    // 如果完成了，那么久从topics future中移除掉
                     // Exceptional topics should be recreated.
                     topics.remove(topic, topicFuture);
                 } else {
+                    // 缓存中不存在的主题不应阻止创建主题
                     // a non-existing topic in the cache shouldn't prevent creating a topic
                     if (createIfMissing) {
                         if (topicFuture.isDone() && topicFuture.getNow(Optional.empty()).isPresent()) {
+                            //如果已经完成，但对应的topic对象为空，那么久直接返回该future
                             return topicFuture;
                         } else {
                             return topicFuture.thenCompose(value -> {
@@ -2661,14 +2667,19 @@ public class BrokerService implements Closeable {
     }
 
     public boolean isAllowAutoTopicCreation(final TopicName topicName) {
+        // 系统主题始终可以自动创建,并且该topic名是__change_events和__transaction_buffer_snapshot这种
         //System topic can always be created automatically
         if (pulsar.getConfiguration().isSystemTopicEnabled() && checkTopicIsEventsNames(topicName)) {
             return true;
         }
+        // 走到这里，就说明该topic不是系统topic或者说没有开启系统topic
+        // TODO-cl 这里就有问题了，如果我先把systemTopicEnabled=true，然后重启修改为systemTopicEnabled=false，这样会不会误判：实际是系统topic，结果还是走到这里了，那这就要弄清楚这些topic的作用了
         AutoTopicCreationOverride autoTopicCreationOverride = getAutoTopicCreationOverride(topicName);
         if (autoTopicCreationOverride != null) {
+            //如果有设置该namespace的自动创建topic配置，那么久用该配置
             return autoTopicCreationOverride.isAllowAutoTopicCreation();
         } else {
+            // 否则就用配置文件里的配置
             return pulsar.getConfiguration().isAllowAutoTopicCreation();
         }
     }
@@ -2691,10 +2702,13 @@ public class BrokerService implements Closeable {
         }
     }
 
+    // 读取该topic命名空间中的policies
     private AutoTopicCreationOverride getAutoTopicCreationOverride(final TopicName topicName) {
+        //首先获取这个topic的cache policies
         Optional<Policies> policies =
                 pulsar.getPulsarResources().getNamespaceResources()
                         .getPoliciesIfCached(topicName.getNamespaceObject());
+        // 如果命名空间策略设置了该字段，它将覆盖broker设置
         // If namespace policies have the field set, it will override the broker-level setting
         if (policies.isPresent() && policies.get().autoTopicCreationOverride != null) {
             return policies.get().autoTopicCreationOverride;

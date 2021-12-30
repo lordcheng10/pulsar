@@ -68,6 +68,7 @@ public interface BacklogQuota {
     }
 
     /**
+     * 积压配额配置的标识符（{@link BacklogQuota} 的一个实例）。
      * Identifier to a backlog quota configuration (an instance of {@link BacklogQuota}).
      */
     enum BacklogQuotaType {
@@ -79,12 +80,15 @@ public interface BacklogQuota {
      * Enumeration type determines how to retain backlog against the resource shortages.
      */
     enum RetentionPolicy {
+        // 保持生产者的发送请求直到资源可用（或保持超时）的策略。
         /** Policy which holds producer's send request until the resource becomes available (or holding times out). */
         producer_request_hold,
 
+        // 向生产者抛出 javax.jms.ResourceAllocationException 的策略。
         /** Policy which throws javax.jms.ResourceAllocationException to the producer. */
         producer_exception,
 
+        // 从最慢的消费者的积压中驱逐最旧的消息的策略。
         /** Policy which evicts the oldest message from the slowest consumer's backlog. */
         consumer_backlog_eviction,
     }
