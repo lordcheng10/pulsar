@@ -24,19 +24,29 @@ import org.apache.bookkeeper.mledger.AsyncCallbacks.ReadEntryCallback;
 import org.apache.commons.lang3.tuple.Pair;
 
 /**
+ * 单个 ManagedLedger 使用的条目缓存。
+ * EntryCache 与其他 EntryCache 实例使用它们的大小（每个实例占用的内存）进行比较。
+ *
  * Cache of entries used by a single ManagedLedger. An EntryCache is compared to other EntryCache instances using their
  * size (the memory that is occupied by each of them).
  */
 public interface EntryCache extends Comparable<EntryCache> {
 
     /**
+     * 缓存的名称.
+     *
      * @return the name of the cache
      */
     String getName();
 
     /**
+     * 在缓存中插入一个条目。
      * Insert an entry in the cache.
      *
+     * 如果已达到总体限制，这将触发其他条目的驱逐，可能来自其他 EntryCache 实例.
+     *
+     * @param entry 要缓存的条目.
+     * @return 条目是否插入缓存中.
      * <p/>If the overall limit have been reached, this will triggered the eviction of other entries, possibly from
      * other EntryCache instances
      *
@@ -47,16 +57,21 @@ public interface EntryCache extends Comparable<EntryCache> {
     boolean insert(EntryImpl entry);
 
     /**
+     * 从缓存中删除所有与账本相关的条目，直到包含的 lastPosition。
+     * @param lastPosition
+     * 要失效的最后一个条目位置（不包括在内）
+     *
      * Remove from cache all the entries related to a ledger up to lastPosition included.
      *
      * @param lastPosition
      *            the position of the last entry to be invalidated (non-inclusive)
      */
     void invalidateEntries(PositionImpl lastPosition);
-
+    // 使时间戳之前的条目无效
     void invalidateEntriesBeforeTimestamp(long timestamp);
 
     /**
+     * 从缓存中删除属于特定分类帐的所有条目。
      * Remove from the cache all the entries belonging to a specific ledger.
      *
      * @param ledgerId
@@ -65,12 +80,18 @@ public interface EntryCache extends Comparable<EntryCache> {
     void invalidateAllEntries(long ledgerId);
 
     /**
+     * 从缓存中删除所有条目。
      * Remove all the entries from the cache.
      */
     void clear();
 
     /**
+     * 强制删除缓存条目以释放空间。
      * Force the cache to drop entries to free space.
+     * @param sizeToFree
+     * 要释放的总内存大小.
+     * @return
+     * 一对包含被驱逐的条目数及其总大小.
      *
      * @param sizeToFree
      *            the total memory size to free
@@ -79,6 +100,9 @@ public interface EntryCache extends Comparable<EntryCache> {
     Pair<Integer, Long> evictEntries(long sizeToFree);
 
     /**
+     * 从缓存或簿记员读取条目。
+     * 从缓存或簿记员获取条目数据，并将结果混合在一个列表中。
+     *
      * Read entries from the cache or from bookkeeper.
      *
      * <p/>Get the entry data either from cache or bookkeeper and mixes up the results in a single list.

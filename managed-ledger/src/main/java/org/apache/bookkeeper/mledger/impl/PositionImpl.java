@@ -29,6 +29,7 @@ public class PositionImpl implements Position, Comparable<PositionImpl> {
 
     protected long ledgerId;
     protected long entryId;
+    //这个是batch 索引确认功能
     protected long[] ackSet;
 
     public static final PositionImpl earliest = new PositionImpl(-1, -1);
