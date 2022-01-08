@@ -27,6 +27,8 @@ import org.apache.commons.lang3.tuple.Pair;
  * 单个 ManagedLedger 使用的条目缓存。
  * EntryCache 与其他 EntryCache 实例使用它们的大小（每个实例占用的内存）进行比较。
  *
+ * 两个cache比较的方式，应该是用该cache当前使用大小来比较。
+ *
  * Cache of entries used by a single ManagedLedger. An EntryCache is compared to other EntryCache instances using their
  * size (the memory that is occupied by each of them).
  */
@@ -58,6 +60,7 @@ public interface EntryCache extends Comparable<EntryCache> {
 
     /**
      * 从缓存中删除所有与账本相关的条目，直到包含的 lastPosition。
+     *
      * @param lastPosition
      * 要失效的最后一个条目位置（不包括在内）
      *
@@ -67,6 +70,7 @@ public interface EntryCache extends Comparable<EntryCache> {
      *            the position of the last entry to be invalidated (non-inclusive)
      */
     void invalidateEntries(PositionImpl lastPosition);
+
     // 使时间戳之前的条目无效
     void invalidateEntriesBeforeTimestamp(long timestamp);
 
@@ -107,41 +111,46 @@ public interface EntryCache extends Comparable<EntryCache> {
      *
      * <p/>Get the entry data either from cache or bookkeeper and mixes up the results in a single list.
      *
-     * @param lh
+     * @param lh  分类帐句柄
      *            the ledger handle
-     * @param firstEntry
+     * @param firstEntry 第一个要阅读的条目（包括）
      *            the first entry to read (inclusive)
-     * @param lastEntry
+     * @param lastEntry 最后要阅读的条目（包括）
      *            the last entry to read (inclusive)
-     * @param isSlowestReader
+     * @param isSlowestReader 阅读器光标是否在流中最远的位置
      *            whether the reader cursor is the most far behind in the stream
-     * @param callback
+     * @param callback 读取完成时将通知回调对象
      *            the callback object that will be notified when read is done
-     * @param ctx
+     * @param ctx 上下文对象
      *            the context object
      */
     void asyncReadEntry(ReadHandle lh, long firstEntry, long lastEntry, boolean isSlowestReader,
             ReadEntriesCallback callback, Object ctx);
 
     /**
+     * 从缓存或簿记员读取给定位置的条目。
      * Read entry at given position from the cache or from bookkeeper.
      *
+     * 从缓存或簿记员获取条目数据，并将结果混合在一个列表中。
      * <p/>Get the entry data either from cache or bookkeeper and mixes up the results in a single list.
      *
-     * @param lh
+     * @param lh  分类帐句柄
      *            the ledger handle
-     * @param position
+     * @param position 读取条目的位置
      *            position to read the entry from
-     * @param callback
+     * @param callback 读取完成时将通知的回调对象
      *            the callback object that will be notified when read is done
-     * @param ctx
+     * @param ctx 上下文对象
      *            the context object
      */
     void asyncReadEntry(ReadHandle lh, PositionImpl position, ReadEntryCallback callback, Object ctx);
 
     /**
+     * cache使用大小
+     * 获取存储在此缓存中的所有条目的总大小（以字节为单位）。
      * Get the total size in bytes of all the entries stored in this cache.
      *
+     * 条目缓存的大小
      * @return the size of the entry cache
      */
     long getSize();

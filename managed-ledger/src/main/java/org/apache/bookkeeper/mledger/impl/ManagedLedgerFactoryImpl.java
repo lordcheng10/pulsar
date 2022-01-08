@@ -197,7 +197,7 @@ public class ManagedLedgerFactoryImpl implements ManagedLedgerFactory {
         this.cacheEvictionTimeThresholdNanos = TimeUnit.MILLISECONDS
                 .toNanos(config.getCacheEvictionTimeThresholdMillis());
 
-
+        //清理cache数据
         cacheEvictionExecutor.execute(this::cacheEvictionTask);
         closed = false;
 
@@ -253,6 +253,8 @@ public class ManagedLedgerFactoryImpl implements ManagedLedgerFactory {
     }
 
     private void cacheEvictionTask() {
+        //这里Math.min(config.getCacheEvictionFrequency(), 1000.0)是设置了驱逐次数的上限;
+        // 这里0.001是设置了驱逐次数的下限
         double evictionFrequency = Math.max(Math.min(config.getCacheEvictionFrequency(), 1000.0), 0.001);
         long waitTimeMillis = (long) (1000 / evictionFrequency);
 

@@ -204,9 +204,11 @@ public class OpAddEntry extends SafeRunnable implements AddCallback, CloseCallba
 
         ManagedLedgerImpl.NUMBER_OF_ENTRIES_UPDATER.incrementAndGet(ml);
         ManagedLedgerImpl.TOTAL_SIZE_UPDATER.addAndGet(ml, dataLength);
-        if (ml.hasActiveCursors()) {
+        if (ml.hasActiveCursors()) { //有活跃的订阅，才会有cache
+            // 如果没有创建游标，请避免缓存条目
             // Avoid caching entries if no cursor has been created
             EntryImpl entry = EntryImpl.create(ledger.getId(), entryId, data);
+            // EntryCache.insert：通过分配新条目和数据来复制条目。 所以，调用插入后回收条目
             // EntryCache.insert: duplicates entry by allocating new entry and data. so, recycle entry after calling
             // insert
             ml.entryCache.insert(entry);

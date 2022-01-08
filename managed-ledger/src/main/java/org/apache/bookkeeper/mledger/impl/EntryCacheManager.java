@@ -43,23 +43,30 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+// 抑制警告
 @SuppressWarnings("checkstyle:javadoctype")
 public class EntryCacheManager {
-
+    //cache配置的最大size
     private final long maxSize;
+    //驱逐阈值：cache中缓存的数据达到多大时进行驱逐
     private final long evictionTriggerThreshold;
+    //cache驱逐水位
     private final double cacheEvictionWatermark;
+    //cache当前使用的大小
     private final AtomicLong currentSize = new AtomicLong(0);
+    //实际存放entry的cache
     private final ConcurrentMap<String, EntryCache> caches = Maps.newConcurrentMap();
+    //驱逐策略，目前只有一个默认的驱逐策略EntryCacheDefaultEvictionPolicy
     private final EntryCacheEvictionPolicy evictionPolicy;
-
+    //是否正在驱逐
     private final AtomicBoolean evictionInProgress = new AtomicBoolean(false);
-
+    //这个又是啥玩意
     private final ManagedLedgerFactoryImpl mlFactory;
     protected final ManagedLedgerFactoryMBeanImpl mlFactoryMBean;
 
     protected static final double MB = 1024 * 1024;
 
+    //驱逐的阈值，写死的达到0.98就会驱逐
     private static final double evictionTriggerThresholdPercent = 0.98;
 
 
@@ -103,15 +110,22 @@ public class EntryCacheManager {
         }
     }
 
+    //判断cache中是否有多余空，如果没有就需要驱逐
     boolean hasSpaceInCache() {
         long currentSize = this.currentSize.get();
 
+        //这里currentSize应该>=才对呀
+        // 在后台触发一次驱逐。 当驱逐运行时，我们停止在缓存中插入条目
+        // 当使用size超过阈值，并且此时并未正在驱逐数据，那么久需要在后台进行驱逐.那这样cache实际使用size 在后台驱逐过程中不就可能超过吗
         // Trigger a single eviction in background. While the eviction is running we stop inserting entries in the cache
         if (currentSize > evictionTriggerThreshold && evictionInProgress.compareAndSet(false, true)) {
             mlFactory.scheduledExecutor.execute(safeRun(() -> {
+                // 触发新的缓存逐出周期，使已用内存低于 cacheEvictionWatermark 百分比限制
                 // Trigger a new cache eviction cycle to bring the used memory below the cacheEvictionWatermark
                 // percentage limit
+                //要驱逐的sizesizeToEvict，助理这里的cacheEvictionWatermark一般会比evictionTriggerThresholdPercent低一点，因为不能比着阈值驱逐，应该多驱逐一点
                 long sizeToEvict = currentSize - (long) (maxSize * cacheEvictionWatermark);
+                //开始驱逐时间
                 long startTime = System.nanoTime();
                 log.info("Triggering cache eviction. total size: {} Mb -- Need to discard: {} Mb", currentSize / MB,
                         sizeToEvict / MB);
@@ -125,12 +139,16 @@ public class EntryCacheManager {
                     log.info("Eviction completed. Removed {} Mb in {} ms", (currentSize - this.currentSize.get()) / MB,
                             durationMs);
                 } finally {
+                    //统计驱逐次数
                     mlFactoryMBean.recordCacheEviction();
                     evictionInProgress.set(false);
                 }
             }));
         }
 
+        //TODO-这里应该是小于evictionTriggerThreshold才对呀
+        //判断cache使用大小是否小于maxSize
+        //这样的条件，有可能会超过cache总大小
         return currentSize < maxSize;
     }
 
@@ -154,6 +172,7 @@ public class EntryCacheManager {
         caches.values().forEach(EntryCache::clear);
     }
 
+    //关闭cache用这个
     protected class EntryCacheDisabled implements EntryCache {
         private final ManagedLedgerImpl ml;
         private final ManagedLedgerInterceptor interceptor;

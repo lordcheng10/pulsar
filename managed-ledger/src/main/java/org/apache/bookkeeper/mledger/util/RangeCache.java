@@ -31,18 +31,22 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.apache.commons.lang3.tuple.Pair;
 
 /**
+ * 特殊类型的缓存，其中 get() 和 delete() 操作可以在一系列键上完成。
  * Special type of cache where get() and delete() operations can be done over a range of keys.
  *
- * @param <Key>
+ * @param <Key> 缓存键。 需要有可比性
  *            Cache key. Needs to be Comparable
- * @param <Value>
+ * @param <Value> 缓存值
  *            Cache value
  */
 public class RangeCache<Key extends Comparable<Key>, Value extends ReferenceCounted> {
     // Map from key to nodes inside the linked list
     private final ConcurrentNavigableMap<Key, Value> entries;
+    //当前cache中总的数据size
     private AtomicLong size; // Total size of values stored in cache
+    //这个实际是一个通用的函数接口：用于从值中提取大小的加权对象
     private final Weighter<Value> weighter; // Weighter object used to extract the size from values
+    //这个也是一个函数接口：提取与值关联的时间戳
     private final TimestampExtractor<Value> timestampExtractor; // Extract the timestamp associated with a value
 
     /**
@@ -153,27 +157,38 @@ public class RangeCache<Key extends Comparable<Key>, Value extends ReferenceCoun
     /**
      *
      * @param minSize
-     * @return a pair containing the number of entries evicted and their total size
+     * @return a pair containing the number of entries evicted and their total size 一对包含被驱逐的条目数量及其总大小
      */
     public Pair<Integer, Long> evictLeastAccessedEntries(long minSize) {
+        //检查要驱逐的size是否合法
         checkArgument(minSize > 0);
 
+        //记录已经移除的size和entry数
         long removedSize = 0;
         int removedEntries = 0;
 
         while (removedSize < minSize) {
+            //移除掉key最小的entry，这里就是position最小的entry, 这里的key是PositionImpl类，所以这里是选出ledger最小，并且entryId最小的entry来删除
             Map.Entry<Key, Value> entry = entries.pollFirstEntry();
+            //如果没有，就直接退出循环
             if (entry == null) {
                 break;
             }
 
+            //获取对应的value值，就是一个EntryImpl类
             Value value = entry.getValue();
+            //移除的entry数+1
             ++removedEntries;
+            //获取该entry的size，这里直接调用EntryImpl.lenght不就得到了吗 ，为啥还要通过weighter来获得
+            // 这里用的是函数接口，实际调用的是EntryImpl::getLength方法
             removedSize += weighter.getSize(value);
+            //释放该entry的buffer
             value.release();
         }
 
+        //从cache里面减去驱逐的数据size
         size.addAndGet(-removedSize);
+        //返回驱逐的entry数和数据size
         return Pair.of(removedEntries, removedSize);
     }
 
@@ -240,6 +255,8 @@ public class RangeCache<Key extends Comparable<Key>, Value extends ReferenceCoun
     }
 
     /**
+     * 这个实际就是一个函数接口
+     * 能够提取缓存值的“权重”（大小/成本/空间）的对象接口。
      * Interface of a object that is able to the extract the "weight" (size/cost/space) of the cached values.
      *
      * @param <ValueT>

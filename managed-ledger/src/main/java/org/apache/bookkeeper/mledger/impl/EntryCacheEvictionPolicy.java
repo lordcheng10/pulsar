@@ -21,16 +21,18 @@ package org.apache.bookkeeper.mledger.impl;
 import java.util.List;
 
 /**
+ * 缓存驱逐策略抽象接口。
  * Cache eviction policy abstraction interface.
  *
  */
 public interface EntryCacheEvictionPolicy {
     /**
+     * 在提供的缓存列表上执行至少 sizeToFree 字节的缓存驱逐。
      * Perform the cache eviction of at least sizeToFree bytes on the supplied list of caches.
      *
-     * @param caches
+     * @param caches 要考虑的缓存列表
      *            the list of caches to consider
-     * @param sizeToFree
+     * @param sizeToFree 要释放的最小字节数
      *            the minimum size in bytes to be freed
      */
     void doEviction(List<EntryCache> caches, long sizeToFree);

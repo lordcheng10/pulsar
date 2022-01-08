@@ -45,10 +45,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * 缓存所有分类帐条目的数据有效负载。
  * Cache data payload for entries of all ledgers.
  */
 public class EntryCacheImpl implements EntryCache {
-
+    //这个是干嘛的
     private final EntryCacheManager manager;
     private final ManagedLedgerImpl ml;
     private ManagedLedgerInterceptor interceptor;
@@ -349,9 +350,13 @@ public class EntryCacheImpl implements EntryCache {
 
     @Override
     public Pair<Integer, Long> evictEntries(long sizeToFree) {
+        //首先检查要驱逐的数据大小是否大于0
         checkArgument(sizeToFree > 0);
+        //驱逐数据，返回<驱逐的entry数，驱逐的数据总size>
         Pair<Integer, Long> evicted = entries.evictLeastAccessedEntries(sizeToFree);
+        //驱逐的entry数
         int evictedEntries = evicted.getLeft();
+        //驱逐的数据size
         long evictedSize = evicted.getRight();
         if (log.isDebugEnabled()) {
             log.debug(
@@ -359,6 +364,7 @@ public class EntryCacheImpl implements EntryCache {
                             + " -- Current Size: {} Mb",
                     ml.getName(), sizeToFree / MB, evictedEntries, evictedSize / MB, entries.getSize() / MB);
         }
+        //更新当前使用的size，当前size减去驱逐的size
         manager.entriesRemoved(evictedSize);
         return evicted;
     }
