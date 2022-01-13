@@ -386,6 +386,7 @@ public class ManagedLedgerFactoryImpl implements ManagedLedgerFactory {
                     store, config, scheduledExecutor, name, mlOwnershipChecker);
             PendingInitializeManagedLedger pendingLedger = new PendingInitializeManagedLedger(newledger);
             pendingInitializeLedgers.put(name, pendingLedger);
+            //初始化
             newledger.initialize(new ManagedLedgerInitializeLedgerCallback() {
                 @Override
                 public void initializeComplete() {

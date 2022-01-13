@@ -936,6 +936,7 @@ public class BrokerService implements Closeable {
             final boolean isPersistentTopic = TopicName.get(topic).getDomain().equals(TopicDomain.persistent);
             if (isPersistentTopic) {
                 return topics.computeIfAbsent(topic, (topicName) -> {
+                    //load数据
                     return this.loadOrCreatePersistentTopic(topicName, createIfMissing);
                 });
             } else {
@@ -1271,6 +1272,7 @@ public class BrokerService implements Closeable {
     }
 
     /**
+     * 加载逻辑
      * It creates a topic async and returns CompletableFuture. It also throttles down configured max-concurrent topic
      * loading and puts them into queue once in-process topics are created.
      *
@@ -1361,6 +1363,7 @@ public class BrokerService implements Closeable {
             }
             managedLedgerConfig.setCreateIfMissing(createIfMissing);
 
+            //打开逻辑
             // Once we have the configuration, we can proceed with the async open operation
             managedLedgerFactory.asyncOpen(topicName.getPersistenceNamingEncoding(), managedLedgerConfig,
                     new OpenLedgerCallback() {

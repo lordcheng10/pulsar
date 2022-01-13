@@ -383,6 +383,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                                 ledgers.remove(ledgers.lastKey());
                                 initializeBookKeeper(callback);
                             } else {
+                                //load加载失败
                                 log.error("[{}] Failed to open ledger {}: {}", name, id, BKException.getMessage(rc));
                                 callback.initializeFailed(createManagedLedgerException(rc));
                                 return;

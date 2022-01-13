@@ -1125,17 +1125,24 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     @Override
     protected void handleProducer(final CommandProducer cmdProducer) {
         checkArgument(state == State.Connected);
+        //获取producer id
         final long producerId = cmdProducer.getProducerId();
+        //获取请求ID
         final long requestId = cmdProducer.getRequestId();
+        // 使用客户提供的生产者名称（如果存在）
         // Use producer name provided by client if present
         final String producerName = cmdProducer.hasProducerName() ? cmdProducer.getProducerName()
                 : service.generateUniqueProducerName();
+        // producer时代
         final long epoch = cmdProducer.getEpoch();
+        // 是否是producer用户提供的name
         final boolean userProvidedProducerName = cmdProducer.isUserProvidedProducerName();
+        // 是否已加密
         final boolean isEncrypted = cmdProducer.isEncrypted();
+        // 获取producer的metadata
         final Map<String, String> metadata = CommandUtils.metadataFromCommand(cmdProducer);
+        // 获取schema
         final SchemaData schema = cmdProducer.hasSchema() ? getSchema(cmdProducer.getSchema()) : null;
-
         final ProducerAccessMode producerAccessMode = cmdProducer.getProducerAccessMode();
         final Optional<Long> topicEpoch = cmdProducer.hasTopicEpoch()
                 ? Optional.of(cmdProducer.getTopicEpoch()) : Optional.empty();
@@ -1201,6 +1208,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
             log.info("[{}][{}] Creating producer. producerId={}", remoteAddress, topicName, producerId);
 
+            //加载topic
             service.getOrCreateTopic(topicName.toString()).thenAccept((Topic topic) -> {
                 // Before creating producer, check if backlog quota exceeded
                 // on topic for size based limit and time based limit
