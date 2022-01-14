@@ -51,13 +51,20 @@ import org.slf4j.LoggerFactory;
 public class EntryCacheImpl implements EntryCache {
     //这个是干嘛的
     private final EntryCacheManager manager;
+    //管理的ledger
     private final ManagedLedgerImpl ml;
+    // 托管分类帐拦截器
     private ManagedLedgerInterceptor interceptor;
+    // 存放的entry
     private final RangeCache<PositionImpl, EntryImpl> entries;
+    //是否复制entry
     private final boolean copyEntries;
-
+    //单位MB
     private static final double MB = 1024 * 1024;
 
+    //ManagedLedgerImpl：每一个partition topic都会有一个这个对象，用来读写数据
+    //copyEntries：是否复制
+    //manager：EntryCacheManager是什么，应该是对entry cache的管理类
     public EntryCacheImpl(EntryCacheManager manager, ManagedLedgerImpl ml, boolean copyEntries) {
         this.manager = manager;
         this.ml = ml;
@@ -107,6 +114,7 @@ public class EntryCacheImpl implements EntryCache {
                 return false;
             }
         } else {
+            // 在此处使用保留以与复制条目场景中相同的计数器增加
             // Use retain here to have the same counter increase as in the copy entry scenario
             cachedData = entry.getDataBuffer().retain();
         }
@@ -125,6 +133,8 @@ public class EntryCacheImpl implements EntryCache {
     }
 
     private ByteBuf copyEntry(EntryImpl entry) {
+        // 将条目复制到缓存拥有的缓冲区中。 原因是传入的条目保留了来自 netty 的缓冲区，通常以 64Kb 的块分配。
+        // 因此，如果我们只保留条目而不复制它，我们实际上可能会保留完整的 64Kb，即使是很小的条目
         // Copy the entry into a buffer owned by the cache. The reason is that the incoming entry is retaining a buffer
         // from netty, usually allocated in 64Kb chunks. So if we just retain the entry without copying it, we might
         // retain actually the full 64Kb even for a small entry
