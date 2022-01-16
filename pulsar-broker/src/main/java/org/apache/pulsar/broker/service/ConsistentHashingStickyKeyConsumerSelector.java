@@ -34,8 +34,10 @@ import org.apache.pulsar.client.api.Range;
 import org.apache.pulsar.common.util.Murmur3_32Hash;
 
 /**
+ * 这是一个基于消费者选择器的固定哈希范围。
  * This is a consumer selector based fixed hash range.
  *
+ * 该实现使用一致的散列来平均分配分配给每个消费者的键的数量。
  * The implementation uses consistent hashing to evenly split, the
  * number of keys assigned to each consumer.
  */
@@ -57,11 +59,18 @@ public class ConsistentHashingStickyKeyConsumerSelector implements StickyKeyCons
     public void addConsumer(Consumer consumer) throws ConsumerAssignException {
         rwLock.writeLock().lock();
         try {
+            //为每个消费者在哈希环上插入多个点
+            //这些点是根据消费者名称的哈希确定性添加的
             // Insert multiple points on the hash ring for every consumer
             // The points are deterministically added based on the hash of the consumer name
             for (int i = 0; i < numberOfPoints; i++) {
+                //计算key
                 String key = consumer.consumerName() + i;
+                //计算hash值
                 int hash = Murmur3_32Hash.getInstance().makeHash(key.getBytes());
+                //这里加入成功后，就没必要再继续循环了吧
+                //另外在加入前，需要判断下该consumer是否已经包含在这个hashRing中了，如果已经存在了，那么久不需要调用compute了
+                // 只要hashRing中有了，就不会再加进去了，后面的循环都是无意义的
                 hashRing.compute(hash, (k, v) -> {
                     if (v == null) {
                         return Lists.newArrayList(consumer);
