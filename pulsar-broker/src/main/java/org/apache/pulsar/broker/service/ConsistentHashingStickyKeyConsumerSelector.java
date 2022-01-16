@@ -68,15 +68,15 @@ public class ConsistentHashingStickyKeyConsumerSelector implements StickyKeyCons
                 String key = consumer.consumerName() + i;
                 //计算hash值
                 int hash = Murmur3_32Hash.getInstance().makeHash(key.getBytes());
-                //这里加入成功后，就没必要再继续循环了吧
-                //另外在加入前，需要判断下该consumer是否已经包含在这个hashRing中了，如果已经存在了，那么久不需要调用compute了
-                // 只要hashRing中有了，就不会再加进去了，后面的循环都是无意义的
+                // 一个consumer会加入到多个list中
                 hashRing.compute(hash, (k, v) -> {
                     if (v == null) {
                         return Lists.newArrayList(consumer);
                     } else {
                         if (!v.contains(consumer)) {
+                            //加入到hashRing中
                             v.add(consumer);
+                            //排序
                             v.sort(Comparator.comparing(Consumer::consumerName, String::compareTo));
                         }
                         return v;
@@ -94,14 +94,19 @@ public class ConsistentHashingStickyKeyConsumerSelector implements StickyKeyCons
         try {
             // Remove all the points that were added for this consumer
             for (int i = 0; i < numberOfPoints; i++) {
+                //构建key
                 String key = consumer.consumerName() + i;
+                //获取hash值
                 int hash = Murmur3_32Hash.getInstance().makeHash(key.getBytes());
                 hashRing.compute(hash, (k, v) -> {
                     if (v == null) {
+                        //如果不存在该hash值，那么久直接返回null
                         return null;
                     } else {
+                        //从中移除该consumer
                         v.removeIf(c -> c.consumerName().equals(consumer.consumerName()));
                         if (v.isEmpty()) {
+                            //如果移除后为空，那么就重置value为null
                             v = null;
                         }
                         return v;
@@ -117,33 +122,40 @@ public class ConsistentHashingStickyKeyConsumerSelector implements StickyKeyCons
     public Consumer select(int hash) {
         rwLock.readLock().lock();
         try {
+            //如果hashRing为空，那么久直接返回null
             if (hashRing.isEmpty()) {
                 return null;
             }
 
             List<Consumer> consumerList;
+            //从hashRing中找出全部大于hash的consumer
             Map.Entry<Integer, List<Consumer>> ceilingEntry = hashRing.ceilingEntry(hash);
             if (ceilingEntry != null) {
                 consumerList =  ceilingEntry.getValue();
             } else {
+                //如果所有hash值都小于给定的hash值，那么久从所有的consumer中去选取
                 consumerList = hashRing.firstEntry().getValue();
             }
 
+            //这里用给定的hash值，莫除以选出的consumer数，这里consumer列表大概率是会存在重复的consumer
             return consumerList.get(hash % consumerList.size());
         } finally {
             rwLock.readLock().unlock();
         }
     }
 
+    //返回每个consumer对应的hash范围,因为同一个consumeer可能对应了多个key，所以这里的范围也有可能是多个
     @Override
     public Map<Consumer, List<Range>> getConsumerKeyHashRanges() {
         Map<Consumer, List<Range>> result = new LinkedHashMap<>();
         rwLock.readLock().lock();
         try {
             int start = 0;
+            //遍历所有的consumer,注意这里的hashRing是一个TreeMap对象，是按照key排好序的，所以这里遍历的key是从小到大遍历的.第一个元素hash范围开始位置为0
             for (Map.Entry<Integer, List<Consumer>> entry: hashRing.entrySet()) {
                 for (Consumer consumer: entry.getValue()) {
                     result.computeIfAbsent(consumer, key -> new ArrayList<>())
+                            //start是在hashRing中的index编号，end是该consumer对应的hash值
                             .add(Range.of(start, entry.getKey()));
                 }
                 start = entry.getKey() + 1;
