@@ -54,10 +54,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDispatcherMultipleConsumers {
-
+    // 是否允许乱序，这个是客户端传入的.
+    //怎么保证不乱序?如果该变量为true，那么会创建一个recentlyJoinedConsumers map，用来存放最近加入的consumer
     private final boolean allowOutOfOrderDelivery;
     private final StickyKeyConsumerSelector selector;
-
     private boolean isDispatcherStuckOnReplays = false;
     private final KeySharedMode keySharedMode;
 
