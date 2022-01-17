@@ -401,6 +401,8 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         }
     }
 
+    // 从最近加入的消费者中删除消费者
+    //当consumer ack的数量达到此时的读取位置时，就会移除该consumer，从最近加入的map中
     private boolean removeConsumersFromRecentJoinedConsumers() {
         Iterator<Map.Entry<Consumer, PositionImpl>> itr = recentlyJoinedConsumers.entrySet().iterator();
         boolean hasConsumerRemovedFromTheRecentJoinedConsumers = false;
