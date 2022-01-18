@@ -847,7 +847,9 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
     }
 
     protected synchronized Set<PositionImpl> getMessagesToReplayNow(int maxMessagesToRead) {
+        //如果要重发的消息不为空
         if (!redeliveryMessages.isEmpty()) {
+            //那么久从redeliveryMessages中去获取maxMessagesToRead条要重发的消息
             return redeliveryMessages.getMessagesToReplayNow(maxMessagesToRead);
         } else if (delayedDeliveryTracker.isPresent() && delayedDeliveryTracker.get().hasMessageAvailable()) {
             delayedDeliveryTracker.get().resetTickTime(topic.getDelayedDeliveryTickTimeMillis());

@@ -55,9 +55,10 @@ import org.slf4j.LoggerFactory;
 
 public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDispatcherMultipleConsumers {
     // 是否允许乱序，这个是客户端传入的.
-    //怎么保证不乱序?如果该变量为true，那么会创建一个recentlyJoinedConsumers map，用来存放最近加入的consumer
+    // 怎么保证不乱序?如果该变量为true，那么会创建一个recentlyJoinedConsumers map，用来存放最近加入的consumer
     private final boolean allowOutOfOrderDelivery;
     private final StickyKeyConsumerSelector selector;
+    //调度员是否卡在重播上
     private boolean isDispatcherStuckOnReplays = false;
     private final KeySharedMode keySharedMode;
 
@@ -153,29 +154,43 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
 
     @Override
     protected void sendMessagesToConsumers(ReadType readType, List<Entry> entries) {
+        //发送的总消息数
         long totalMessagesSent = 0;
+        //发送总的bytes数
         long totalBytesSent = 0;
+        //总的entry数
         long totalEntries = 0;
+        //要推送的entry 数
         int entriesCount = entries.size();
 
+        // 触发阅读更多消息
         // Trigger read more messages
         if (entriesCount == 0) {
             readMoreEntries();
             return;
         }
 
+        //如果consumer集合为空，也就是没有consumer，那么就释放entry，重置cursor
         if (consumerSet.isEmpty()) {
             entries.forEach(Entry::release);
             cursor.rewind();
             return;
         }
 
+        // 我们必须重试 readMoreEntries 以保留订单交付的极端情况。
+        // 这可能在消费者关闭时发生。 有关详细信息，请参阅问题 #12885。
         // A corner case that we have to retry a readMoreEntries in order to preserver order delivery.
         // This may happen when consumer closed. See issue #12885 for details.
         if (!allowOutOfOrderDelivery) {
+            //如果需要保序，allowOutOfOrderDelivery=false
+            //立即获取要重播的消息
+            //如果isDispatcherStuckOnReplays为true，那么这里返回的messagesToReplayNow为空
             Set<PositionImpl> messagesToReplayNow = this.getMessagesToReplayNow(1);
             if (messagesToReplayNow != null && !messagesToReplayNow.isEmpty() && this.minReplayedPosition != null) {
+                // 获取要重发的位置
                 PositionImpl relayPosition = messagesToReplayNow.stream().findFirst().get();
+                // 如果relayPosition 是一个新条目，在此异步读取期间插入较小的位置以重新传递，则此relayPosition 可能应首先分派给消费者。
+                // 因此，为了保持订单交付，我们需要丢弃这个读取结果，并通过调用 readMoreEntries 尝试触发包含“relayPosition”的重播读取。
                 // If relayPosition is a new entry wither smaller position is inserted for redelivery during this async
                 // read, it is possible that this relayPosition should dispatch to consumer first. So in order to
                 // preserver order delivery, we need to discard this read result, and try to trigger a replay read,
@@ -187,49 +202,68 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                                 name, relayPosition, minReplayedPosition, readType);
                     }
                     if (readType == ReadType.Normal) {
+                        //如果是正常读取，那么就将所有entry加入到重发队列中
                         entries.forEach(entry -> {
                             long stickyKeyHash = getStickyKeyHash(entry);
                             addMessageToReplay(entry.getLedgerId(), entry.getEntryId(), stickyKeyHash);
                             entry.release();
                         });
                     } else if (readType == ReadType.Replay) {
+                        //如果是重发的entry，那么直接释放掉
                         entries.forEach(Entry::release);
                     }
+                    //读取更多数据
                     readMoreEntries();
                     return;
                 }
             }
         }
-
+        //清理掉下一个卡主的消费者集合
         nextStuckConsumers.clear();
-
+        //按照group来进行分组
         final Map<Consumer, List<Entry>> groupedEntries = localGroupedEntries.get();
+        //首先清空groupedEntries
         groupedEntries.clear();
+        //这个会记录每个consumer对应的hash值
         final Map<Consumer, Set<Integer>> consumerStickyKeyHashesMap = new HashMap<>();
 
+        //遍历所有entry，将所有entry按照consumer进行分组
         for (Entry entry : entries) {
+            //获取该entry的hash key
             int stickyKeyHash = getStickyKeyHash(entry);
+            //根据hash选择对应consumer
             Consumer c = selector.select(stickyKeyHash);
             if (c != null) {
                 groupedEntries.computeIfAbsent(c, k -> new ArrayList<>()).add(entry);
                 consumerStickyKeyHashesMap.computeIfAbsent(c, k -> new HashSet<>()).add(stickyKeyHash);
             } else {
+                //如果没选到consumer，那么久释放entry
                 entry.release();
             }
         }
 
+        //这里回统计consumer的数量，这里的命名是不是有问题呀，不应该叫keyNumbers吧  consumerNumbers吧
         AtomicInteger keyNumbers = new AtomicInteger(groupedEntries.size());
-
+        //当前线程的consumer数
         int currentThreadKeyNumber = groupedEntries.size();
         if (currentThreadKeyNumber == 0) {
+            //如果consumer数为0，也就是没有consumer，那么currentThreadKeyNumber久设置为-1
             currentThreadKeyNumber = -1;
         }
+        //遍历所有consumer
         for (Map.Entry<Consumer, List<Entry>> current : groupedEntries.entrySet()) {
+            //获取consumer
             Consumer consumer = current.getKey();
+            //获取hash到该consumer的entry集合
             List<Entry> entriesWithSameKey = current.getValue();
+            //都hash到同一个consumer的entry数量
             int entriesWithSameKeyCount = entriesWithSameKey.size();
+            //获取该consumer的permit
             final int availablePermits = consumer == null ? 0 : Math.max(consumer.getAvailablePermits(), 0);
+            //从要推送给该consumer的entry数和可获得的permit数两者取一个最小值
+            //对于这个consumer可发送的最大消息数
             int maxMessagesForC = Math.min(entriesWithSameKeyCount, availablePermits);
+            //这里获取大于最近加入的consumer map中记录的read position位置
             int messagesForC = getRestrictedMaxEntriesForConsumer(consumer, entriesWithSameKey, maxMessagesForC,
                     readType, consumerStickyKeyHashesMap.get(consumer));
             if (log.isDebugEnabled()) {
@@ -237,6 +271,7 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                         name, consumer == null ? "null" : consumer.consumerName(), messagesForC, readType);
             }
 
+            //如果存在不可以读的entry消息，那么这里需要将这些消息放入重发map中
             if (messagesForC < entriesWithSameKeyCount) {
                 // We are not able to push all the messages with given key to its consumer,
                 // so we discard for now and mark them for later redelivery
@@ -245,11 +280,14 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                     long stickyKeyHash = getStickyKeyHash(entry);
                     addMessageToReplay(entry.getLedgerId(), entry.getEntryId(), stickyKeyHash);
                     entry.release();
+                    //这里回把这些entry重置为null
                     entriesWithSameKey.set(i, null);
                 }
             }
 
+            //如果messagesForC大于0，那么久说明存在一些entry消息，是小于该consumer刚加入时的read position位置的
             if (messagesForC > 0) {
+                //对于这些消息，那么如果是重发的，那么久先从重发集合中移除掉
                 // remove positions first from replay list first : sendMessages recycles entries
                 if (readType == ReadType.Replay) {
                     for (int i = 0; i < messagesForC; i++) {
@@ -258,21 +296,28 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                     }
                 }
 
+                //构建一个专门统计发送信息的对象SendMessageInfo
                 SendMessageInfo sendMessageInfo = SendMessageInfo.getThreadLocal();
+                //这个用来记录每个entry的大小
                 EntryBatchSizes batchSizes = EntryBatchSizes.get(messagesForC);
+                //记录batch中每个消息的ack状态
                 EntryBatchIndexesAcks batchIndexesAcks = EntryBatchIndexesAcks.get(messagesForC);
+                //这里回过滤出正在发送的消息
                 totalEntries += filterEntriesForConsumer(entriesWithSameKey, batchSizes, sendMessageInfo,
                         batchIndexesAcks, cursor, readType == ReadType.Replay);
-
+                //这里会把小于刚加入时记录的read position位置的entry进行发送
                 consumer.sendMessages(entriesWithSameKey, batchSizes, batchIndexesAcks,
                         sendMessageInfo.getTotalMessages(),
                         sendMessageInfo.getTotalBytes(), sendMessageInfo.getTotalChunkedMessages(),
                         getRedeliveryTracker()).addListener(future -> {
                     if (future.isDone() && keyNumbers.decrementAndGet() == 0) {
+                        //当keyNumbers为0时，就说明所有的consumer对应的消息都推送完毕了，然后会继续读取更多数据
                         readMoreEntries();
                     }
                 });
 
+
+                //这里会更新下消息计数
                 TOTAL_AVAILABLE_PERMITS_UPDATER.getAndAdd(this,
                         -(sendMessageInfo.getTotalMessages() - batchIndexesAcks.getTotalAckedIndexCount()));
                 totalMessagesSent += sendMessageInfo.getTotalMessages();
@@ -282,6 +327,7 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             }
         }
 
+        // 获取已发送消息的消息分发许可,这里应该是和限速有关系
         // acquire message-dispatch permits for already delivered messages
         if (serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled() || !cursor.isActive()) {
             long permits = dispatchThrottlingOnBatchMessageEnabled ? totalEntries : totalMessagesSent;
@@ -425,7 +471,9 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
 
     @Override
     protected synchronized Set<PositionImpl> getMessagesToReplayNow(int maxMessagesToRead) {
+        //isDispatcherStuckOnReplays这个变量到底是什么意思,默认是false
         if (isDispatcherStuckOnReplays) {
+            // 如果我们被困在重播上，我们希望继续阅读该主题（直到全部最大未确认消息开始），而不是继续重播相同的旧消息，因为这些消息路由到的消费者此时可能很忙
             // If we're stuck on replay, we want to move forward reading on the topic (until the overall max-unacked
             // messages kicks in), instead of keep replaying the same old messages, since the consumer that these
             // messages are routing to might be busy at the moment

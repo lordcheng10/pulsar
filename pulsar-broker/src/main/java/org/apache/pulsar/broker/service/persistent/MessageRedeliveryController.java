@@ -105,6 +105,7 @@ public class MessageRedeliveryController {
 
     public Set<PositionImpl> getMessagesToReplayNow(int maxMessagesToRead) {
         if (hashesToBeBlocked != null) {
+            // 不允许乱序的话，就需要排序
             // allowOutOfOrderDelivery is false
             return messagesToRedeliver.items().stream()
                     .sorted((l1, l2) -> ComparisonChain.start().compare(l1.first, l2.first)
@@ -112,6 +113,7 @@ public class MessageRedeliveryController {
                     .limit(maxMessagesToRead).map(longPair -> new PositionImpl(longPair.first, longPair.second))
                     .collect(Collectors.toCollection(TreeSet::new));
         } else {
+            // 允许乱序的话，就随便选择一个
             // allowOutOfOrderDelivery is true
             return messagesToRedeliver.items(maxMessagesToRead,
                     (ledgerId, entryId) -> new PositionImpl(ledgerId, entryId));
