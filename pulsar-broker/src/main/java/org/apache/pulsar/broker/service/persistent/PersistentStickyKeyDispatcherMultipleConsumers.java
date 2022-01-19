@@ -327,9 +327,10 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             }
         }
 
-        // 获取已发送消息的消息分发许可,这里应该是和限速有关系
+        // 获取已发送消息的消息分发许可,这里应该是和限速有关系,默认是没有开启的
         // acquire message-dispatch permits for already delivered messages
         if (serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled() || !cursor.isActive()) {
+            //TODO-这里会导致dispatchThrottlingOnBatchMessageEnabled动态配置失效
             long permits = dispatchThrottlingOnBatchMessageEnabled ? totalEntries : totalMessagesSent;
             if (topic.getDispatchRateLimiter().isPresent()) {
                 topic.getDispatchRateLimiter().get().tryDispatchPermit(permits, totalBytesSent);
@@ -339,10 +340,17 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                 dispatchRateLimiter.get().tryDispatchPermit(permits, totalBytesSent);
             }
         }
-
+        // 情况卡住的消费者
         stuckConsumers.clear();
 
+        //如果发送的消息数为0并且最近没有加入consumer，或者可以允许乱序，那么久继续读数据
         if (totalMessagesSent == 0 && (recentlyJoinedConsumers == null || recentlyJoinedConsumers.isEmpty())) {
+            //这意味着，我们刚刚阅读的所有消息现在都无法发送。
+            //这种情况只会在以下情况下发生：
+            //1.我们让消费者准备好接受消息（否则不会被触发）
+            //2.当前这组消息中的所有key都路由到当前繁忙的consumer上，卡住不是由stdConsumers引起的
+            //这里的解决方案是继续阅读下一批消息，这些消息可能还包含用于其他消费者的密钥。 我们这样做，除非那是“最近加入的消费者”。
+            //在这种情况下，我们将在新消费者尚未准备好接受新消息时在流中向前看，因此很可能只会增加读取位置和标记删除之间的距离位置。
             // This means, that all the messages we've just read cannot be dispatched right now.
             // This condition can only happen when:
             //  1. We have consumers ready to accept messages (otherwise the would not haven been triggered)
@@ -364,6 +372,7 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             // stuckConsumers for avoid stopping dispatch.
             readMoreEntries();
         }  else if (currentThreadKeyNumber == 0) {
+            //如果consumer数为0，那么久执行下面的继续读取，这里都没有consumer了为啥还要读取
             topic.getBrokerService().executor().schedule(() -> {
                 synchronized (PersistentStickyKeyDispatcherMultipleConsumers.this) {
                     readMoreEntries();
