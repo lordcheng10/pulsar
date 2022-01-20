@@ -57,6 +57,9 @@ public interface DelayedDeliveryTracker extends AutoCloseable {
 
 
     /**
+     * 重置滴答时间使用 zk 策略缓存。
+     * @param tickTime 重试延迟传递消息时的滴答时间
+     *
      *  Reset tick time use zk policies cache.
      * @param tickTime
      *          The tick time for when retrying on delayed delivery messages

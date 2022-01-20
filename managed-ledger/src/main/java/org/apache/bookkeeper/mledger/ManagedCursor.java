@@ -415,6 +415,9 @@ public interface ManagedCursor {
     void rewind();
 
     /**
+     * 将光标移动到不同的读取位置。
+     * 如果新位置恰好在已经标记删除的位置之前，它将被设置为标记删除位置。
+     *
      * Move the cursor to a different read position.
      *
      * <p/>If the new position happens to be before the already mark deleted position, it will be set to the mark
@@ -565,6 +568,18 @@ public interface ManagedCursor {
         Set<? extends Position> positions, ReadEntriesCallback callback, Object ctx);
 
     /**
+     * 从 ManagedLedger 中读取指定的位置集合。
+     * @param positions
+     *             要读取的位置集
+     * @param callback
+     *          返回条目列表的回调对象
+     * @param ctx
+     *              不透明的上下文
+     * @param sortEntries
+     *             带有排序条目列表的回调。
+     * @return skipped positions
+     *             重播时已删除/确认并跳过的一组位置
+     *
      * Read the specified set of positions from ManagedLedger.
      *
      * @param positions

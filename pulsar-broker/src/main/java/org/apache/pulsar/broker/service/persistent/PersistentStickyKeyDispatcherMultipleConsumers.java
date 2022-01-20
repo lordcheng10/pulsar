@@ -57,19 +57,26 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
     // 是否允许乱序，这个是客户端传入的.
     // 怎么保证不乱序?如果该变量为true，那么会创建一个recentlyJoinedConsumers map，用来存放最近加入的consumer
     private final boolean allowOutOfOrderDelivery;
+    //consumer的select选择器
     private final StickyKeyConsumerSelector selector;
     //调度员是否卡在重播上
     private boolean isDispatcherStuckOnReplays = false;
+    //key share模式
     private final KeySharedMode keySharedMode;
 
     /**
+     * 当消费者加入时，它将以当前读取位置添加到此地图中。
+     * 这意味着，为了保持顺序，新的消费者只能接收旧的消息，直到标记删除位置超过这个点。
+     *
      * When a consumer joins, it will be added to this map with the current read position.
      * This means that, in order to preserve ordering, new consumers can only receive old
      * messages, until the mark-delete position will move past this point.
      */
     private final LinkedHashMap<Consumer, PositionImpl> recentlyJoinedConsumers;
 
+    //卡住消费者
     private final Set<Consumer> stuckConsumers;
+    // 下一个卡住的消费者
     private final Set<Consumer> nextStuckConsumers;
 
     PersistentStickyKeyDispatcherMultipleConsumers(PersistentTopic topic, ManagedCursor cursor,
@@ -100,10 +107,12 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         }
     }
 
+    //加入消费者
     @Override
     public synchronized void addConsumer(Consumer consumer) throws BrokerServiceException {
         super.addConsumer(consumer);
         try {
+            //加入consumer selector中
             selector.addConsumer(consumer);
         } catch (BrokerServiceException e) {
             consumerSet.removeAll(consumer);
@@ -111,7 +120,9 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             throw e;
         }
 
+        // 获取当前读取的位置
         PositionImpl readPositionWhenJoining = (PositionImpl) cursor.getReadPosition();
+        //设置consumer的读取位置
         consumer.setReadPositionWhenJoining(readPositionWhenJoining);
         // If this was the 1st consumer, or if all the messages are already acked, then we
         // don't need to do anything special
@@ -119,31 +130,44 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                 && recentlyJoinedConsumers != null
                 && consumerList.size() > 1
                 && cursor.getNumberOfEntriesSinceFirstNotAckedMessage() > 1) {
+            //走到这里的条件：①需要保序；②有consumer；③没有ack的消息大于1
             recentlyJoinedConsumers.put(consumer, readPositionWhenJoining);
         }
     }
 
     @Override
     public synchronized void removeConsumer(Consumer consumer) throws BrokerServiceException {
+        //  在调用超类 removeConsumer 方法之前，必须从选择器中删除消费者。
+        //  在超类 removeConsumer 方法中，消费者拥有的未决确认被添加到 redeliveryMessages。
+        //  如果此时消费者尚未从选择器中移除，则代理将尝试将消息重新传递给已关闭的消费者。
+        //  结果消息没有重新投递给任何消费者，并且mark-delete位置不动，最终导致所有消费者卡住。
+
         // The consumer must be removed from the selector before calling the superclass removeConsumer method.
         // In the superclass removeConsumer method, the pending acks that the consumer has are added to
         // redeliveryMessages. If the consumer has not been removed from the selector at this point,
         // the broker will try to redeliver the messages to the consumer that has already been closed.
         // As a result, the messages are not redelivered to any consumer, and the mark-delete position does not move,
         // eventually causing all consumers to get stuck.
+        // 先从selector中移除
         selector.removeConsumer(consumer);
+        // 移除该consumer
         super.removeConsumer(consumer);
+        // 如果recentlyJoinedConsumers不为null，就代表需要保序
         if (recentlyJoinedConsumers != null) {
+            // 从最近加入的集合中移除
             recentlyJoinedConsumers.remove(consumer);
-            if (consumerList.size() == 1) {
+            if (consumerList.size() == 1) {//如果只有一个consumer了，那么久直接把最近加入的consumer清理掉,因为此时就只剩下该consumer了
                 recentlyJoinedConsumers.clear();
             }
+            //removeConsumersFromRecentJoinedConsumers方法会遍历所有最近加入的consumer，然后判断其是否可以从最近加入的集合中移除掉
             if (removeConsumersFromRecentJoinedConsumers() || !redeliveryMessages.isEmpty()) {
+                //如果从最近加入的集合中移除了consumer或重发消息不为空时，就会重新去读取更多的数据
                 readMoreEntries();
             }
         }
     }
 
+    //快速thread local
     private static final FastThreadLocal<Map<Consumer, List<Entry>>> localGroupedEntries =
             new FastThreadLocal<Map<Consumer, List<Entry>>>() {
                 @Override
@@ -380,28 +404,41 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             }, 100, TimeUnit.MILLISECONDS);
         }
     }
-
+    //获取消费者的受限最大条目
+    //maxMessages是可发送的最大消息数
+    //readType: 读取类型
+    // stickyKeyHashes:该consumer对应的hash值
     private int getRestrictedMaxEntriesForConsumer(Consumer consumer, List<Entry> entries, int maxMessages,
             ReadType readType, Set<Integer> stickyKeyHashes) {
+        //可发送的消息数如果为0，那么久直接放入下一个卡主的consumer中
         if (maxMessages == 0) {
+            // 该consumer被卡主了
             // the consumer was stuck
             nextStuckConsumers.add(consumer);
             return 0;
         }
+        //如果readType是正常的读取类型
+        //如果重发消息里面包含hash值stickyKeyHashes
         if (readType == ReadType.Normal && stickyKeyHashes != null
                 && redeliveryMessages.containsStickyKeyHashes(stickyKeyHashes)) {
+            // 如果 redeliveryMessages 包含与调度程序尝试发送的消息对应的哈希值相同的消息，请不要发送这些消息以保证订单.
             // If redeliveryMessages contains messages that correspond to the same hash as the messages
             // that the dispatcher is trying to send, do not send those messages for order guarantee
             return 0;
         }
+        //如果recentlyJoinedConsumers为null，就说明不保序，那么久直接返回可读的最大消息数maxMessages
         if (recentlyJoinedConsumers == null) {
             return maxMessages;
         }
+        //从最近加入的消息中移除
         removeConsumersFromRecentJoinedConsumers();
+        //获取该consumer刚加入时的position位置
         PositionImpl maxReadPosition = recentlyJoinedConsumers.get(consumer);
+        // 此时，所有旧消息都已被消费，该消费者现在已准备好接收任何消息.
         // At this point, all the old messages were already consumed and this consumer
         // is now ready to receive any message
         if (maxReadPosition == null) {
+            // 停止调度被困住的消费者.
             // stop to dispatch by stuckConsumers
             if (stuckConsumers.contains(consumer)) {
                 if (log.isDebugEnabled()) {
@@ -409,9 +446,19 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
                 }
                 return 0;
             }
+            // 如果为null，说明这个consumer不是最近加入的，所以可以发送全部的消息
             // The consumer has not recently joined, so we can send all messages
             return maxMessages;
         }
+
+        // 如果读取类型是Replay，我们应该避免将其他消费者持有的消息发送给新消费者，例如，我们有 10 条消息 [0,1,2,3,4,5,6,7,8,9]
+        // 如果consumer0得到消息0和1，并且没有acked message 0，那么consumer1加入，
+        // 当consumer1 得到消息2,3 时，broker 不会向consumer1 发送消息，因为mark delete 位置没有前移。
+        // 因此消息 2,3 将存储在重新传递跟踪器中。
+        // 现在，consumer2 加入，它会从游标读取新消息，所以对于 consumer2，recentJoinedPosition 是 4.
+        // 因为有消息需要重新投递，所以broker会先读取重投消息[2,3], 消息[2,3]低于recentJoinedPosition 4,
+        // 因此消息 [2,3] 将发送给消费者 2
+        // 但是消息 [2,3] 不应该发送给 consumer2。
 
         // If the read type is Replay, we should avoid send messages that hold by other consumer to the new consumers,
         // For example, we have 10 messages [0,1,2,3,4,5,6,7,8,9]
@@ -427,16 +474,20 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
         // But the message [2,3] should not dispatch to consumer2.
 
         if (readType == ReadType.Replay) {
+            //这里会找到最近加入的consumer中，最小的read position
             PositionImpl minReadPositionForRecentJoinedConsumer = recentlyJoinedConsumers.values().iterator().next();
             if (minReadPositionForRecentJoinedConsumer != null
                     && minReadPositionForRecentJoinedConsumer.compareTo(maxReadPosition) < 0) {
                 maxReadPosition = minReadPositionForRecentJoinedConsumer;
             }
         }
+
+        // 在这里，消费者是最近加入的，所以我们只能发送在它加入之前发布的消息。
         // Here, the consumer is one that has recently joined, so we can only send messages that were
         // published before it has joined.
         for (int i = 0; i < maxMessages; i++) {
             if (((PositionImpl) entries.get(i).getPosition()).compareTo(maxReadPosition) >= 0) {
+                //我们已经越过了分界线。 列表中的所有消息现在都比我们当前可以发送给该消费者的消息更新
                 // We have already crossed the divider line. All messages in the list are now
                 // newer than what we can currently dispatch to this consumer
                 return i;
@@ -448,8 +499,10 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
 
     @Override
     public synchronized void markDeletePositionMoveForward() {
+        // 如果开启了保序，并且还有最近加入的consumer，那么会尝试从最近加入的consumer中移除掉被游标赶上的consumer
         if (recentlyJoinedConsumers != null && !recentlyJoinedConsumers.isEmpty()
                 && removeConsumersFromRecentJoinedConsumers()) {
+            // 在我们处理完ack之后，我们需要检查mark-delete位置是否提前，我们终于可以阅读更多的消息了。 多次调用 readMoreEntries() 是安全的。
             // After we process acks, we need to check whether the mark-delete position was advanced and we can finally
             // read more messages. It's safe to call readMoreEntries() multiple times.
             readMoreEntries();
@@ -459,18 +512,27 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
     // 从最近加入的消费者中删除消费者
     //当consumer ack的数量达到此时的读取位置时，就会移除该consumer，从最近加入的map中
     private boolean removeConsumersFromRecentJoinedConsumers() {
+        //遍历所有最近加入的consumer
         Iterator<Map.Entry<Consumer, PositionImpl>> itr = recentlyJoinedConsumers.entrySet().iterator();
+        //记录是否有移除的consumer
         boolean hasConsumerRemovedFromTheRecentJoinedConsumers = false;
+        //获取ack的位置
         PositionImpl mdp = (PositionImpl) cursor.getMarkDeletedPosition();
+        //如果获取到了
         if (mdp != null) {
+            //已确认位置的下一个位置
             PositionImpl nextPositionOfTheMarkDeletePosition =
                     ((ManagedLedgerImpl) cursor.getManagedLedger()).getNextValidPosition(mdp);
             while (itr.hasNext()) {
+                //遍历所有consumer，当时加入的位置是否被游标位置追上了,如果追上了就从最近加入的consumer集合中移除
                 Map.Entry<Consumer, PositionImpl> entry = itr.next();
                 if (entry.getValue().compareTo(nextPositionOfTheMarkDeletePosition) <= 0) {
+                    //从中移除该consumer
                     itr.remove();
                     hasConsumerRemovedFromTheRecentJoinedConsumers = true;
                 } else {
+                    //为什么不遍历完所有的才退出?因为recentlyJoinedConsumers是按照加入顺序添加的，如果遍历到有一个的读位置大于游标位置了，说明后面的都大于了（真的是这样吗，如果reset cursor呢）
+                    //cursor一定就是单调递增的吗
                     break;
                 }
             }
@@ -481,6 +543,7 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
     @Override
     protected synchronized Set<PositionImpl> getMessagesToReplayNow(int maxMessagesToRead) {
         //isDispatcherStuckOnReplays这个变量到底是什么意思,默认是false
+        //判断dispatcher是否是卡在重播上，如果是，那么这里回将isDispatcherStuckOnReplays设置为false
         if (isDispatcherStuckOnReplays) {
             // 如果我们被困在重播上，我们希望继续阅读该主题（直到全部最大未确认消息开始），而不是继续重播相同的旧消息，因为这些消息路由到的消费者此时可能很忙
             // If we're stuck on replay, we want to move forward reading on the topic (until the overall max-unacked
@@ -489,37 +552,41 @@ public class PersistentStickyKeyDispatcherMultipleConsumers extends PersistentDi
             this.isDispatcherStuckOnReplays = false;
             return Collections.emptySet();
         } else {
+            //如果没有卡在重发上，那么这里会直接从重发的消息中，选取maxMessagesToRead条来重发
             return super.getMessagesToReplayNow(maxMessagesToRead);
         }
     }
 
+    //返回订阅类型
     @Override
     public SubType getType() {
         return SubType.Key_Shared;
     }
 
+    //异步重放消息
     @Override
     protected Set<? extends Position> asyncReplayEntries(Set<? extends Position> positions) {
         return cursor.asyncReplayEntries(positions, this, ReadType.Replay, true);
     }
-
+    //获取key share模式
     public KeySharedMode getKeySharedMode() {
         return this.keySharedMode;
     }
-
+    //是允许乱序发送
     public boolean isAllowOutOfOrderDelivery() {
         return this.allowOutOfOrderDelivery;
     }
 
+    //判断是否有相同的key share策略
     public boolean hasSameKeySharedPolicy(KeySharedMeta ksm) {
         return (ksm.getKeySharedMode() == this.keySharedMode
                 && ksm.isAllowOutOfOrderDelivery() == this.allowOutOfOrderDelivery);
     }
-
+    //返回最近加入的consumer集合
     public LinkedHashMap<Consumer, PositionImpl> getRecentlyJoinedConsumers() {
         return recentlyJoinedConsumers;
     }
-
+    //返回consumer和range对应的map
     public Map<Consumer, List<Range>> getConsumerKeyHashRanges() {
         return selector.getConsumerKeyHashRanges();
     }

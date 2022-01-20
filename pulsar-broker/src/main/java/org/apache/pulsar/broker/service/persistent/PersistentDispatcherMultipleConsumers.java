@@ -133,11 +133,13 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
 
     @Override
     public synchronized void addConsumer(Consumer consumer) throws BrokerServiceException {
+        //如果是被close了，那么久把consumer关闭
         if (IS_CLOSED_UPDATER.get(this) == TRUE) {
             log.warn("[{}] Dispatcher is already closed. Closing consumer {}", name, consumer);
             consumer.disconnect();
             return;
         }
+        //看consumer列表是否为空，如果为空，那么
         if (consumerList.isEmpty()) {
             if (havePendingRead || havePendingReplayRead) {
                 // There is a pending read from previous run. We must wait for it to complete and then rewind
@@ -154,8 +156,11 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
             throw new ConsumerBusyException("Subscription reached max consumers limit");
         }
 
+        //加入consumer列表
         consumerList.add(consumer);
+        //按照优先级排序
         consumerList.sort(Comparator.comparingInt(Consumer::getPriorityLevel));
+        //加入consumerSet集合,这里会去重
         consumerSet.add(consumer);
     }
 
@@ -852,9 +857,13 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
             //那么久从redeliveryMessages中去获取maxMessagesToRead条要重发的消息
             return redeliveryMessages.getMessagesToReplayNow(maxMessagesToRead);
         } else if (delayedDeliveryTracker.isPresent() && delayedDeliveryTracker.get().hasMessageAvailable()) {
+            //delayedDeliveryTracker看起来是存放延迟重发的消息
+            //如果重发消息集合里没有，就会从延迟重发消息去找
             delayedDeliveryTracker.get().resetTickTime(topic.getDelayedDeliveryTickTimeMillis());
+            //从延迟重发的集合中去获取
             return delayedDeliveryTracker.get().getScheduledMessages(maxMessagesToRead);
         } else {
+            //如果重发和延迟重发集合里面都没有消息，那么就直接返回空
             return Collections.emptySet();
         }
     }

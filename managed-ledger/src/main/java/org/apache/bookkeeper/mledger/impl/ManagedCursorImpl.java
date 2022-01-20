@@ -115,6 +115,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     // this position is have persistent mark delete position
     protected volatile PositionImpl persistentMarkDeletePosition;
 
+    //这个读取位置会不会重置
     protected static final AtomicReferenceFieldUpdater<ManagedCursorImpl, PositionImpl> READ_POSITION_UPDATER =
             AtomicReferenceFieldUpdater.newUpdater(ManagedCursorImpl.class, PositionImpl.class, "readPosition");
     protected volatile PositionImpl readPosition;
@@ -2158,6 +2159,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     public void rewind() {
         lock.writeLock().lock();
         try {
+            //rewind，实际就是放弃所有已经推送，但没有ack的消息，这样会有数据重复
             PositionImpl newReadPosition = ledger.getNextValidPosition(markDeletePosition);
             PositionImpl oldReadPosition = readPosition;
 
@@ -2177,9 +2179,11 @@ public class ManagedCursorImpl implements ManagedCursor {
         lock.writeLock().lock();
         try {
             if (!force && newReadPosition.compareTo(markDeletePosition) <= 0) {
+                //如果不是强制seek的话，如果seek的位置是之前已经ack过的位置，那么这里会用当前ack的下一个位置作为读取位置，相当于放弃所有已经发送但没有ack的消息，全部重新再发送一次
                 // Make sure the newReadPosition comes after the mark delete position
                 newReadPosition = ledger.getNextValidPosition(markDeletePosition);
             }
+            //如果是强制或非强制但读取位置小于等于目前已经ack的位置，那么就直接用seek的位置作为读取位置
             readPosition = newReadPosition;
         } finally {
             lock.writeLock().unlock();
