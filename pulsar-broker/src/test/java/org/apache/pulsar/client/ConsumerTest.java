@@ -18,7 +18,8 @@ public class ConsumerTest {
         try (PulsarClient client = PulsarClient.builder().serviceUrl("pulsar://127.0.0.1:6650").build()) {
             Consumer consumer = client.newConsumer()
                     .topic("test1")
-                    .subscriptionName("sb1")
+                    //允许乱序
+                    .subscriptionName("sb1").keySharedPolicy(KeySharedPolicy.autoSplitHashRange().setAllowOutOfOrderDelivery(true))
                     .subscribe();
 
             while (true) {
