@@ -39,6 +39,7 @@ public interface AuthenticationState {
     String getAuthRole() throws AuthenticationException;
 
     /**
+     * 验证数据中传递的挑战并获取响应数据。
      * Challenge passed in auth data and get response data.
      * @deprecated use and implement {@link AuthenticationState#authenticateAsync(AuthData)} instead.
      */

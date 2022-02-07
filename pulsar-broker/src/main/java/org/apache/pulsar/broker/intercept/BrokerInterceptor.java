@@ -40,6 +40,11 @@ import org.apache.pulsar.common.classification.InterfaceStability;
 import org.apache.pulsar.common.intercept.InterceptException;
 
 /**
+ * 一个插件接口，允许您拦截客户端对 Pulsar 代理的请求。
+ * 可以从多个线程调用 BrokerInterceptor 回调。 如果需要，拦截器实现必须确保线程安全。
+ *
+ * 看起来是一个专门用来自定义服务端各个处理逻辑的拦截器的。
+ *
  * A plugin interface that allows you to intercept the
  * client requests to the Pulsar brokers.
  *

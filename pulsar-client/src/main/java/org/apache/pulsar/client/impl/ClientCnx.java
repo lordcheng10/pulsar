@@ -228,6 +228,7 @@ public class ClientCnx extends PulsarHandler {
         } else {
             log.info("{} Connected through proxy to target broker at {}", ctx.channel(), proxyToTargetBrokerAddress);
         }
+        // 发送连接请求
         // Send CONNECT command
         ctx.writeAndFlush(newConnectCommand())
                 .addListener(future -> {
@@ -243,12 +244,14 @@ public class ClientCnx extends PulsarHandler {
                 });
     }
 
+    //这里构建一个新建连接命令
     protected ByteBuf newConnectCommand() throws Exception {
         // mutual authentication is to auth between `remoteHostName` and this client for this channel.
         // each channel will have a mutual client/server pair, mutual client evaluateChallenge with init data,
         // and return authData to server.
         authenticationDataProvider = authentication.getAuthData(remoteHostName);
         AuthData authData = authenticationDataProvider.authenticate(AuthData.INIT_AUTH_DATA);
+        //这里就传入了proto版本号和pulsar 版本号，然后回构建成一个请求发送到服务端
         return Commands.newConnect(authentication.getAuthMethodName(), authData, this.protocolVersion,
                 PulsarVersion.getVersion(), proxyToTargetBrokerAddress, null, null, null);
     }
@@ -310,6 +313,7 @@ public class ClientCnx extends PulsarHandler {
     protected void handleConnected(CommandConnected connected) {
 
         if (isTlsHostnameVerificationEnable && remoteHostName != null && !verifyTlsHostName(remoteHostName, ctx)) {
+            //验证主机名，如果有问题，那么这里会直接关闭
             // close the connection if host-verification failed with the broker
             log.warn("[{}] Failed to verify hostname of {}", ctx.channel(), remoteHostName);
             ctx.close();
@@ -318,6 +322,7 @@ public class ClientCnx extends PulsarHandler {
 
         checkArgument(state == State.SentConnectFrame || state == State.Connecting);
         if (connected.hasMaxMessageSize()) {
+            //获取服务端返回的最大消息size大小，并更新客户端的最大消息大小
             if (log.isDebugEnabled()) {
                 log.debug("{} Connection has max message size setting, replace old frameDecoder with "
                           + "server frame size {}", ctx.channel(), connected.getMaxMessageSize());
@@ -329,6 +334,8 @@ public class ClientCnx extends PulsarHandler {
         if (log.isDebugEnabled()) {
             log.debug("{} Connection is ready", ctx.channel());
         }
+        //设置服务端的proto协议版本号
+        // 在我们完成连接之前将远程协议版本设置为正确的版本未来
         // set remote protocol version to the correct version before we complete the connection future
         setRemoteEndpointProtocolVersion(connected.getProtocolVersion());
         connectionFuture.complete(null);

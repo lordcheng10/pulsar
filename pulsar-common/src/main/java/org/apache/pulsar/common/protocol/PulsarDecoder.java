@@ -83,6 +83,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * 该类抽象了客户端和服务端对于请求的处理逻辑，客户端和服务端分别对应的请求处理实现类为ClientCnx和ServerCnx
+ *
  * Basic implementation of the channel handler to process inbound Pulsar data.
  */
 public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
@@ -163,12 +165,16 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
                 break;
 
             case CONNECT:
+                //1.首先检查连接状态.这里的连接是netty底层连接处理好后的状态。下面的连接处理是pulsar层面的连接注册处理逻辑.
                 checkArgument(cmd.hasConnect());
+                //2.这里是服务端对于连接请求主要的逻辑处理
                 handleConnect(cmd.getConnect());
+                //3.处理完后就退出
                 break;
 
             case CONNECTED:
                 checkArgument(cmd.hasConnected());
+                //客户端收到连接建立完成的response
                 handleConnected(cmd.getConnected());
                 break;
 

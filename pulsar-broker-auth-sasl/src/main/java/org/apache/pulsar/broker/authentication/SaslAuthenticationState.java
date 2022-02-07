@@ -59,6 +59,9 @@ public class SaslAuthenticationState implements AuthenticationState {
     }
 
     /**
+     * 如果身份验证已完成，则返回 null，并且不需要将身份验证数据发送回客户端。
+     * 如果身份验证尚未完成，则执行身份验证并将身份验证数据返回给客户端。
+     *
      * Returns null if authentication has completed, and no auth data is required to send back to client.
      * Do auth and Returns the auth data back to client, if authentication has not completed.
      */

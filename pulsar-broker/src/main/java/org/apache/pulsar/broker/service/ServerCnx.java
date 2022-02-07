@@ -604,43 +604,64 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         return Commands.serializeWithSize(cmd);
     }
 
+    // 完成连接并发送 newConnected 命令
     // complete the connect and sent newConnected command
     private void completeConnect(int clientProtoVersion, String clientVersion) {
+        // 这里回response数据，为啥还要待着clientProtoVersion，这个不是客户端带过来的吗
+        // maxMessageSize这个应该是服务端的最大消息数，需要发送给客户端.这个对应配置是maxMessageSize，默认值是5M
         ctx.writeAndFlush(Commands.newConnected(clientProtoVersion, maxMessageSize));
+        //更新连接状态，之前的连接状态从Start变到了Connected
         state = State.Connected;
+        //记录连接成功的次数,这个metric是从2.8.1后加的
         service.getPulsarStats().recordConnectionCreateSuccess();
+        //debug日志输出客户端地址当前的连接状态
         if (log.isDebugEnabled()) {
             log.debug("[{}] connect state change to : [{}]", remoteAddress, State.Connected.name());
         }
+        //记录好客户端的proto版本号，因为不同proto协议版本的服务端操作是不一样的
         setRemoteEndpointProtocolVersion(clientProtoVersion);
+        //如果客户端版本号不为空，并且不包含空格，那么久记录下该客户端版本号
         if (isNotBlank(clientVersion) && !clientVersion.contains(" ") /* ignore default version: pulsar client */) {
             this.clientVersion = clientVersion.intern();
         }
+        //获取连接器，对应配置为brokerInterceptors
         BrokerInterceptor brokerInterceptor = getBrokerService().getInterceptor();
         if (brokerInterceptor != null) {
+            //如果broker拦截器不为null，那么在这里会调用连接建立成功后的拦截器
             brokerInterceptor.onConnectionCreated(this);
         }
     }
 
+    // 根据认证结果，发送 newConnected 或 newAuthChallenge 命令。
     // According to auth result, send newConnected or newAuthChallenge command.
     private State doAuthentication(AuthData clientData,
                                    int clientProtocolVersion,
                                    String clientVersion) throws Exception {
 
+        // 原始身份验证状态只能在后续身份验证尝试中设置（并且仅在存在代理并且代理正在转发凭据的情况下）。
+        // 在这种情况下，需要针对原始客户端凭据进行重新验证。
         // The original auth state can only be set on subsequent auth attempts (and only
         // in presence of a proxy and if the proxy is forwarding the credentials).
         // In this case, the re-validation needs to be done against the original client
         // credentials.
         boolean useOriginalAuthState = (originalAuthState != null);
+        //是否用原始的授权状态
         AuthenticationState authState =  useOriginalAuthState ? originalAuthState : this.authState;
+        //授权角色
         String authRole = useOriginalAuthState ? originalPrincipal : this.authRole;
+        //用授权状态对象解析客户端鉴权数据，转义成服务端鉴权数据
+        //这里应该在做实际的鉴权
         AuthData brokerData = authState.authenticate(clientData);
 
         if (log.isDebugEnabled()) {
             log.debug("Authenticate using original auth state : {}, role = {}", useOriginalAuthState, authRole);
         }
 
+        //如果鉴权完成
         if (authState.isComplete()) {
+            // 身份验证已完成。 它是：
+            //1. 身份验证过程第一次完成，在这种情况下，我们将发送一个 `CommandConnected` 响应
+            //2.一个身份验证刷新，这种情况下我们需要刷新authenticationData
             // Authentication has completed. It was either:
             // 1. the 1st time the authentication process was done, in which case we'll send
             //    a `CommandConnected` response
@@ -648,12 +669,14 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
             String newAuthRole = authState.getAuthRole();
 
+            //刷新鉴权数据
             // Refresh the auth data.
             this.authenticationData = authState.getAuthDataSource();
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Auth data refreshed for role={}", remoteAddress, this.authRole);
             }
 
+            //如果不是用原始的鉴权状态，那么久需要更新鉴权角色
             if (!useOriginalAuthState) {
                 this.authRole = newAuthRole;
             }
@@ -663,25 +686,34 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                         remoteAddress, authMethod, this.authRole, originalPrincipal);
             }
 
+            //如果连接状态不是已连接状态，说明是第一次鉴权，那么就执行完成连接
             if (state != State.Connected) {
+                // 首次验证完成
                 // First time authentication is done
                 completeConnect(clientProtocolVersion, clientVersion);
             } else {
+                //如果连接已经建立，说明本次连接命令是在做一次鉴权刷新操作
                 // If the connection was already ready, it means we're doing a refresh
                 if (!StringUtils.isEmpty(authRole)) {
                     if (!authRole.equals(newAuthRole)) {
+                        //如果鉴权角色不相等，那么久关闭连接，因为不能改变鉴权角色
                         log.warn("[{}] Principal cannot change during an authentication refresh expected={} got={}",
                                 remoteAddress, authRole, newAuthRole);
                         ctx.close();
                     } else {
+                        //如果鉴权角色没有变，那么就表示刷新完成了
                         log.info("[{}] Refreshed authentication credentials for role {}", remoteAddress, authRole);
                     }
                 }
             }
 
+
+            //返回连接状态：已连接
+            // 这里有个问题，如果前面已经关闭了连接，这里为啥还要返回已连接状态,这里会不会有问题
             return State.Connected;
         }
 
+        //如果授权状态是没有完成的，那么继续在客户端侧进行授权
         // auth not complete, continue auth with client side.
         ctx.writeAndFlush(Commands.newAuthChallenge(authMethod, brokerData, clientProtocolVersion));
         if (log.isDebugEnabled()) {
@@ -689,6 +721,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 remoteAddress, authMethod);
             log.debug("[{}] connect state change to : [{}]", remoteAddress, State.Connecting.name());
         }
+        //返回连接状态正在连接
         return State.Connecting;
     }
 
@@ -753,8 +786,12 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleConnect(CommandConnect connect) {
+        //2.1 进来后第一件事也是检查状态.感觉有点多余
         checkArgument(state == State.Start);
 
+        //2.2 debug是否开启.log4j，这个可以动态打开debug吗?
+        //可以，首先在bin下的pulsar脚本中修改最低日志级别为trace：PULSAR_LOG_LEVEL=${PULSAR_LOG_LEVEL:-"trace"}，然后就可以通过arthas来动态设置了.
+        // 这种动态开启debug方式似乎不行了，在该PR改动后：https://github.com/apache/pulsar/pull/12941
         if (log.isDebugEnabled()) {
             log.debug("Received CONNECT from {}, auth enabled: {}:"
                     + " has original principal = {}, original principal = {}",
@@ -764,22 +801,36 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 connect.hasOriginalPrincipal() ? connect.getOriginalPrincipal() : null);
         }
 
+        //2.3 获取客户端版本信息
+        //客户端是怎么把版本信息塞过来的?
         String clientVersion = connect.getClientVersion();
+        //客户端protocol协议版本号
         int clientProtocolVersion = connect.getProtocolVersion();
+
+        //2.4 记录支持的feature
+        //这个有什么作用?用来判断客户端是否支持某些feature，比如：是否支持权限刷新、是否支持entry metadata
+        //features应该是属于一个链接对象的
         features = new FeatureFlags();
         if (connect.hasFeatureFlags()) {
             features.copyFrom(connect.getFeatureFlags());
         }
 
+        //2.5 服务端是否开启了鉴权
         if (!service.isAuthenticationEnabled()) {
+            //2.5.1 如果没有开启鉴权，那么就直接完成连接,回复连接完成的response
             completeConnect(clientProtocolVersion, clientVersion);
+            //2.5.2 直接返回
             return;
         }
 
+        //2.6 如果开启了鉴权，那么接下来就是进行鉴权了
         try {
+            //2.6.1 获取权限数据
             byte[] authData = connect.hasAuthData() ? connect.getAuthData() : emptyArray;
+            //2.6.2 解析出客户端的鉴权数据
             AuthData clientData = AuthData.of(authData);
 
+            // 如果有授权方法名，就直接设置授权方法名；否则如果设置了授权方法，就从授权方法中获取方法名；否则就为none
             // init authentication
             if (connect.hasAuthMethodName()) {
                 authMethod = connect.getAuthMethodName();
@@ -790,70 +841,94 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 authMethod = "none";
             }
 
+            //提供授权的类名：authenticationProviders
+            //根据授权名获取授权提供方，这里的authMethod到底是客户端传的还是服务端传入的啊
             authenticationProvider = getBrokerService()
                 .getAuthenticationService()
                 .getAuthenticationProvider(authMethod);
 
+            //找不到名为 authMethod 的提供程序。 最常用于测试。
+            //在 AuthenticationDisabled 中，它会将 authMethod 设置为“none”。
             // Not find provider named authMethod. Most used for tests.
             // In AuthenticationDisabled, it will set authMethod "none".
             if (authenticationProvider == null) {
+                //如果找不到对应的授权提供器，那么角色就设置为匿名角色，如果此时匿名角色都没有设置，那么久会异常报错
+                //也就是说，如果开启了鉴权功能，那么授权提供器和匿名角色配置两者至少要设置正确一个
                 authRole = getBrokerService().getAuthenticationService().getAnonymousUserRole()
                     .orElseThrow(() ->
                         new AuthenticationException("No anonymous role, and no authentication provider configured"));
+                //完成连接，然后返回
                 completeConnect(clientProtocolVersion, clientVersion);
                 return;
             }
 
+            // 初始化权限状态和其他变量
             // init authState and other var
+            //sslHandler: ssl数据安全传输协议处理器
             ChannelHandler sslHandler = ctx.channel().pipeline().get(PulsarChannelInitializer.TLS_HANDLER);
+            //sslSession：ssl会话
             SSLSession sslSession = null;
             if (sslHandler != null) {
                 sslSession = ((SslHandler) sslHandler).engine().getSession();
             }
 
+            //authenticationProvider根据客户端授权数据(clientData)、客户端地址、ssl安全协议会话来设置授权状态
             authState = authenticationProvider.newAuthState(clientData, remoteAddress, sslSession);
 
+            //如果开启了debug，就把客户端地址和授权角色给打出来
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Authenticate role : {}", remoteAddress,
                     authState != null ? authState.getAuthRole() : null);
             }
 
+            // 这里在做鉴权了:根据客户端传入的鉴权数据、客户端proto版本号、客户端版本号
             state = doAuthentication(clientData, clientProtocolVersion, clientVersion);
 
+            // 如果出现以下情况，这将导致检查失败：
+            //  1. 客户端通过代理
+            //  2. 我们要求验证原始凭证
+            //  3. 没有通过任何凭据
             // This will fail the check if:
             //  1. client is coming through a proxy
             //  2. we require to validate the original credentials
             //  3. no credentials were passed
             if (connect.hasOriginalPrincipal() && service.getPulsar().getConfig().isAuthenticateOriginalAuthData()) {
+                //如果有原始凭据并且需要鉴权原始凭据
                 // init authentication
                 String originalAuthMethod;
                 if (connect.hasOriginalAuthMethod()) {
+                    //如果有原始凭据，那么这里进行赋值
                     originalAuthMethod = connect.getOriginalAuthMethod();
                 } else {
                     originalAuthMethod = "none";
                 }
-
+                //根据原始凭据获取授权提供对象
                 AuthenticationProvider originalAuthenticationProvider = getBrokerService()
                         .getAuthenticationService()
                         .getAuthenticationProvider(originalAuthMethod);
 
                 if (originalAuthenticationProvider == null) {
+                    //如果为null，那么这里异常：表示没有找到原始凭据使用的授权方法的授权提供者
                     throw new AuthenticationException(
                             String.format("Can't find AuthenticationProvider for original role"
                                     + " using auth method [%s] is not available", originalAuthMethod));
                 }
 
+                //从原始提供器里获取原始授权状态
                 originalAuthState = originalAuthenticationProvider.newAuthState(
                         AuthData.of(connect.getOriginalAuthData().getBytes()),
                         remoteAddress,
                         sslSession);
+                //原始授权数据
                 originalAuthData = originalAuthState.getAuthDataSource();
+                //原始授权凭据
                 originalPrincipal = originalAuthState.getAuthRole();
 
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] Authenticate original role : {}", remoteAddress, originalPrincipal);
                 }
             } else {
+                //如果该连接没有凭据或不需要授权原始授权数据的话，这里直接获取原始凭据
                 originalPrincipal = connect.hasOriginalPrincipal() ? connect.getOriginalPrincipal() : null;
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] Authenticate original role (forwarded from proxy): {}",

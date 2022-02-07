@@ -1049,6 +1049,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
         category = CATEGORY_SERVER,
         doc = "Max size of messages.",
         maxValue = Integer.MAX_VALUE - Commands.MESSAGE_SIZE_FRAME_PADDING)
+    //TODO-这个配置可以做成动态的
     private int maxMessageSize = Commands.DEFAULT_MAX_MESSAGE_SIZE;
 
     @FieldContext(
@@ -1299,6 +1300,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
 
     @FieldContext(
         category = CATEGORY_AUTHORIZATION,
+        // 如果设置了此标志，则代理验证原始 Auth 数据，否则它只接受 originalPrincipal 并对其进行授权（如果需要）
         doc = "If this flag is set then the broker authenticates the original Auth data"
             + " else it just accepts the originalPrincipal and authorizes it (if required)")
     private boolean authenticateOriginalAuthData = false;
@@ -1330,8 +1332,10 @@ public class ServiceConfiguration implements PulsarConfiguration {
 
     @FieldContext(
         category = CATEGORY_AUTHORIZATION,
+        // 当该参数不为空时，未经身份验证的用户执行为anonymousUserRole
         doc = "When this parameter is not empty, unauthenticated users perform as anonymousUserRole"
     )
+    // 匿名用户角色
     private String anonymousUserRole = null;
 
     @FieldContext(

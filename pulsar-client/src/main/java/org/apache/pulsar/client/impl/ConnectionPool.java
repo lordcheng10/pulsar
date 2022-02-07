@@ -297,6 +297,7 @@ public class ConnectionPool implements AutoCloseable {
                     .thenCompose(channel -> channelInitializerHandler
                             .initTls(channel, sniHost != null ? sniHost : remoteAddress))
                     .thenCompose(channelInitializerHandler::initSocks5IfConfig)
+                    //这里调用channel.connect应该就会触发org.apache.pulsar.client.impl.ClientCnx.channelActive方法，从而建立连接
                     .thenCompose(channel -> toCompletableFuture(channel.connect(remoteAddress)));
         } else {
             return toCompletableFuture(bootstrap.register())
