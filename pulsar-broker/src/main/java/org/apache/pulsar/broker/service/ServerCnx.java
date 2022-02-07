@@ -765,7 +765,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
             try {
                 AuthData brokerData = authState.refreshAuthentication();
-
+                //看起来是发送请求给客户端，客户端再回复一个response。
+                //我理解是申请的权限是有过期时间的，所以为了防止过期，需要周期刷新。
                 ctx.writeAndFlush(Commands.newAuthChallenge(authMethod, brokerData,
                         getRemoteEndpointProtocolVersion()));
                 if (log.isDebugEnabled()) {

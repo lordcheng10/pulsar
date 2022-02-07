@@ -104,6 +104,7 @@ public class PulsarChannelInitializer extends ChannelInitializer<SocketChannel> 
         }
         this.brokerConf = pulsar.getConfiguration();
 
+        //周期性的刷新身份验证凭据,默认是1分钟刷新一次
         pulsar.getExecutor().scheduleAtFixedRate(safeRun(this::refreshAuthenticationCredentials),
                 pulsar.getConfig().getAuthenticationRefreshCheckSeconds(),
                 pulsar.getConfig().getAuthenticationRefreshCheckSeconds(), TimeUnit.SECONDS);
