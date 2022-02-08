@@ -51,6 +51,7 @@ import org.apache.pulsar.metadata.impl.AbstractMetadataStore;
 @Slf4j
 public class MetadataCacheImpl<T> implements MetadataCache<T>, Consumer<Notification> {
 
+    //看起来cache里面的metadata 过期时间是5分钟
     private static final long CACHE_REFRESH_TIME_MILLIS = TimeUnit.MINUTES.toMillis(5);
 
     @Getter
@@ -76,6 +77,7 @@ public class MetadataCacheImpl<T> implements MetadataCache<T>, Consumer<Notifica
                 .buildAsync(new AsyncCacheLoader<String, Optional<CacheGetResult<T>>>() {
                     @Override
                     public CompletableFuture<Optional<CacheGetResult<T>>> asyncLoad(String key, Executor executor) {
+                        //看起来是从zk上去读取partition metadata
                         return readValueFromStore(key);
                     }
 

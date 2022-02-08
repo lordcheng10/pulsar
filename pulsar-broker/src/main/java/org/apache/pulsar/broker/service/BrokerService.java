@@ -328,6 +328,7 @@ public class BrokerService implements Closeable {
         this.blockedDispatchers = new ConcurrentOpenHashSet<>();
         // update dynamic configuration and register-listener
         updateConfigurationAndRegisterListeners();
+        //这样的话，这个maxConcurrentLookupRequest就没有意义了
         this.lookupRequestSemaphore = new AtomicReference<Semaphore>(
                 new Semaphore(pulsar.getConfiguration().getMaxConcurrentLookupRequest(), false));
         this.topicLoadRequestSemaphore = new AtomicReference<Semaphore>(
@@ -2095,6 +2096,7 @@ public class BrokerService implements Closeable {
         updateDynamicServiceConfiguration();
 
         // (3) Listener Registration
+        //当配置发送改变的时候，这里会自动更新该变量值lookupRequestSemaphore，从而使得该maxConcurrentLookupRequest配置生效
         // add listener on "maxConcurrentLookupRequest" value change
         registerConfigurationListener("maxConcurrentLookupRequest",
                 (maxConcurrentLookupRequest) -> lookupRequestSemaphore.set(
@@ -2520,6 +2522,7 @@ public class BrokerService implements Closeable {
         // gets the number of partitions from the configuration cache
         return pulsar.getPulsarResources().getNamespaceResources().getPartitionedTopicResources()
                 .getPartitionedTopicMetadataAsync(topicName).thenApply(metadata -> {
+                    //这里是读取zk上的metadata元数据，实际也就是只记录了该topic有多少个partition
                     // if the partitioned topic is not found in metadata, then the topic is not partitioned
                     return metadata.orElseGet(() -> new PartitionedTopicMetadata());
                 });

@@ -52,10 +52,13 @@ public class TopicName implements ServiceUnitId {
 
     private final int partitionIndex;
 
+    //该cache如何更新呢
+    //过期时间30分钟
     private static final LoadingCache<String, TopicName> cache = CacheBuilder.newBuilder().maximumSize(100000)
             .expireAfterAccess(30, TimeUnit.MINUTES).build(new CacheLoader<String, TopicName>() {
                 @Override
                 public TopicName load(String name) throws Exception {
+                    //如果cache中没有，那么会调用该load方法，构建一个topicName对象，放入cache，再返回
                     return new TopicName(name);
                 }
             });
@@ -84,6 +87,7 @@ public class TopicName implements ServiceUnitId {
 
     public static TopicName get(String topic) {
         try {
+            //从cache中获取topic name,如果cache里面没有，会构建一个，然后放入cache并返回，所以这里肯定不会返回null
             return cache.get(topic);
         } catch (ExecutionException | UncheckedExecutionException e) {
             throw (RuntimeException) e.getCause();

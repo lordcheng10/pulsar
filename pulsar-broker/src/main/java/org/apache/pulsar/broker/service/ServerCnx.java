@@ -352,6 +352,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         ctx.close();
     }
 
+    //如果启用了身份验证和授权（而不是 sasl）并且 authRole 是我们要强制执行的 proxyRoles 之一
+    //  - originalPrincipal 在连接时给出
+    //  - originalPrincipal 不为空
+    //  - originalPrincipal 不是代理委托人
     /*
      * If authentication and authorization is enabled(and not sasl) and
      *  if the authRole is one of proxyRoles we want to enforce
@@ -360,6 +364,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
      * - originalPrincipal is not a proxy principal
      */
     private boolean invalidOriginalPrincipal(String originalPrincipal) {
+        // 如果开启了验证和授权，并且代理角色里面包含了该授权角色，并且原始凭证不为空或角色里面包含了原始凭证，那么都是合法的原始凭证
         return (service.isAuthenticationEnabled() && service.isAuthorizationEnabled()
                 && proxyRoles.contains(authRole) && (StringUtils.isBlank(originalPrincipal)
                 || proxyRoles.contains(originalPrincipal)));
@@ -371,15 +376,18 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     private CompletableFuture<Boolean> isTopicOperationAllowed(TopicName topicName, TopicOperation operation) {
         if (!service.isAuthorizationEnabled()) {
+            //先看授权是否开启，如果没有开启，直接返回true，表示允许该topic上的一切操作
             return CompletableFuture.completedFuture(true);
         }
         CompletableFuture<Boolean> isProxyAuthorizedFuture;
         if (originalPrincipal != null) {
+            //如果有原始凭证，那么就传入凭证，通过授权服务进行验证是否授权
             isProxyAuthorizedFuture = service.getAuthorizationService().allowTopicOperationAsync(
                 topicName, operation, originalPrincipal, getAuthenticationData());
         } else {
             isProxyAuthorizedFuture = CompletableFuture.completedFuture(true);
         }
+        //这里是对authRole进行鉴权
         CompletableFuture<Boolean> isAuthorizedFuture = service.getAuthorizationService().allowTopicOperationAsync(
             topicName, operation, authRole, authenticationData);
         return isProxyAuthorizedFuture.thenCombine(isAuthorizedFuture, (isProxyAuthorized, isAuthorized) -> {
@@ -391,6 +399,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 log.warn("Role {} is not authorized to perform operation {} on topic {}",
                         authRole, operation, topicName);
             }
+            //代理权限和角色权限都需要有才行
             return isProxyAuthorized && isAuthorized;
         });
     }
@@ -479,37 +488,55 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         }
     }
 
+    // 排除掉鉴权操作，该处理逻辑非常简单，就是从zk上读取该topic有多少partition，然后返回，
+    //读取目录例如：/pulsar_gz_seconion/admin/partitioned-topics/teg_onion_onion_common_data_gz/teg_onion_onion_common_data_gz/persistent/teg_onion_onion_common_data_gz
+    // zk上该目录内容：{"partitions":364}
     @Override
     protected void handlePartitionMetadataRequest(CommandPartitionedTopicMetadata partitionMetadata) {
+        //1. 获取请求Id
         final long requestId = partitionMetadata.getRequestId();
         if (log.isDebugEnabled()) {
             log.debug("[{}] Received PartitionMetadataLookup from {} for {}", partitionMetadata.getTopic(),
                     remoteAddress, requestId);
         }
 
+        // 2. 获取topic name对象，从cache中
+        // validateTopicName: 验证主题名称,其实这里并没有验证的含义，只是简单的获取
+        // 为什么validateTopicName方法既要把topic名传入，又要把该命令请求传入，完全可以把topic这个参数删除掉，在方法里面直接通过请求获取topic名呀。
+        // 因为validateTopicName方法是所有请求公用的，并不是所有请求命令里都包含了getTopic方法
         TopicName topicName = validateTopicName(partitionMetadata.getTopic(), requestId, partitionMetadata);
         if (topicName == null) {
             return;
         }
 
+        //lookupSemaphore：信号量，对应的配置是maxConcurrentLookupRequest，用来控制lookup的最大并发数
         final Semaphore lookupSemaphore = service.getLookupRequestSemaphore();
         if (lookupSemaphore.tryAcquire()) {
+            //如果并发数还没有超，那么久执行下面的逻辑
             if (invalidOriginalPrincipal(originalPrincipal)) {
+                //这里应该是在鉴权
+                //翻译：应为 getPartitionMetadataRequest 提供有效的代理客户端角色
                 final String msg = "Valid Proxy Client role should be provided for getPartitionMetadataRequest ";
                 log.warn("[{}] {} with role {} and proxyClientAuthRole {} on topic {}", remoteAddress, msg, authRole,
                         originalPrincipal, topicName);
+                //回复鉴权失败的response
                 commandSender.sendPartitionMetadataResponse(ServerError.AuthorizationError, msg, requestId);
+                //释放并发数
                 lookupSemaphore.release();
                 return;
             }
+            //判断该topic是否被允许执行look up操作
             isTopicOperationAllowed(topicName, TopicOperation.LOOKUP).thenApply(isAuthorized -> {
                 if (isAuthorized) {
+                    //如果有权限的话，这里就异步的获取partition metadata
                     unsafeGetPartitionedTopicMetadataAsync(getBrokerService().pulsar(), topicName)
                         .handle((metadata, ex) -> {
                                 if (ex == null) {
+                                    //如果没有异常，这里就直接回复response
                                     int partitions = metadata.partitions;
                                     commandSender.sendPartitionMetadataResponse(partitions, requestId);
                                 } else {
+                                    //否则就回复error response
                                     if (ex instanceof PulsarClientException) {
                                         log.warn("Failed to authorize {} at [{}] on topic {} : {}", getRole(),
                                                 remoteAddress, topicName, ex.getMessage());
@@ -529,6 +556,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                                 return null;
                             });
                 } else {
+                    //如果没有权限，就回error response
                     final String msg = "Proxy Client is not authorized to Get Partition Metadata";
                     log.warn("[{}] {} with role {} on topic {}", remoteAddress, msg, getPrincipal(), topicName);
                     ctx.writeAndFlush(
@@ -537,6 +565,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 }
                 return null;
             }).exceptionally(ex -> {
+                //抛异常的话，也回error response
                 logAuthException(remoteAddress, "partition-metadata", getPrincipal(), Optional.of(topicName), ex);
                 final String msg = "Exception occurred while trying to authorize get Partition Metadata";
                 ctx.writeAndFlush(Commands.newPartitionMetadataResponse(ServerError.AuthorizationError, msg,
@@ -545,6 +574,8 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 return null;
             });
         } else {
+            //如果达到最大并发数了，那么这里就会恢复TooManyRequests的异常信息给客户端
+            //所以客户端最好是把错误日志打印出来
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Failed Partition-Metadata lookup due to too many lookup-requests {}", remoteAddress,
                         topicName);
@@ -2636,8 +2667,11 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         }
     }
 
+    //topic：topic名，用来校验是否合法;
+    // requestId和requestCommand是在获取该topic的topicName对象异常的时候，用来构建error response的
     private TopicName validateTopicName(String topic, long requestId, Object requestCommand) {
         try {
+            //从cache中获取topic name对象
             return TopicName.get(topic);
         } catch (Throwable t) {
             if (log.isDebugEnabled()) {
@@ -2645,16 +2679,21 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             }
 
             if (requestCommand instanceof CommandLookupTopic) {
+                //如果是look up请求，那么回复look up的response
                 ctx.writeAndFlush(Commands.newLookupErrorResponse(ServerError.InvalidTopicName,
                         "Invalid topic name: " + t.getMessage(), requestId));
             } else if (requestCommand instanceof CommandPartitionedTopicMetadata) {
+                //如果是partition metadata请求，那么久回复partition metadata的response
                 ctx.writeAndFlush(Commands.newPartitionMetadataResponse(ServerError.InvalidTopicName,
                         "Invalid topic name: " + t.getMessage(), requestId));
             } else {
+                //否则就都就回复通用的response.
+                //那么这里有个问题：为什么要单独对lookup 请求和partition metadata构造特殊的response
                 ctx.writeAndFlush(Commands.newError(requestId, ServerError.InvalidTopicName,
                         "Invalid topic name: " + t.getMessage()));
             }
 
+            //返回null
             return null;
         }
     }

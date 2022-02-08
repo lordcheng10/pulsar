@@ -589,6 +589,7 @@ public class PulsarAuthorizationProvider implements AuthorizationProvider {
             log.debug("Check allowTopicOperationAsync [{}] on [{}].", operation.name(), topicName);
         }
 
+        //检查是否有超级管理员权限
         return validateTenantAdminAccess(topicName.getTenant(), role, authData)
                 .thenCompose(isSuperUserOrAdmin -> {
                     if (log.isDebugEnabled()) {

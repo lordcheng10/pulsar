@@ -115,11 +115,15 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
 
             switch (cmd.getType()) {
             case PARTITIONED_METADATA:
+                //首先检查请求类型
                 checkArgument(cmd.hasPartitionMetadata());
                 try {
+                    //执行拦截器
                     interceptCommand(cmd);
+                    //处理partition metadata请求
                     handlePartitionMetadataRequest(cmd.getPartitionMetadata());
                 } catch (InterceptException e) {
+                    //如果服务端异常，这里直接回复error response
                     ctx.writeAndFlush(Commands.newPartitionMetadataResponse(getServerError(e.getErrorCode()),
                             e.getMessage(), cmd.getPartitionMetadata().getRequestId()));
                 }

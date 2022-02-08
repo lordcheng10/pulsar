@@ -957,6 +957,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
         dynamic = true,
         category = CATEGORY_SERVER,
         doc = "Max number of concurrent lookup request broker allows to throttle heavy incoming lookup traffic")
+    //look up请求的最大并发数。如果超过会怎么样呢
     private int maxConcurrentLookupRequest = 50000;
 
     @FieldContext(
@@ -1278,6 +1279,7 @@ public class ServiceConfiguration implements PulsarConfiguration {
         category = CATEGORY_AUTHORIZATION,
         doc = "Enforce authorization"
     )
+    //授权
     private boolean authorizationEnabled = false;
     @FieldContext(
         category = CATEGORY_AUTHORIZATION,

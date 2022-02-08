@@ -547,10 +547,12 @@ public class AuthorizationService {
             log.debug("Check if role {} is allowed to execute topic operation {} on topic {}",
                     role, operation, topicName);
         }
+        //首先检查授权是否启用，如果没有启用，就返回true，表示允许该操作
         if (!this.conf.isAuthorizationEnabled()) {
             return CompletableFuture.completedFuture(true);
         }
 
+        //否则就通过权限提供器，进行授权操作
         CompletableFuture<Boolean> allowFuture =
                 provider.allowTopicOperationAsync(topicName, role, operation, authData);
         if (log.isDebugEnabled()) {
