@@ -583,14 +583,20 @@ public class ClientCnx extends PulsarHandler {
     @Override
     protected void handlePartitionResponse(CommandPartitionedTopicMetadataResponse lookupResult) {
         if (log.isDebugEnabled()) {
+            //这里的response更像是结果，是成功还是失败
             CommandPartitionedTopicMetadataResponse.LookupType response =
                     lookupResult.hasResponse() ? lookupResult.getResponse() : null;
+            //获取partition数
             int partitions = lookupResult.hasPartitions() ? lookupResult.getPartitions() : -1;
+            //上面这一切都只是为了输出日志?
             log.debug("Received Broker Partition response: {} {} {}", lookupResult.getRequestId(), response,
                     partitions);
         }
 
+        //请求ID
         long requestId = lookupResult.getRequestId();
+        // 从pendding的请求中移除。
+        //为啥这里叫look up呢  这个看起来和lookup请求似乎有点关系
         CompletableFuture<LookupDataResult> requestFuture = getAndRemovePendingLookupRequest(requestId);
 
         if (requestFuture != null) {
@@ -614,6 +620,7 @@ public class ClientCnx extends PulsarHandler {
                             .completeExceptionally(new PulsarClientException.LookupException("Empty lookup response"));
                 }
             } else {
+                //这里才是真正的解析出partition数的
                 // return LookupDataResult when Result.response = success/redirect
                 requestFuture.complete(new LookupDataResult(lookupResult.getPartitions()));
             }
@@ -641,6 +648,7 @@ public class ClientCnx extends PulsarHandler {
     }
 
     private CompletableFuture<LookupDataResult> getAndRemovePendingLookupRequest(long requestId) {
+        //从pendding的请求中移除该请求
         CompletableFuture<LookupDataResult> result =
                 (CompletableFuture<LookupDataResult>) pendingRequests.remove(requestId);
         if (result != null) {

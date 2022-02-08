@@ -131,6 +131,7 @@ public abstract class PulsarDecoder extends ChannelInboundHandlerAdapter {
 
             case PARTITIONED_METADATA_RESPONSE:
                 checkArgument(cmd.hasPartitionMetadataResponse());
+                //处理partition metadata response
                 handlePartitionResponse(cmd.getPartitionMetadataResponse());
                 break;
 
