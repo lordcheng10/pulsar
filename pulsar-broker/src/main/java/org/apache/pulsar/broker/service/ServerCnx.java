@@ -904,10 +904,14 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
     @Override
     protected void handleSubscribe(final CommandSubscribe subscribe) {
         checkArgument(state == State.Connected);
+        //请求ID
         final long requestId = subscribe.getRequestId();
+        //消费ID
         final long consumerId = subscribe.getConsumerId();
+        //检查topic是否合法
         TopicName topicName = validateTopicName(subscribe.getTopic(), requestId, subscribe);
         if (topicName == null) {
+            //如果topic name为null，那么直接返回
             return;
         }
 
@@ -916,6 +920,7 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
                 remoteAddress, authRole, originalPrincipal);
         }
 
+        //鉴权,这里具体做啥  不清楚
         if (invalidOriginalPrincipal(originalPrincipal)) {
             final String msg = "Valid Proxy Client role should be provided while subscribing ";
             log.warn("[{}] {} with role {} and proxyClientAuthRole {} on topic {}", remoteAddress, msg, authRole,
@@ -924,29 +929,44 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             return;
         }
 
+        //订阅名
         final String subscriptionName = subscribe.getSubscription();
+        //订阅类型
         final SubType subType = subscribe.getSubType();
+        //如果有consumer名，那么就使用consumer名，否则就为空
         final String consumerName = subscribe.hasConsumerName() ? subscribe.getConsumerName() : "";
+        //是否是持久的
         final boolean isDurable = subscribe.isDurable();
+        //看客户端是否传入了开始的消息ID,也就是说在创建订阅的时候，可以传入开始的位置ID
         final MessageIdImpl startMessageId = subscribe.hasStartMessageId() ? new BatchMessageIdImpl(
                 subscribe.getStartMessageId().getLedgerId(), subscribe.getStartMessageId().getEntryId(),
                 subscribe.getStartMessageId().getPartition(), subscribe.getStartMessageId().getBatchIndex())
                 : null;
+        //该consumer的优先级
         final int priorityLevel = subscribe.hasPriorityLevel() ? subscribe.getPriorityLevel() : 0;
+        //是否读取压缩的,这个字段到底是什么含义
         final boolean readCompacted = subscribe.hasReadCompacted() && subscribe.isReadCompacted();
+        //从订阅命令中解析出相关metadata,这个字段包含什么意思
         final Map<String, String> metadata = CommandUtils.metadataFromCommand(subscribe);
+        //获取初始化位置，那这个和上面的startMessageId又有什么区别呢? 区别应该是这个只有两个值（latest或earlist），而startMessageId是实际指定的位置
         final InitialPosition initialPosition = subscribe.getInitialPosition();
+        //消息回滚多少秒，我理解应该是回退消费多少秒
         final long startMessageRollbackDurationSec = subscribe.hasStartMessageRollbackDurationSec()
                 ? subscribe.getStartMessageRollbackDurationSec()
                 : -1;
+        // schema数据
         final SchemaData schema = subscribe.hasSchema() ? getSchema(subscribe.getSchema()) : null;
+        //是否复制订阅状态到不同集群
         final boolean isReplicated = subscribe.hasReplicateSubscriptionState()
                 && subscribe.isReplicateSubscriptionState();
+        // 是否强制创建topic
         final boolean forceTopicCreation = subscribe.isForceTopicCreation();
+        //key share 相关属性信息
         final KeySharedMeta keySharedMeta = subscribe.hasKeySharedMeta()
               ? new KeySharedMeta().copyFrom(subscribe.getKeySharedMeta())
               : emptyKeySharedMeta;
 
+        // 该topic是否允许消费
         CompletableFuture<Boolean> isAuthorizedFuture = isTopicOperationAllowed(
                 topicName,
                 subscriptionName,
@@ -1478,19 +1498,26 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
 
     @Override
     protected void handleFlow(CommandFlow flow) {
+        //检查连接状态
         checkArgument(state == State.Connected);
         if (log.isDebugEnabled()) {
             log.debug("[{}] Received flow from consumer {} permits: {}", remoteAddress, flow.getConsumerId(),
                     flow.getMessagePermits());
         }
 
+        //首先是获取consumer，看consumer是否完成
         CompletableFuture<Consumer> consumerFuture = consumers.get(flow.getConsumerId());
 
+        //然后检查该consumer注册是否正常完成
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
+            //如果该consumer注册完成，这里就立即获取该consumer
             Consumer consumer = consumerFuture.getNow(null);
             if (consumer != null) {
+                //如果consumer不为null，就说明找到了。那么这里直接推送
+                //这里其实是添加permit，如果是第一次发送，还会触发推送，后面就会持续推送
                 consumer.flowPermits(flow.getMessagePermits());
             } else {
+                //否则就是没找到该consumer
                 log.info("[{}] Couldn't find consumer {}", remoteAddress, flow.getConsumerId());
             }
         }
@@ -1508,8 +1535,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
         if (consumerFuture != null && consumerFuture.isDone() && !consumerFuture.isCompletedExceptionally()) {
             Consumer consumer = consumerFuture.getNow(null);
             if (redeliver.getMessageIdsCount() > 0 && Subscription.isIndividualAckMode(consumer.subType())) {
+                //这个是把指定的消息进行重发，因为是share或key share消费 是单条确认
                 consumer.redeliverUnacknowledgedMessages(redeliver.getMessageIdsList());
             } else {
+                // 累计确认，所以重发逻辑不一样
                 consumer.redeliverUnacknowledgedMessages();
             }
         }

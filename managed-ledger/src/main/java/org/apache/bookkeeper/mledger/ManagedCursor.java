@@ -35,7 +35,7 @@ import org.apache.bookkeeper.mledger.AsyncCallbacks.SkipEntriesCallback;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 
 /**
- * A ManagedCursor is a persisted cursor inside a ManagedLedger.
+ * A ManagedCursor is a persisted cursor inside a ManagedLedger. ManagedCursor 是 ManagedLedger 中的持久游标。
  *
  * <p/>The ManagedCursor is used to read from the ManagedLedger and to signal when the consumer is done with the
  * messages that it has read before.
@@ -44,37 +44,51 @@ import org.apache.bookkeeper.mledger.impl.PositionImpl;
 @InterfaceStability.Stable
 public interface ManagedCursor {
 
+    // Find Position Constraint：查找位置约束  其实是查找范围，从所有可获得的entry中找，还是从活跃的entry中找
+    // SearchActiveEntries: 搜索活动条目
+    // SearchAllAvailableEntries: 搜索所有可用条目
     @SuppressWarnings("checkstyle:javadoctype")
     enum FindPositionConstraint {
         SearchActiveEntries, SearchAllAvailableEntries
     }
-
+    // Individual Deleted Entries: 单独删除的条目   跳过n条entry，
+    //那么对于share和key share这种单条ack的方式，跳过entry就涉及到两种情况，
+    //一种是跳过的n个entry是从读取完成位置开始算，包含已经确认的entry(Include)，一种是不包含已经确认的(Exclude)
     @SuppressWarnings("checkstyle:javadoctype")
     enum IndividualDeletedEntries {
         Include, Exclude
     }
 
     /**
-     * Get the unique cursor name.
+     * Get the unique cursor name. 获取唯一的游标名称。 一般这个名字怎么命名呢  这个是订阅名。 每个cursor是partiiton+订阅名维度的，不是consumer维度，因为一个partition可能被多个consumer消费，比如share消费
      *
-     * @return the cursor name
+     * @return the cursor name 游标名称
      */
     String getName();
 
     /**
-     * Get the last active time of the cursor.
+     * 活动时间是在https://github.com/apache/pulsar/pull/1352引入的，理解这个PR就可以理解这里的设计
+     * Get the last active time of the cursor. 获取光标的最后一次活动时间。
+     * 怎么样才算一次活动？订阅中加入consumer、移除consumer、reset cursor都会更新活跃时间.
+     * 如果consumer断开了连接，并且超过一定时间没有做这些动作了，那么就可以删除该订阅
      *
-     * @return the last active time of the cursor
+     * 这里的上次活动时间，是会持久化的(通过这个方法persistPositionMetaStore随着cursor的其他元数据一起持久化到zk上)，
+     * 这样broker重启后 也没有关系。那么会不会出现某些异常宕机，导致该时间没有持久化到，这样会不会产生一些问题?
+     * cursor对象在创建的时候，会用当前时间戳作为初始值.那么如果broker异常宕机没有持久化到，
+     * 那么由于这里初始化用的当前时间戳，所以也不会删除该订阅，当然如果这个时候consumer再次连接过来，那么久会重新更新该活跃时间戳，所以也是不会有问题的。
+     * @return the last active time of the cursor 光标的最后活动时间
      */
     long getLastActive();
 
     /**
-     * Update the last active time of the cursor.
+     * Update the last active time of the cursor. 更新光标的最后活动时间。
      *
      */
     void updateLastActive();
 
     /**
+     * 返回与最后存储的位置关联的任何属性。
+     * 这个PR引入的，理解这个PR就能全部理解： https://github.com/apache/pulsar/pull/744  这个PR完全看不懂
      * Return any properties that were associated with the last stored position.
      */
     Map<String, Long> getProperties();
@@ -449,10 +463,11 @@ public interface ManagedCursor {
     void asyncClearBacklog(ClearBacklogCallback callback, Object ctx);
 
     /**
+     * 从读取的位置跳过n个entry
      * Skip n entries from the read position of this cursor.
      *
      * @param numEntriesToSkip
-     *            number of entries to skip
+     *            number of entries to skip  要跳过的entry数
      * @param deletedEntries
      *            skip individual deleted entries
      * @throws InterruptedException
@@ -607,6 +622,8 @@ public interface ManagedCursor {
     Position getFirstPosition();
 
     /**
+     * 看起来cursor是否活跃是根据backlog是否达到阈值来决定的，如果没有达到，就还算是活跃的，如果达到了就是不活跃的.
+     * 那这个和lastActive中对于活跃的定义又不一样了，感觉这两个方法对于活跃的定义有冲突
      * Activate cursor: EntryCacheManager caches entries only for activated-cursors.
      *
      */
@@ -626,6 +643,8 @@ public interface ManagedCursor {
 
     /**
      * Checks if cursor is active or not.
+     * 这里对于活跃的定义和上面lastActive对于活跃的定义不一样，这会让人很困惑，这里的活跃是看该订阅的backlog是否超过阈值，
+     * 而上面的活跃是看距离上次reset cursor或add consumer 或close consumer(断开连接)过了多久，如果超过给定是过期时间，就认为不是活跃的，就可以自动删除该订阅
      *
      * @return
      */

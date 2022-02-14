@@ -96,6 +96,7 @@ public class Consumer {
     // It starts keep tracking of messagePermits once consumer gets blocked, as consumer needs two separate counts:
     // messagePermits (1) before and (2) after being blocked: to dispatch only blockedPermit number of messages at the
     // time of redelivery
+    // 设计该变量的目的：在block的时候不推送消息，通过改变量记录在block期间客户端发送的permit值，然后在放开block的时候，继续推送消息的时候，才能知道可以推送的permit数
     private static final AtomicIntegerFieldUpdater<Consumer> PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER =
             AtomicIntegerFieldUpdater.newUpdater(Consumer.class, "permitsReceivedWhileConsumerBlocked");
     private volatile int permitsReceivedWhileConsumerBlocked = 0;
@@ -125,6 +126,7 @@ public class Consumer {
     private static final long [] EMPTY_ACK_SET = new long[0];
 
     private static final double avgPercent = 0.9;
+    // 精确的调度程序流控制
     private boolean preciseDispatcherFlowControl;
     private PositionImpl readPositionWhenJoining;
     private final String clientAddress; // IP address only, no port number included
@@ -630,21 +632,30 @@ public class Consumer {
     }
 
     public void flowPermits(int additionalNumberOfMessages) {
+        //检查permmit数是否大于0
         checkArgument(additionalNumberOfMessages > 0);
 
+        // 当未确认消息达到限制时阻止共享消费者
+        // 如果是share或key share消费，并且开启了block（当block消息数配置大于0时，就算是开启了），并且当前未确认的消息数大于最大消息数，那么就需要阻塞
         // block shared consumer when unacked-messages reaches limit
         if (shouldBlockConsumerOnUnackMsgs() && unackedMessages >= getMaxUnackedMessages()) {
             blockedConsumerOnUnackedMsgs = true;
         }
+        //这个变量设计的目的只是为了输出debug日志
         int oldPermits;
         if (!blockedConsumerOnUnackedMsgs) {
+            //这里更新消息permit，这个是consumer维度的permit
             oldPermits = MESSAGE_PERMITS_UPDATER.getAndAdd(this, additionalNumberOfMessages);
             if (log.isDebugEnabled()) {
                 log.debug("[{}-{}] Added {} message permits in broker.service.Consumer before updating dispatcher "
                         + "for consumer {}", topicName, subscription, additionalNumberOfMessages, consumerId);
             }
+            //这里才是触发推送消息的逻辑
+            //注意这里是对应的订阅名，类似kafka的group对象，每个consumer都持有它对应的订阅对象的引用
             subscription.consumerFlow(this, additionalNumberOfMessages);
         } else {
+            // 如果blockedConsumerOnUnackedMsgs为true，只是在这里增加变量值 有什么用呢
+            // 如果没有这个变量，而是直接把客户端发送过来的permit加到MESSAGE_PERMITS_UPDATER中去，有可能会再次触发消息推送
             oldPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndAdd(this, additionalNumberOfMessages);
         }
 
@@ -663,6 +674,7 @@ public class Consumer {
      *            Consumer whose blockedPermits needs to be dispatched
      */
     void flowConsumerBlockedPermits(Consumer consumer) {
+        //这里是在重发未ack的消息时，触发的，将block期间添加的flow permit加到MESSAGE_PERMITS_UPDATER上，来重新触发消息推送
         int additionalNumberOfPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndSet(consumer, 0);
         // add newly flow permits to actual consumer.messagePermits
         MESSAGE_PERMITS_UPDATER.getAndAdd(consumer, additionalNumberOfPermits);
@@ -833,6 +845,9 @@ public class Consumer {
             if ((((unAckedMsgs <= getMaxUnackedMessages() / 2) && ackOwnedConsumer.blockedConsumerOnUnackedMsgs)
                     && ackOwnedConsumer.shouldBlockConsumerOnUnackMsgs())
                     || !shouldBlockConsumerOnUnackMsgs()) {
+                // 当客户端提交ack确认的时候，会走到这里，进行判断是否放开block，
+                //如果放开，那么重置blockedConsumerOnUnackedMsgs为false，并且将在block期间客户端发送的flow permit都重新加到MESSAGE_PERMITS_UPDATER上去，
+                //然后重新推送，当然也会重置PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER变量为0
                 ackOwnedConsumer.blockedConsumerOnUnackedMsgs = false;
                 flowConsumerBlockedPermits(ackOwnedConsumer);
             }
@@ -903,6 +918,7 @@ public class Consumer {
         subscription.redeliverUnacknowledgedMessages(this, pendingPositions);
         msgRedeliver.recordMultipleEvents(totalRedeliveryMessages, totalRedeliveryMessages);
 
+        //如果重推没有ack的消息，这里会把记录在block期间客户端发送的flow permit全部加到MESSAGE_PERMITS_UPDATER上，然后再次触发消息推送
         int numberOfBlockedPermits = PERMITS_RECEIVED_WHILE_CONSUMER_BLOCKED_UPDATER.getAndSet(this, 0);
 
         // if permitsReceivedWhileConsumerBlocked has been accumulated then pass it to Dispatcher to flow messages

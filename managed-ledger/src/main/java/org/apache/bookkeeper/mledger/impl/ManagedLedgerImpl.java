@@ -147,7 +147,8 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
     protected static final int AsyncOperationTimeoutSeconds = 30;
 
     protected final BookKeeper bookKeeper;
-    protected final String name;
+    protected final String name;//对应的partiton 全路径名，
+    // eg：teg_onion_onion_common_data_gz/teg_onion_onion_common_data_gz/persistent/teg_onion_onion_common_data_gz-partition-241
     private final Map<String, byte[]> ledgerMetadata;
     private final BookKeeper.DigestType digestType;
 
@@ -523,6 +524,9 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                     log.debug("[{}] Loading cursors", name);
 
                     for (final String cursorName : consumers) {
+                        //通过日志确认了，cursorName是订阅名; 而name 是partition全路径名;意思就是这个订阅在这个partiton下消费到那个位置了；
+                        //这里为什么不是consumer名，因为对于share或key share消费，一个partiton对应了多个consumer一起在消费，并推进消费位置，
+                        //所以cursor不是consumer维度的，而是订阅维度的
                         log.info("[{}] Loading cursor {}", name, cursorName);
                         final ManagedCursorImpl cursor;
                         cursor = new ManagedCursorImpl(bookKeeper, config, ManagedLedgerImpl.this, cursorName);

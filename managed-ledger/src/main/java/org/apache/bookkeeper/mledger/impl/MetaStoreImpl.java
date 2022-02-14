@@ -156,15 +156,19 @@ public class MetaStoreImpl implements MetaStore {
                 });
     }
 
+    // ledgerName应该是topic名，不包含partiton字样
     @Override
     public void getCursors(String ledgerName, MetaStoreCallback<List<String>> callback) {
         if (log.isDebugEnabled()) {
             log.debug("[{}] Get cursors list", ledgerName);
         }
 
+        //这个ledgerName是partition topic全路径名，
+        //eg：teg_onion_onion_common_data_gz/teg_onion_onion_common_data_gz/persistent/teg_onion_onion_common_data_gz-partition-241
+        // 这里的path对应的是路径，比如： /bookie_gz_seconion/managed-ledgers/teg_onion_onion_common_data_gz/teg_onion_onion_common_data_gz/persistent/teg_onion_onion_common_data_gz-partition-31
         String path = PREFIX + ledgerName;
-        store.getChildren(path)
-                .thenAcceptAsync(cursors -> callback.operationComplete(cursors, null), executor
+        store.getChildren(path) //在该路径下记录了该partition被哪些订阅消费，所以这里的子目录是消费该partition的订阅名，注意不是consumer名，每个cursor是partition+订阅维度的，不是consumer维度，因为有share或key share这种非累计确认的消费
+                .thenAcceptAsync(cursors -> callback.operationComplete(cursors, null), executor//所以这里的cursors实际是消费该tp的所有订阅名
                         .chooseThread(ledgerName))
                 .exceptionally(ex -> {
                     executor.executeOrdered(ledgerName, SafeRunnable.safeRun(() -> callback

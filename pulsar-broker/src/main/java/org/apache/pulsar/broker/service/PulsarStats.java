@@ -138,6 +138,7 @@ public class PulsarStats implements Closeable {
                                 }
                                 // this task: helps to activate inactive-backlog-cursors which have caught up and
                                 // connected, also deactivate active-backlog-cursors which has backlog
+                                // 每次更新状态的时候，就会触发判断是否活跃. 而这个更新状态是周期性的，默认是1分钟一次,所以不用担心cursor活跃状态更新不及时
                                 topic.checkBackloggedCursors();
                             } else if (topic instanceof NonPersistentTopic) {
                                 tempNonPersistentTopics.add((NonPersistentTopic) topic);

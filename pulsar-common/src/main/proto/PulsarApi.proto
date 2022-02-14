@@ -346,15 +346,18 @@ message CommandSubscribe {
     optional string consumer_name = 6;
     optional int32 priority_level = 7;
 
+    // 指示订阅是否应该由持久游标支持
     // Signal wether the subscription should be backed by a
     // durable cursor or not
     optional bool durable = 8 [default = true];
 
+    // 如果指定，订阅会将光标标记删除位置定位在特定消息 id 上，并将从该点发送消息
     // If specified, the subscription will position the cursor
     // markd-delete position  on the particular message id and
     // will send messages from that point
     optional MessageIdData start_message_id = 9;
 
+    // 这个应该是提供了一种可以携带一些key value属性的方式
     /// Add optional metadata key=value to this consumer
     repeated KeyValue metadata = 10;
 
@@ -369,6 +372,8 @@ message CommandSubscribe {
     // or not -- earliest
     optional InitialPosition initialPosition = 13 [default = Latest];
 
+    // 将订阅标记为“已复制”。 Pulsar 将确保
+    // 定期同步跨不同集群的复制订阅状态（使用异地复制时）。
     // Mark the subscription as "replicated". Pulsar will make sure
     // to periodically sync the state of replicated subscriptions
     // across different clusters (when using geo-replication).

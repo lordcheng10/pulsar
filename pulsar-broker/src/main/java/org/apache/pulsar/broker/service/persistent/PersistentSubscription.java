@@ -373,7 +373,9 @@ public class PersistentSubscription implements Subscription {
 
     @Override
     public void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //每次在推送消息的时候，都会更新推送的时间戳,这个时间戳拿来干嘛
         this.lastConsumedFlowTimestamp = System.currentTimeMillis();
+        //dispatcher是订阅维度的，那么如果一个订阅下的多个consumer同时要发送消息，这里应该有线程安全问题吧. 所以对于share消费的dispatcher，对应的该方法实现都加了synchronized修饰方法
         dispatcher.consumerFlow(consumer, additionalNumberOfMessages);
     }
 

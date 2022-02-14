@@ -492,6 +492,7 @@ public class BrokerService implements Closeable {
         this.startMessageExpiryMonitor();
         this.startCompactionMonitor();
         this.startConsumedLedgersMonitor();
+        //启动一个定期执行的消费延迟超过一个阈值 就reset cursor
         this.startBacklogQuotaChecker();
         this.updateBrokerPublisherThrottlingMaxRate();
         this.updateBrokerDispatchThrottlingMaxRate();
@@ -538,6 +539,7 @@ public class BrokerService implements Closeable {
             long subscriptionExpiryCheckIntervalInSeconds =
                     TimeUnit.MINUTES.toSeconds(pulsar().getConfiguration()
                             .getSubscriptionExpiryCheckIntervalInMinutes());
+            //这里有一个schedule任务，定期检查每个订阅是否活跃，如果不活跃，就删除该订阅，默认是关闭的
             inactivityMonitor.scheduleAtFixedRate(safeRun(this::checkInactiveSubscriptions),
                     subscriptionExpiryCheckIntervalInSeconds,
                     subscriptionExpiryCheckIntervalInSeconds, TimeUnit.SECONDS);

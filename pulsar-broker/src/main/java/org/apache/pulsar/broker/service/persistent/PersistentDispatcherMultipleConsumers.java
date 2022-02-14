@@ -205,6 +205,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
 
     @Override
     public synchronized void consumerFlow(Consumer consumer, int additionalNumberOfMessages) {
+        //传入对应的consumer只是为了判断，该consumer是否是属于该订阅的，除此之外似乎并没有什么用
         if (!consumerSet.contains(consumer)) {
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Ignoring flow control from disconnected consumer {}", name, consumer);
@@ -212,6 +213,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
             return;
         }
 
+        //更新该broker上，该订阅的总的permit数
         totalAvailablePermits += additionalNumberOfMessages;
 
         if (log.isDebugEnabled()) {
@@ -219,14 +221,29 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                             + "after adding {} permits", name, consumer,
                     totalAvailablePermits, additionalNumberOfMessages);
         }
+
+        //读取更多entry
         readMoreEntries();
     }
 
     public synchronized void readMoreEntries() {
+        // 为啥会有下面这行注释，主要是因为这里用到了totalAvailablePermits变量？但这里只是读取呀.
+        // 这行注释的意思应该是为了说明为什么这个变量要加volatile修饰吧.也不对, 这个修饰加上的时间在此之前
+        // 要理解为什么加这行注释，那么久必须理解这个PR：https://github.com/apache/pulsar/pull/6966/files
+        // 加这行注释，是因为在这个PR之前，是先判断totalAvailablePermits>0，如果满足，再去使用totalAvailablePermits来进行计算，但可能在满足totalAvailablePermits>0的判断后，
+        // 在使用totalAvailablePermits变量时，该变量已经被其他线程修改成小于0的值了（在之前readMoreEntries没有synchronized修饰），
+        //最终会导致cursor.asyncReadEntriesOrWait调用的时候抛异常，从而导致havePendingRead变量一直为true，不能在call back里面重新设置未false，最终会导致每次readMoreEntries都不会读取消息和推送消息
+        // 其实现在readMoreEntries方法已经被synchronize修饰了，就不会出现这个问题了
         // totalAvailablePermits may be updated by other threads
+        //下面这行代码的目的是啥？
+        //在batch发送的场景下，部分consumer有可能permit为负数，这样总的totalAvailablePermits就可能未负数，
+        //如果按照之前的逻辑，不会再推送消息。这样慢的consumer就会影响到快的consumer。而这个改动可以放置permit不为0的consumer被permit为负数的consumer影响到
         int firstAvailableConsumerPermits = getFirstAvailableConsumerPermits();
         int currentTotalAvailablePermits = Math.max(totalAvailablePermits, firstAvailableConsumerPermits);
+        //如果currentTotalAvailablePermits大于0了，那么firstAvailableConsumerPermits怎么可能不会大于0呢
+        // 下面这个判断似乎比较多余，按照我的理解只要有一个consumer的permit大于0，不就可以发送了吗 我理解是这样的
         if (currentTotalAvailablePermits > 0 && firstAvailableConsumerPermits > 0) {
+            //这里是计算要读取的消息数和bytes大小
             Pair<Integer, Long> calculateResult = calculateToRead(currentTotalAvailablePermits);
             int messagesToRead = calculateResult.getLeft();
             long bytesToRead = calculateResult.getRight();
@@ -290,18 +307,30 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
 
     // left pair is messagesToRead, right pair is bytesToRead
     protected Pair<Integer, Long> calculateToRead(int currentTotalAvailablePermits) {
+        //readBatchSize是要读取的条数，默认是100条,
+        //对应配置是dispatcherMaxReadBatchSize，在每次读完entry后，会在完成回调里判断是否要增加readBatchSize大小（如果我们调大了dispatcherMaxReadBatchSize配置）
+        //但为啥要这样写呢，直接在这里用该配置不就可以实现动态调整了吗
         int messagesToRead = Math.min(currentTotalAvailablePermits, readBatchSize);
+        //读取的bytes是从配置直接读取的,那为啥这里又不想messagesToRead那样在读取完成后经过几次递增呢
         long bytesToRead = serviceConfig.getDispatcherMaxReadSizeBytes();
 
+        //随机选择一个consumer
+        // 这里是干啥  随机选择一个consumer来看看是否开启了preciseDispatcherFlowControl配置，因为在这里只有从consumer中才能获取到对应的preciseDispatcherFlowControl配置
+        //那为啥这里要用随机的呢，直接选取第一个不就好了吗 难道还会出现有一些consumer设置了 有一些没设置吗？
         Consumer c = getRandomConsumer();
         // if turn on precise dispatcher flow control, adjust the record to read
         if (c != null && c.isPreciseDispatcherFlowControl()) {
+            //这里会利用avgMessagesPerEntry来重新计算messagesToRead
             messagesToRead = Math.min(
                     (int) Math.ceil(currentTotalAvailablePermits * 1.0 / c.getAvgMessagesPerEntry()),
                     readBatchSize);
         }
 
         if (!isConsumerWritable()) {
+            //如果连接当前不可写，我们仍然会发出读取请求，但只针对单个消息。
+            //这里的目的是继续使用请求作为通知机制，同时避免读取和发送大量消息，这些消息在写入套接字之前需要等待。
+            //其实这里设计的目的是为了放置往不可写的连接中继续推送大量数据，从而导致broker OM，所以这里将推送的消息数设置为1，从而减轻OM风险，
+            //对应PR：https://github.com/apache/pulsar/pull/6740
             // If the connection is not currently writable, we issue the read request anyway, but for a single
             // message. The intent here is to keep use the request as a notification mechanism while avoiding to
             // read and dispatch a big batch of messages which will need to wait before getting written to the
@@ -309,11 +338,16 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
             messagesToRead = 1;
         }
 
+        // 代理不会对已经赶上并且没有积压的消费者应用消息限制，因为这些消费者直接从缓存中读取消息并且不会让 bookkeeper 读取。
+        //但在某些情况下，代理还希望限制整体调度速率以控制 n/w 带宽。因此，它需要添加可以为非积压消费者启用节流的配置。
+        // cursor.isActive()到底是什么意思？为什么cursor不是活跃的才可以限速
         // throttle only if: (1) cursor is not active (or flag for throttle-nonBacklogConsumer is enabled) bcz
         // active-cursor reads message from cache rather from bookkeeper (2) if topic has reached message-rate
         // threshold: then schedule the read after MESSAGE_RATE_BACKOFF_MS
-        if (serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled() || !cursor.isActive()) {
+        if (serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled() || !cursor.isActive()) {//怎么定义一个cursor是否活跃呢 ,看起来似乎是根据该订阅backlog堆积了多少来衡量的，如果堆积了很多，那么就会认为是不活跃的
+            //所以①满足!cursor.isActive()这个条件，就说明是有延迟，需要追历史数据，那么此时可能就需要限速；②满足serviceConfig.isDispatchThrottlingOnNonBacklogConsumerEnabled()说明开启了对非lag情况的限速;
             if (topic.getBrokerDispatchRateLimiter().isPresent()) {
+                //判断broker级别的限速器是否存在. 这个限速器是broekr启动的时候，就会初始化，所以一般不会为null，但这里保险还是加了判断
                 DispatchRateLimiter brokerRateLimiter = topic.getBrokerDispatchRateLimiter().get();
                 if (reachDispatchRateLimit(brokerRateLimiter)) {
                     if (log.isDebugEnabled()) {
@@ -330,6 +364,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                 }
             }
 
+            //判断topic级别的限速器是否存在
             if (topic.getDispatchRateLimiter().isPresent()) {
                 DispatchRateLimiter topicRateLimiter = topic.getDispatchRateLimiter().get();
                 if (reachDispatchRateLimit(topicRateLimiter)) {
@@ -347,6 +382,7 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
                 }
             }
 
+            //这个应该是订阅级别的,没看到replica级别的限速判断呢
             if (dispatchRateLimiter.isPresent()) {
                 if (reachDispatchRateLimit(dispatchRateLimiter.get())) {
                     if (log.isDebugEnabled()) {
@@ -468,6 +504,8 @@ public class PersistentDispatcherMultipleConsumers extends AbstractDispatcherMul
         }
 
         if (readBatchSize < serviceConfig.getDispatcherMaxReadBatchSize()) {
+            //这样看起来，并不是调大了dispatcherMaxReadBatchSize配置就立即生效，会经过几次读取完成后的迭代递增。
+            //但我感觉没啥用，应该这几次应该瞬间就会完成
             int newReadBatchSize = Math.min(readBatchSize * 2, serviceConfig.getDispatcherMaxReadBatchSize());
             if (log.isDebugEnabled()) {
                 log.debug("[{}] Increasing read batch size from {} to {}", name, readBatchSize, newReadBatchSize);

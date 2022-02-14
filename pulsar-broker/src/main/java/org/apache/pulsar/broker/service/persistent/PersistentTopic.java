@@ -2330,6 +2330,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         subscriptions.forEach((subName, subscription) -> {
             if (!subscription.getConsumers().isEmpty()
                 && subscription.getCursor().getNumberOfEntries() < backloggedCursorThresholdEntries) {
+                //看起来cursor是否活跃是根据backlog是否达到阈值来决定的，如果没有达到，就还算是活跃的，如果达到了就是不活跃的
                 subscription.getCursor().setActive();
             } else {
                 subscription.getCursor().setInactive();

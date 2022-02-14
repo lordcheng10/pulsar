@@ -266,6 +266,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         RESET_CURSOR_IN_PROGRESS_UPDATER.set(this, FALSE);
         WAITING_READ_OP_UPDATER.set(this, null);
         this.clock = config.getClock();
+        //cursor对象在创建的时候，会用当前时间戳作为初始值.那么如果broker异常宕机没有持久化到，那么由于这里初始化用的当前时间戳，所以也不会删除该订阅，当然如果这个时候consumer再次连接过来，那么久会重新更新该活跃时间戳，所以也是不会有问题的。
         this.lastActive = this.clock.millis();
         this.lastLedgerSwitchTimestamp = this.clock.millis();
 
@@ -2277,6 +2278,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                 && individualDeletedMessages.size() > config.getMaxUnackedRangesToPersistInZk();
     }
 
+    // 这个方法应该是把cursor数据持久化到zk上
     private void persistPositionMetaStore(long cursorsLedgerId, PositionImpl position, Map<String, Long> properties,
             MetaStoreCallback<Void> callback, boolean persistIndividualDeletedMessageRanges) {
         if (state == State.Closed) {
