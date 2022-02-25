@@ -710,6 +710,7 @@ public class PulsarClientImpl implements PulsarClient {
     public CompletableFuture<List<String>> getPartitionsForTopic(String topic) {
         return getPartitionedTopicMetadata(topic).thenApply(metadata -> {
             if (metadata.partitions > 0) {
+                //如果是分区topic，那么这里遍历所有分区编号
                 TopicName topicName = TopicName.get(topic);
                 List<String> partitions = new ArrayList<>(metadata.partitions);
                 for (int i = 0; i < metadata.partitions; i++) {

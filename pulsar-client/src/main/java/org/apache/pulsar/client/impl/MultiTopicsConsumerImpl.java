@@ -202,8 +202,11 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
                 topic, newConsumers.size(), getState());
         }
         if (getState() == State.Ready) {
+            //如果当前状态是ready状态，那么久遍历每个consumer ，发送flow请求
             newConsumers.forEach(consumer -> {
+                //发送flow请求
                 consumer.increaseAvailablePermits(consumer.getConnectionHandler().cnx(), conf.getReceiverQueueSize());
+                //从consumer接收消息
                 receiveMessageFromConsumer(consumer);
             });
         }
@@ -215,6 +218,7 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
                 log.debug("[{}] [{}] Receive message from sub consumer:{}",
                     topic, subscription, consumer.getTopic());
             }
+            //收到消息放入队列中
             // Process the message, add to the queue and trigger listener or async callback
             messageReceived(consumer, message);
 
@@ -1103,7 +1107,9 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
             }
 
             List<CompletableFuture<Void>> futureList = Lists.newArrayListWithExpectedSize(topicsExtended.size());
+            //主要逻辑就在这里
             topicsExtended.forEach(topic -> futureList.add(subscribeIncreasedTopicPartitions(topic)));
+            // 等所有consumer都注册上，并接受消息
             FutureUtil.waitForAll(futureList)
                 .thenAccept(finalFuture -> future.complete(null))
                 .exceptionally(ex -> {
@@ -1116,12 +1122,15 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
         }
     }
 
+    // 为给定的新增分区增加订阅
     // subscribe increased partitions for a given topic
     private CompletableFuture<Void> subscribeIncreasedTopicPartitions(String topicName) {
         CompletableFuture<Void> future = new CompletableFuture<>();
 
         client.getPartitionsForTopic(topicName).thenCompose(list -> {
+            // 老的topic分区数
             int oldPartitionNumber = topics.get(topicName);
+            // 当前的分区数
             int currentPartitionNumber = list.size();
 
             if (log.isDebugEnabled()) {
@@ -1130,25 +1139,32 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
             }
 
             if (oldPartitionNumber == currentPartitionNumber) {
+                //如果相等就没有分区数改变
                 // topic partition number not changed
                 future.complete(null);
                 return future;
             } else if (oldPartitionNumber < currentPartitionNumber) {
+                //更新分区数
                 allTopicPartitionsNumber.addAndGet(currentPartitionNumber - oldPartitionNumber);
+                // 更新topic对应的分区数
                 topics.put(topicName, currentPartitionNumber);
+                // 获取新增的分区，这里的list是排好序的？
                 List<String> newPartitions = list.subList(oldPartitionNumber, currentPartitionNumber);
                 // subscribe new added partitions
                 List<CompletableFuture<Consumer<T>>> futureList = newPartitions
                     .stream()
                     .map(partitionName -> {
+                        //获取parttionId
                         int partitionIndex = TopicName.getPartitionIndex(partitionName);
                         CompletableFuture<Consumer<T>> subFuture = new CompletableFuture<>();
                         ConsumerConfigurationData<T> configurationData = getInternalConsumerConfig();
+                        //构建new consumer
                         ConsumerImpl<T> newConsumer = ConsumerImpl.newConsumerImpl(
                             client, partitionName, configurationData,
                             client.externalExecutorProvider().getExecutor(),
                             partitionIndex, true, subFuture, null, schema, interceptors,
                             true /* createTopicIfDoesNotExist */);
+                        //注册consumer
                         consumers.putIfAbsent(newConsumer.getTopic(), newConsumer);
                         if (log.isDebugEnabled()) {
                             log.debug("[{}] create consumer {} for partitionName: {}",
@@ -1158,23 +1174,27 @@ public class MultiTopicsConsumerImpl<T> extends ConsumerBase<T> {
                     })
                     .collect(Collectors.toList());
 
+                // 等所有分区订阅future完成，然后才开始接收消息
                 // wait for all partitions subscribe future complete, then startReceivingMessages
                 FutureUtil.waitForAll(futureList)
                     .thenAccept(finalFuture -> {
+                        // 获取新增consumer列表
                         List<ConsumerImpl<T>> newConsumerList = newPartitions.stream()
                             .map(partitionTopic -> consumers.get(partitionTopic))
                             .collect(Collectors.toList());
-
+                        // 开始接收消息
                         startReceivingMessages(newConsumerList);
                         future.complete(null);
                     })
                     .exceptionally(ex -> {
                         log.warn("[{}] Failed to subscribe {} partition: {} - {} : {}",
                             topic, topicName, oldPartitionNumber, currentPartitionNumber, ex);
+                        // 如果有异常就失败了
                         future.completeExceptionally(ex);
                         return null;
                     });
             } else {
+                // 老的分区大于新增的分区数，这种情况是不允许？这个影响删除重建topic吗
                 log.error("[{}] not support shrink topic partitions. old: {}, new: {}",
                     topicName, oldPartitionNumber, currentPartitionNumber);
                 future.completeExceptionally(new NotSupportedException("not support shrink topic partitions"));
