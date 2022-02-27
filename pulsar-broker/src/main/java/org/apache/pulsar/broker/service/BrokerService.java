@@ -547,6 +547,7 @@ public class BrokerService implements Closeable {
 
     protected void startMessageExpiryMonitor() {
         int interval = pulsar().getConfiguration().getMessageExpiryCheckIntervalInMinutes();
+        //默认每五分钟检查一次消息是否过期
         messageExpiryMonitor.scheduleAtFixedRate(safeRun(this::checkMessageExpiry), interval, interval,
                 TimeUnit.MINUTES);
     }

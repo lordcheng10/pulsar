@@ -730,8 +730,11 @@ public class PersistentSubscription implements Subscription {
         return future;
     }
 
+    // getPreciseBacklog: 是否获取精准的积压消息数
+    // getNumberOfEntriesInBacklog: 获取积压中的条目数
     @Override
     public long getNumberOfEntriesInBacklog(boolean getPreciseBacklog) {
+        // 从curost中获取积压的条目数
         return cursor.getNumberOfEntriesInBacklog(getPreciseBacklog);
     }
 
@@ -911,13 +914,18 @@ public class PersistentSubscription implements Subscription {
 
     @Override
     public boolean expireMessages(int messageTTLInSeconds) {
+        //getNumberOfEntriesInBacklog：获取这个订阅积压的消息数
+        // 如果积压数为0或有consumer连接上，并且从最新确认的消息位置向前读取一条消息看是否过期，如果没过期，才直接返回false
         if ((getNumberOfEntriesInBacklog(false) == 0) || (dispatcher != null && dispatcher.isConsumerConnected()
                 && getNumberOfEntriesInBacklog(false) < MINIMUM_BACKLOG_FOR_EXPIRY_CHECK
                 && !topic.isOldestMessageExpired(cursor, messageTTLInSeconds))) {
+            // 不要为几乎赶上的连接订阅做任何事情
             // don't do anything for almost caught-up connected subscriptions
             return false;
         }
+        //否则就过期了，更新过期时间戳
         this.lastExpireTimestamp = System.currentTimeMillis();
+        //开始进行过期操作
         return expiryMonitor.expireMessages(messageTTLInSeconds);
     }
 

@@ -1403,8 +1403,10 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
 
     @Override
     public void checkMessageExpiry() {
+        //获取ttl时间
         int messageTtlInSeconds = topicPolicies.getMessageTTLInSeconds().get();
         if (messageTtlInSeconds != 0) {
+            //遍历每个订阅，看消息是否过期
             subscriptions.forEach((__, sub) -> sub.expireMessages(messageTtlInSeconds));
             replicators.forEach((__, replicator)
                     -> ((PersistentReplicator) replicator).expireMessages(messageTtlInSeconds));
@@ -2606,6 +2608,7 @@ public class PersistentTopic extends AbstractTopic implements Topic, AddEntryCal
         Entry entry = null;
         boolean isOldestMessageExpired = false;
         try {
+            //从最新消费的位置读取一条消息，然后看时间戳，然后看该条消息是否过期
             entry = cursor.getNthEntry(1, IndividualDeletedEntries.Include);
             if (entry != null) {
                 long entryTimestamp = Commands.getEntryTimestamp(entry.getDataBuffer());

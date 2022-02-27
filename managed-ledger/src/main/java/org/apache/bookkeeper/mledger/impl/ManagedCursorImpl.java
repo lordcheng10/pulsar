@@ -324,6 +324,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     void recover(final VoidCallback callback) {
         // Read the meta-data ledgerId from the store
         log.info("[{}] Recovering from bookkeeper ledger cursor: {}", ledger.getName(), name);
+        // 首先从zk上读取cursor信息
         ledger.getStore().asyncGetCursorInfo(ledger.getName(), name, new MetaStoreCallback<ManagedCursorInfo>() {
             @Override
             public void operationComplete(ManagedCursorInfo info, Stat stat) {
@@ -535,6 +536,8 @@ public class ManagedCursorImpl implements ManagedCursor {
         }
         log.info("[{}] Cursor {} recovered to position {}", ledger.getName(), name, position);
 
+        // recover的时候初始化消费条目数计数
+        // position：是干啥的呢
         messagesConsumedCounter = -getNumberOfEntries(Range.openClosed(position, ledger.getLastPosition()));
         markDeletePosition = position;
         persistentMarkDeletePosition = position;
@@ -917,16 +920,21 @@ public class ManagedCursorImpl implements ManagedCursor {
                     ledger.getName(), name, ManagedLedgerImpl.ENTRIES_ADDED_COUNTER_UPDATER.get(ledger),
                     messagesConsumedCounter, markDeletePosition, readPosition);
         }
+        // 如果要精准的获取条目数，就得走下面这行逻辑
         if (isPrecise) {
+            // openClosed 表示打开一个左闭右开的范围
             return getNumberOfEntries(Range.openClosed(markDeletePosition, ledger.getLastPosition()));
         }
 
+        // 不精准的计数方式就是用写入的entry数目减去消费到的数目
         long backlog = ManagedLedgerImpl.ENTRIES_ADDED_COUNTER_UPDATER.get(ledger) - messagesConsumedCounter;
         if (backlog < 0) {
+            // 如果模糊计数不正确，那么久还是用精确计数
             // In some case the counters get incorrect values, fall back to the precise backlog count
             backlog = getNumberOfEntries(Range.openClosed(markDeletePosition, ledger.getLastPosition()));
         }
 
+        //最后返回积压的条目数
         return backlog;
     }
 

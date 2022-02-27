@@ -73,6 +73,7 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback {
             log.info("[{}][{}] Starting message expiry check, ttl= {} seconds", topicName, subName,
                     messageTTLInSeconds);
 
+            // 找到后会触发call back回调，在回调方法里面会更新mark delete 位置
             cursor.asyncFindNewestMatching(ManagedCursor.FindPositionConstraint.SearchActiveEntries, entry -> {
                 try {
                     long entryTimestamp = Commands.getEntryTimestamp(entry.getDataBuffer());
@@ -164,6 +165,7 @@ public class PersistentMessageExpiryMonitor implements FindEntryCallback {
         }
     };
 
+    // 如果找到了最小过期位置，就会自动更新ack位置时间。
     @Override
     public void findEntryComplete(Position position, Object ctx) {
         if (position != null) {

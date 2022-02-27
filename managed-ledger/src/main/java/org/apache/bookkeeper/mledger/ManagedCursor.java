@@ -252,14 +252,19 @@ public interface ManagedCursor {
     long getNumberOfEntries();
 
     /**
+     * 返回此游标上未删除消息的数量。
      * Return the number of non-deleted messages on this cursor.
      *
+     * 这还将包括已从光标读取但尚未删除或标记删除的消息。
      * <p/>This will also include messages that have already been read from the cursor but not deleted or mark-deleted
      * yet.
      *
+     * 该方法对 托管分类帐中包含的分类帐数量 具有线性时间复杂度。
      * <p/>This method has linear time complexity on the number of ledgers included in the managed ledger.
      *
+     * isPrecise 设置为 true 以获得精确的积压计数
      * @param isPrecise set to true to get precise backlog count
+     * 条目数
      * @return the number of entries
      */
     long getNumberOfEntriesInBacklog(boolean isPrecise);

@@ -141,6 +141,7 @@ class OpFindNewest implements ReadEntryCallback {
         callback.findEntryFailed(exception, Optional.ofNullable(searchPosition), OpFindNewest.this.ctx);
     }
 
+    // 这个方法会在完成的call back方法里面递归调用，直到没有更多entry了
     public void find() {
         if (cursor != null ? cursor.hasMoreEntries(searchPosition) : ledger.hasMoreEntries(searchPosition)) {
             ledger.asyncReadEntry(searchPosition, this, null);

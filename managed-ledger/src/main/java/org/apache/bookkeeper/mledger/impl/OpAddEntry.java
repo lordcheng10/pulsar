@@ -218,6 +218,7 @@ public class OpAddEntry extends SafeRunnable implements AddCallback, CloseCallba
         }
 
         PositionImpl lastEntry = PositionImpl.get(ledger.getId(), entryId);
+        // 每次写入成功后，该遍历会自增一下，目的是用来计算积压的条目数
         ManagedLedgerImpl.ENTRIES_ADDED_COUNTER_UPDATER.incrementAndGet(ml);
         ml.lastConfirmedEntry = lastEntry;
 
