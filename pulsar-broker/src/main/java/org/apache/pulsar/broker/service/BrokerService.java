@@ -298,6 +298,7 @@ public class BrokerService implements Closeable {
 
         this.multiLayerTopicsMap = ConcurrentOpenHashMap.<String,
                 ConcurrentOpenHashMap<String, ConcurrentOpenHashMap<String, Topic>>>newBuilder()
+                .autoShrink(pulsar.getConfig().isAutoShrinkForMultiLayerTopicsMap())
                 .build();
         this.owningTopics = ConcurrentOpenHashMap.<String,
                 ConcurrentOpenHashSet<Integer>>newBuilder()

@@ -713,6 +713,12 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private boolean autoShrinkForConsumerPendingAcksMap = false;
 
     @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Whether to enable the automatic shrink of multiLayerTopicsMap, "
+                    + "the default is false, which means it is not enabled. ")
+    private boolean autoShrinkForMultiLayerTopicsMap = false;
+
+    @FieldContext(
         category = CATEGORY_SERVER,
         dynamic = true,
         doc = "Enable check for minimum allowed client library version"
