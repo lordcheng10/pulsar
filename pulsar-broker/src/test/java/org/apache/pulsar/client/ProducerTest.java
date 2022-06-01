@@ -5,6 +5,8 @@ import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.Schema;
 
+import java.util.concurrent.ExecutionException;
+
 public class ProducerTest {
 
 
@@ -25,9 +27,17 @@ public class ProducerTest {
             Producer<byte[]> producer = client.newProducer(Schema.AUTO_PRODUCE_BYTES()).producerName("chenlin-producer1").topic("test1").create();
 
             //这里发send请求
-            producer.sendAsync("qqqqqqqqq".getBytes());
+            for(int i =0;i<10;i++){
+                byte[] buffer = ("" +i).getBytes();
+                long length = buffer.length;
+                System.out.println(length);
+                producer.sendAsync(buffer).get();
+            }
+            client.close();
         } catch (PulsarClientException e) {
             e.printStackTrace();
+        } catch (ExecutionException e) {
+            throw new RuntimeException(e);
         }
 
         Thread.sleep(1000);
