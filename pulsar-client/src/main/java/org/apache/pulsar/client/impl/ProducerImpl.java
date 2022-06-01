@@ -1920,7 +1920,7 @@ public class ProducerImpl<T> extends ProducerBase<T> implements TimerTask, Conne
                 // If we do have a connection, the message is sent immediately, otherwise we'll try again once a new
                 // connection is established
                 op.cmd.retain();
-                //producer的线程模型，就是一个主线程+一个netty网络发送线程池
+                //producer的线程模型，就是一个主线程+周期发送线程+ 一个netty网络发送线程池
                 cnx.ctx().channel().eventLoop().execute(WriteInEventLoopCallback.create(this, cnx, op));
                 stats.updateNumMsgsSent(op.numMessagesInBatch, op.batchSizeByte);
             } else {
