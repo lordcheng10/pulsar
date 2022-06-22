@@ -1688,6 +1688,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         LedgerHandle currentLedger = this.currentLedger;
 
         if (currentLedger != null && ledgerId == currentLedger.getId()) {
+            System.out.println("chenlinOJJ:currentLedger=" + currentLedger + ",ledgerId=" + ledgerId + ",currentLedger.getId=" + currentLedger.getId());
             // Current writing ledger is not in the cache (since we don't want
             // it to be automatically evicted), and we cannot use 2 different
             // ledger handles (read & write)for the same ledger.
@@ -1697,11 +1698,13 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
             if (ledgerInfo == null || ledgerInfo.getEntries() == 0) {
                 // Cursor is pointing to a empty ledger, there's no need to try opening it. Skip this ledger and
                 // move to the next one
+                System.out.println("chenlinttt:opReadEntry.readPosition.getLedgerId() + 1" + (opReadEntry.readPosition.getLedgerId() + 1));
                 opReadEntry.updateReadPosition(new PositionImpl(opReadEntry.readPosition.getLedgerId() + 1, 0));
                 opReadEntry.checkReadCompletion();
                 return;
             }
 
+            System.out.println("chenlinff:opReadEntry=" +opReadEntry);
             // Get a ledger handle to read from
             getLedgerHandle(ledgerId).thenAccept(ledger -> internalReadFromLedger(ledger, opReadEntry)).exceptionally(ex -> {
                 log.error("[{}] Error opening ledger for reading at position {} - {}", name, opReadEntry.readPosition,
@@ -1846,6 +1849,7 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         }
         // Perform the read
         long firstEntry = opReadEntry.readPosition.getEntryId();
+        System.out.println("chenlin09:firstEntry=" + firstEntry + ",lastConfirmedEntry=" + lastConfirmedEntry);
         long lastEntryInLedger;
 
         PositionImpl lastPosition = lastConfirmedEntry;
@@ -1857,11 +1861,15 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
         } else {
             // For other ledgers, already closed the BK lastAddConfirmed is appropriate
             lastEntryInLedger = ledger.getLastAddConfirmed();
+            System.out.println("chenlinioi:lastEntryInLedger=" + lastEntryInLedger);
         }
 
         // can read max position entryId
         if (ledger.getId() == opReadEntry.maxPosition.getLedgerId()) {
             lastEntryInLedger = min(opReadEntry.maxPosition.getEntryId(), lastEntryInLedger);
+            System.out.println("chenlinioi332:lastEntryInLedger=" + lastEntryInLedger +
+                    ",opReadEntry.maxPosition.getLedgerId()=" + opReadEntry.maxPosition.getLedgerId());
+
         }
 
         if (firstEntry > lastEntryInLedger) {
@@ -1875,11 +1883,16 @@ public class ManagedLedgerImpl implements ManagedLedger, CreateCallback {
                 // beginning of the next ledger
                 Long nextLedgerId = ledgers.ceilingKey(ledger.getId() + 1);
                 if (nextLedgerId != null) {
+                    System.out.println("chenlin:ppp nextLedgerId=" + nextLedgerId);
                     opReadEntry.updateReadPosition(new PositionImpl(nextLedgerId, 0));
                 } else {
+                    log.info("chenlinjjjll:ledger.getId() + 1=" + (ledger.getId() + 1));
                     opReadEntry.updateReadPosition(new PositionImpl(ledger.getId() + 1, 0));
                 }
             } else {
+                System.out.println("chenlinwwee:opReadEntry.readPosition=" + opReadEntry.readPosition
+                        + ",firstEntry=" + firstEntry + ",lastEntryInLedger=" + lastEntryInLedger +
+                        ",currentLedger=" + currentLedger + ",ledger.getId()=" + ledger.getId() + ",currentLedger.getId()=" + currentLedger.getId());
                 opReadEntry.updateReadPosition(opReadEntry.readPosition);
             }
 

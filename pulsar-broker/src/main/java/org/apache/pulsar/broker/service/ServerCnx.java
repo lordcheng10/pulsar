@@ -1545,8 +1545,10 @@ public class ServerCnx extends PulsarHandler implements TransportCnx {
             Position position = new PositionImpl(msgIdData.getLedgerId(),
                     msgIdData.getEntryId(), ackSet);
 
+            System.out.println("chenlin2: position=" + position);
 
             subscription.resetCursor(position).thenRun(() -> {
+                System.out.println("chenlin:Reset subscription to message id {}"+ position);
                 log.info("[{}] [{}][{}] Reset subscription to message id {}", remoteAddress,
                         subscription.getTopic().getName(), subscription.getName(), position);
                 commandSender.sendSuccessResponse(requestId);

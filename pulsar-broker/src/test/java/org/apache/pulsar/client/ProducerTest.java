@@ -24,7 +24,7 @@ public class ProducerTest {
             //这里回发CONNECTE -> PARTITIONED_METADATA -> LOOKUP -> PRODUCER 三个请求，目的是把producer注册上
             //如果这里的schema填的是Schema.AUTO_PRODUCE_BYTES()，那么在CONNECTED后立马就会发送getSchema请求来获取schema.
             //newProducer\producerName\topic都没有什么逻辑，发送请求这些逻辑都在create中
-            Producer<byte[]> producer = client.newProducer(Schema.AUTO_PRODUCE_BYTES()).producerName("chenlin-producer1").topic("test1").create();
+            Producer<byte[]> producer = client.newProducer(Schema.AUTO_PRODUCE_BYTES()).producerName("chenlin-producer1").topic("test9").create();
 
             //这里发send请求
             for(int i =0;i<10;i++){

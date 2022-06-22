@@ -540,6 +540,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         markDeletePosition = position;
         persistentMarkDeletePosition = position;
         readPosition = ledger.getNextValidPosition(position);
+        System.out.println("chenlinjj:readPosition=" + readPosition + ",position=" + position);
         lastMarkDeleteEntry = new MarkDeleteEntry(markDeletePosition, properties, null, null);
         // assign cursor-ledger so, it can be deleted when new ledger will be switched
         this.cursorLedger = recoveredFromCursorLedger;
@@ -753,7 +754,9 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         int numberOfEntriesToRead = applyMaxSizeCap(maxEntries, maxSizeBytes);
 
-        if (hasMoreEntries()) {
+        boolean hash = hasMoreEntries();
+        System.out.println("hash=" + hash);
+        if (hash) {
             // If we have available entries, we can read them immediately
             if (log.isDebugEnabled()) {
                 log.debug("[{}] [{}] Read entries immediately", ledger.getName(), name);
@@ -863,8 +866,10 @@ public class ManagedCursorImpl implements ManagedCursor {
         // at the last entry in the previous ledger
         PositionImpl writerPosition = ledger.getLastPosition();
         if (writerPosition.getEntryId() != -1) {
+            System.out.println("xx1 readPosition=" + readPosition + ",writerPosition=" + writerPosition);
             return readPosition.compareTo(writerPosition) <= 0;
         } else {
+            System.out.println("xx2 readPosition=" + readPosition + ",writerPosition=" + writerPosition);
             // Fall back to checking the number of entries to ensure we are at the last entry in ledger and no ledgers
             // are in the middle
             return getNumberOfEntries() > 0;
@@ -1031,6 +1036,7 @@ public class ManagedCursorImpl implements ManagedCursor {
     protected void internalResetCursor(PositionImpl position, AsyncCallbacks.ResetCursorCallback resetCursorCallback) {
         if (position.equals(PositionImpl.earliest)) {
             position = ledger.getFirstPosition();
+            System.out.println("ledger.getFirstPosition position=" + position);
         } else if (position.equals(PositionImpl.latest)) {
             position = ledger.getLastPosition().getNext();
         }
@@ -1089,7 +1095,9 @@ public class ManagedCursorImpl implements ManagedCursor {
                         log.info("[{}] reset position to {} skipping from current read position {} on cursor {}",
                                 ledger.getName(), newPosition, oldReadPosition, name);
                     }
+                    System.out.println("chenlinjj2:readPosition=" + readPosition + ",newPosition=" + newPosition);
                     readPosition = newPosition;
+
                 } finally {
                     lock.writeLock().unlock();
                 }
@@ -1144,6 +1152,7 @@ public class ManagedCursorImpl implements ManagedCursor {
                 !actualPosition.equals(PositionImpl.earliest) &&
                 !actualPosition.equals(PositionImpl.latest)) {
                 actualPosition = ledger.getNextValidPosition(actualPosition);
+                log.info("chenlin1:actualPosition=" + actualPosition);
 
                 if (actualPosition == null) {
                     // next valid position would only return null when newPos
@@ -1304,6 +1313,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         positions.stream().filter(position -> !alreadyAcknowledgedPositions.contains(position))
                 .forEach(p ->{
                     if (((PositionImpl) p).compareTo(this.readPosition) == 0) {
+                        System.out.println("chenlin732:readPosition=" + readPosition + ",this.readPosition.getNext()="+this.readPosition.getNext());
                         this.setReadPosition(this.readPosition.getNext());
                         log.warn("[{}][{}] replayPosition{} equals readPosition{}," + " need set next readPositio",
                                 ledger.getName(), name, p, this.readPosition);
@@ -1561,7 +1571,9 @@ public class ManagedCursorImpl implements ManagedCursor {
     }
 
     void initializeCursorPosition(Pair<PositionImpl, Long> lastPositionCounter) {
+        System.out.println("chenlinjj4:readPosition=" + readPosition + ",lastPositionCounter=" + lastPositionCounter);
         readPosition = ledger.getNextValidPosition(lastPositionCounter.getLeft());
+        System.out.println("chenlinjj3:readPosition=" + readPosition);
         markDeletePosition = lastPositionCounter.getLeft();
 
         // Initialize the counter such that the difference between the messages written on the ML and the
@@ -2169,7 +2181,7 @@ public class ManagedCursorImpl implements ManagedCursor {
             PositionImpl oldReadPosition = readPosition;
 
             log.info("[{}-{}] Rewind from {} to {}", ledger.getName(), name, oldReadPosition, newReadPosition);
-
+            System.out.println("chenlinjj5:readPosition=" + readPosition + ",newReadPosition=" + newReadPosition);
             readPosition = newReadPosition;
         } finally {
             lock.writeLock().unlock();
@@ -2187,6 +2199,8 @@ public class ManagedCursorImpl implements ManagedCursor {
                 // Make sure the newReadPosition comes after the mark delete position
                 newReadPosition = ledger.getNextValidPosition(markDeletePosition);
             }
+
+            System.out.println("chenlinjj8:readPosition=" + readPosition + ",newReadPosition=" + newReadPosition);
 
             PositionImpl oldReadPosition = readPosition;
             readPosition = newReadPosition;
@@ -2385,6 +2399,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         checkArgument(newReadPositionInt instanceof PositionImpl);
         if (this.markDeletePosition == null
                 || ((PositionImpl) newReadPositionInt).compareTo(this.markDeletePosition) > 0) {
+            System.out.println("chenlinjj9:readPosition=" + readPosition + ",newReadPositionInt=" + newReadPositionInt);
             this.readPosition = (PositionImpl) newReadPositionInt;
         }
     }

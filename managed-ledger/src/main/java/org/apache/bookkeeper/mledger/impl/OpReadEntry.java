@@ -83,6 +83,7 @@ class OpReadEntry implements ReadEntriesCallback {
         // if entries have been filtered out then try to skip reading of already deletedMessages in that range
         final Position nexReadPosition = entriesCount != filteredEntries.size()
                 ? cursor.getNextAvailablePosition(lastPosition) : lastPosition.getNext();
+        System.out.println("chenlin00:nexReadPosition=" + nexReadPosition);
         updateReadPosition(nexReadPosition);
         checkReadCompletion();
     }
@@ -109,6 +110,7 @@ class OpReadEntry implements ReadEntriesCallback {
                 recycle();
                 return;
             }
+            System.out.println("chenlin34oop:nexReadPosition=" + nexReadPosition);
             updateReadPosition(nexReadPosition);
             checkReadCompletion();
         } else {
@@ -130,6 +132,7 @@ class OpReadEntry implements ReadEntriesCallback {
 
     void updateReadPosition(Position newReadPosition) {
         nextReadPosition = (PositionImpl) newReadPosition;
+        System.out.println("chenlinuu:nextReadPosition=" + nextReadPosition );
         cursor.setReadPosition(nextReadPosition);
     }
 

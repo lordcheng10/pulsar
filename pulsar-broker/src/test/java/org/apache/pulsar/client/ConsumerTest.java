@@ -10,34 +10,36 @@ public class ConsumerTest {
     }
 
     public static void main(String[] args) {
-        try{
 
-        }catch (Exception e){
-
-        }
         try (PulsarClient client = PulsarClient.builder().serviceUrl("pulsar://127.0.0.1:6650").build()) {
             Consumer consumer = client.newConsumer()
-                    .topic("test1")
+                    .topic("test9")
                     //允许乱序
-                    .subscriptionName("sb1").keySharedPolicy(KeySharedPolicy.autoSplitHashRange().setAllowOutOfOrderDelivery(true))
+                    .subscriptionName("sb1")
                     .subscribe();
+            consumer.seek(MessageId.earliest);
 
             while (true) {
                 // Wait for a message
-
                 try {
                     Message msg = consumer.receive(1000, TimeUnit.MILLISECONDS);
 
-                    // Do something with the message
-                    System.out.println("Message received: " + (msg == null ? "null" : new String(msg.getData())));
+                    if(msg!=null){
+                        // Do something with the message
+                        System.out.println("Message received: " + (msg == null ? "null" : new String(msg.getData())));
 
-                    // Acknowledge the message so that it can be deleted by the message broker
-                    consumer.acknowledge(msg);
+                        // Acknowledge the message so that it can be deleted by the message broker
+                        consumer.acknowledge(msg);
+                    }else{
+                        break;
+                    }
                 } catch (Exception e) {
                     // Message failed to process, redeliver later
                     System.out.println(e.getMessage());
                 }
             }
+            consumer.close();
+            client.close();
 
         } catch (PulsarClientException e) {
             e.printStackTrace();
