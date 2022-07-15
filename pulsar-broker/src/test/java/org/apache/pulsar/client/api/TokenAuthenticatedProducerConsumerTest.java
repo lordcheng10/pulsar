@@ -152,6 +152,16 @@ public class TokenAuthenticatedProducerConsumerTest extends ProducerConsumerBase
     }
 
     @Test
+    public void test(){
+        PulsarClient client =  PulsarClient.builder()
+                .serviceUrl("")
+                .authentication(AuthenticationFactory.token("token"))
+                .build();
+
+        Producer<byte[]> producer=client.newProducer();
+    }
+
+    @Test
     public void testTokenProducerAndConsumer() throws Exception {
         log.info("-- Starting {} test --", methodName);
         clientSetup();
