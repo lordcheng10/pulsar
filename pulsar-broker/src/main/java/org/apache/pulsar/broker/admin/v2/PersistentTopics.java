@@ -1615,6 +1615,8 @@ public class PersistentTopics extends PersistentTopicsBase {
             @QueryParam("replicated") boolean replicated
     ) {
         try {
+            String subscriptionName = decode(encodedSubName);
+            validateSubscriptionName(subscriptionName);
             validateTopicName(tenant, namespace, topic);
             if (!topicName.isPersistent()) {
                 throw new RestException(Response.Status.BAD_REQUEST, "Create subscription on non-persistent topic "
@@ -1625,7 +1627,7 @@ public class PersistentTopics extends PersistentTopicsBase {
             MessageIdImpl messageId = resetCursorData == null ? null :
                     new MessageIdImpl(resetCursorData.getLedgerId(), resetCursorData.getEntryId(),
                             resetCursorData.getPartitionIndex());
-            internalCreateSubscription(asyncResponse, decode(encodedSubName), messageId, authoritative,
+            internalCreateSubscription(asyncResponse, subscriptionName, messageId, authoritative,
                     replicated, subscriptionProperties);
         } catch (WebApplicationException wae) {
             asyncResponse.resume(wae);

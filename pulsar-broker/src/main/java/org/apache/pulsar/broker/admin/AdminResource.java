@@ -68,6 +68,7 @@ import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.metadata.api.MetadataStoreException;
 import org.apache.pulsar.metadata.api.MetadataStoreException.AlreadyExistsException;
 import org.apache.pulsar.metadata.api.MetadataStoreException.BadVersionException;
+import org.apache.pulsar.utils.StringUtil;
 
 @Slf4j
 public abstract class AdminResource extends PulsarWebResource {
@@ -234,6 +235,13 @@ public abstract class AdminResource extends PulsarWebResource {
         } catch (IllegalArgumentException e) {
             log.warn("[{}] Invalid namespace name [{}/{}/{}]", clientAppId(), property, cluster, namespace);
             throw new RestException(Status.PRECONDITION_FAILED, "Namespace name is not valid");
+        }
+    }
+
+    protected void validateSubscriptionName(String subscriptionName) {
+        if (StringUtil.containsInvisibleCharacters(subscriptionName)) {
+            throw new RestException(Response.Status.PRECONDITION_FAILED, "Subscription name contains "
+                    + "invisible characters");
         }
     }
 
