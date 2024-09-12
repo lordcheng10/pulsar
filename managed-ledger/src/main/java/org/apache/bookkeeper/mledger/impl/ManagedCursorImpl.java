@@ -1985,7 +1985,9 @@ public class ManagedCursorImpl implements ManagedCursor {
 
         lock.writeLock().lock();
         try {
-            newPosition = setAcknowledgedPosition(newPosition);
+            if (!newPosition.equals(markDeletePosition)) {
+                newPosition = setAcknowledgedPosition(newPosition);
+            }
         } catch (IllegalArgumentException e) {
             callback.markDeleteFailed(getManagedLedgerException(e), ctx);
             return;
@@ -2059,7 +2061,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         }
 
         PositionImpl inProgressLatest = INPROGRESS_MARKDELETE_PERSIST_POSITION_UPDATER.updateAndGet(this, current -> {
-            if (current != null && current.compareTo(mdEntry.newPosition) > 0) {
+            if (current != null && current.compareTo(mdEntry.newPosition) >= 0) {
                 return current;
             } else {
                 return mdEntry.newPosition;

@@ -1010,6 +1010,22 @@ public class ManagedCursorTest extends MockedBookKeeperTestCase {
     }
 
     @Test(timeOut = 20000)
+    void markDeleteThePositionTwice() throws Exception {
+        ManagedLedger ledger = factory.open("my_test_ledger", new ManagedLedgerConfig().setMaxEntriesPerLedger(10));
+        ManagedCursor cursor = ledger.openCursor("c1");
+        Position p1 = ledger.addEntry("dummy-entry-1".getBytes(Encoding));
+
+        assertEquals(cursor.getNumberOfEntries(), 1);
+
+        cursor.markDelete(p1);
+        assertFalse(cursor.hasMoreEntries());
+        assertEquals(cursor.getNumberOfEntries(), 0);
+
+        // markDelete p1 again
+        cursor.markDelete(p1);
+    }
+
+    @Test(timeOut = 20000)
     void markDeleteSkippingMessage() throws Exception {
         ManagedLedger ledger = factory.open("my_test_ledger", new ManagedLedgerConfig().setMaxEntriesPerLedger(10));
         ManagedCursor cursor = ledger.openCursor("c1");
