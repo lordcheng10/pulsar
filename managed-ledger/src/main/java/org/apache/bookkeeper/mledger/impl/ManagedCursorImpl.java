@@ -2048,7 +2048,7 @@ public class ManagedCursorImpl implements ManagedCursor {
 
     void internalMarkDelete(final MarkDeleteEntry mdEntry) {
         if (persistentMarkDeletePosition != null
-                && mdEntry.newPosition.compareTo(persistentMarkDeletePosition) < 0) {
+                && mdEntry.newPosition.compareTo(persistentMarkDeletePosition) <= 0) {
             if (log.isInfoEnabled()) {
                 log.info("Skipping updating mark delete position to {}. The persisted mark delete position {} "
                         + "is later.", mdEntry.newPosition, persistentMarkDeletePosition);
@@ -2059,7 +2059,7 @@ public class ManagedCursorImpl implements ManagedCursor {
         }
 
         PositionImpl inProgressLatest = INPROGRESS_MARKDELETE_PERSIST_POSITION_UPDATER.updateAndGet(this, current -> {
-            if (current != null && current.compareTo(mdEntry.newPosition) > 0) {
+            if (current != null && current.compareTo(mdEntry.newPosition) >= 0) {
                 return current;
             } else {
                 return mdEntry.newPosition;
